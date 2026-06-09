@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>moraine — trieur de photos</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>moraine</h1>
+    <span class="subtitle">trieur de photos par événement</span>
+  </header>
+
+  <main id="groups" class="groups" aria-live="polite">
+    <p class="loading">Chargement des groupes…</p>
+  </main>
+
+  <!-- Lightbox (US5) -->
+  <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="Aperçu de la photo">
+    <button id="lightbox-close" class="lightbox-close" aria-label="Fermer">×</button>
+    <img id="lightbox-img" alt="Aperçu pleine résolution">
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toasts" class="toasts" aria-live="assertive"></div>
+
+  <!-- Row template -->
+  <template id="group-tpl">
+    <section class="group" draggable="false">
+      <div class="group-head">
+        <span class="group-label" contenteditable="true" spellcheck="false" title="Cliquer pour renommer"></span>
+        <span class="group-date"></span>
+        <span class="group-count"></span>
+        <input class="group-dest" type="text" aria-label="Sous-dossier de destination" />
+        <button class="group-commit" type="button">Déplacer →</button>
+      </div>
+      <div class="group-strip"></div>
+    </section>
+  </template>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
