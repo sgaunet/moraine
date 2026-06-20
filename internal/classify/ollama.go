@@ -115,7 +115,7 @@ func (o *OllamaClassifier) Preflight(ctx context.Context) Status {
 	return StatusModelMissing
 }
 
-// baseModel strips an Ollama tag suffix (e.g. "qwen2.5vl:7b" → "qwen2.5vl").
+// baseModel strips an Ollama tag suffix (e.g. "qwen3-vl:8b" → "qwen2.5vl").
 func baseModel(name string) string {
 	if i := strings.IndexByte(name, ':'); i >= 0 {
 		return name[:i]

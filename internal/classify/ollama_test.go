@@ -48,16 +48,16 @@ func tagsServer(t *testing.T, names ...string) *httptest.Server {
 }
 
 func TestPreflightReady(t *testing.T) {
-	srv := tagsServer(t, "qwen2.5vl:7b", "llama3:8b")
+	srv := tagsServer(t, "qwen3-vl:8b", "llama3:8b")
 	defer srv.Close()
-	oc := classify.NewOllama(srv.URL, "qwen2.5vl:7b", 3, themes)
+	oc := classify.NewOllama(srv.URL, "qwen3-vl:8b", 3, themes)
 	if got := oc.Preflight(context.Background()); got != classify.StatusReady {
 		t.Fatalf("got %v; want StatusReady", got)
 	}
 }
 
 func TestPreflightReadyUntaggedConfig(t *testing.T) {
-	srv := tagsServer(t, "qwen2.5vl:7b")
+	srv := tagsServer(t, "qwen3-vl:8b")
 	defer srv.Close()
 	oc := classify.NewOllama(srv.URL, "qwen2.5vl", 3, themes) // no tag → match by base
 	if got := oc.Preflight(context.Background()); got != classify.StatusReady {
@@ -68,7 +68,7 @@ func TestPreflightReadyUntaggedConfig(t *testing.T) {
 func TestPreflightModelMissing(t *testing.T) {
 	srv := tagsServer(t, "llama3:8b")
 	defer srv.Close()
-	oc := classify.NewOllama(srv.URL, "qwen2.5vl:7b", 3, themes)
+	oc := classify.NewOllama(srv.URL, "qwen3-vl:8b", 3, themes)
 	if got := oc.Preflight(context.Background()); got != classify.StatusModelMissing {
 		t.Fatalf("got %v; want StatusModelMissing", got)
 	}
@@ -77,7 +77,7 @@ func TestPreflightModelMissing(t *testing.T) {
 func TestPreflightUnreachable(t *testing.T) {
 	srv := tagsServer(t)
 	srv.Close() // closed → connection refused
-	oc := classify.NewOllama(srv.URL, "qwen2.5vl:7b", 3, themes)
+	oc := classify.NewOllama(srv.URL, "qwen3-vl:8b", 3, themes)
 	if got := oc.Preflight(context.Background()); got != classify.StatusUnreachable {
 		t.Fatalf("got %v; want StatusUnreachable", got)
 	}

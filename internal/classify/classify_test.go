@@ -138,7 +138,7 @@ func TestOllamaClassifyMapsInSetTheme(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	oc := classify.NewOllama(srv.URL, "qwen2.5vl:7b", 1, themes)
+	oc := classify.NewOllama(srv.URL, "qwen3-vl:8b", 1, themes)
 	got, err := oc.Classify(context.Background(), jpegCluster(t, 1))
 	if err != nil {
 		t.Fatalf("Classify: %v", err)

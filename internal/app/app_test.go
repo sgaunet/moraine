@@ -209,7 +209,7 @@ func TestOrganizeOllamaUnreachableWarnsAndFallsBack(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sample = 3
-	cfg.Model = "qwen2.5vl:7b"
+	cfg.Model = "qwen3-vl:8b"
 	cfg.OllamaURL = url
 
 	buf := &safeBuffer{}
@@ -238,7 +238,7 @@ func TestOrganizeOllamaModelMissingTellsToPull(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sample = 3
-	cfg.Model = "qwen2.5vl:7b"
+	cfg.Model = "qwen3-vl:8b"
 	cfg.OllamaURL = srv.URL
 
 	buf := &safeBuffer{}
@@ -251,7 +251,7 @@ func TestOrganizeOllamaModelMissingTellsToPull(t *testing.T) {
 		t.Fatalf("Copied = %d; want 1 (placed via fallback)", sum.Copied)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "ollama pull qwen2.5vl:7b") {
+	if !strings.Contains(out, "ollama pull qwen3-vl:8b") {
 		t.Errorf("expected an actionable 'ollama pull' message, got:\n%s", out)
 	}
 }
