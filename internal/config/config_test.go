@@ -16,8 +16,8 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Gap != time.Hour {
-		t.Errorf("Gap: want 1h, got %s", cfg.Gap)
+	if cfg.Gap != 6*time.Hour {
+		t.Errorf("Gap: want 6h, got %s", cfg.Gap)
 	}
 	if cfg.Sample != config.DefaultSample {
 		t.Errorf("Sample: want %d, got %d", config.DefaultSample, cfg.Sample)

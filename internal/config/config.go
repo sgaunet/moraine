@@ -32,8 +32,8 @@ type Config struct {
 
 // Default values surfaced in the CLI contract.
 const (
-	DefaultModel     = "qwen2.5vl:7b"
-	DefaultGap       = time.Hour
+	DefaultModel     = "qwen3-vl:8b"
+	DefaultGap       = 6 * time.Hour
 	DefaultSample    = 3
 	DefaultOllamaURL = "http://127.0.0.1:11434"
 	DefaultThemes    = "family,mountain,special-events,nature"
