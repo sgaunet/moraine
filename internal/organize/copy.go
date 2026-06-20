@@ -13,19 +13,19 @@ import (
 func copyFile(src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("ouverture source: %w", err)
+		return fmt.Errorf("opening source: %w", err)
 	}
 	defer func() { _ = in.Close() }()
 
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		return fmt.Errorf("création destination: %w", err)
+		return fmt.Errorf("creating destination: %w", err)
 	}
 
 	if _, err = io.Copy(out, in); err != nil {
 		_ = out.Close()
 		_ = os.Remove(dst) // clean up partial copy
-		return fmt.Errorf("copie: %w", err)
+		return fmt.Errorf("copying: %w", err)
 	}
 	if err = out.Sync(); err != nil {
 		_ = out.Close()
@@ -34,7 +34,7 @@ func copyFile(src, dst string) (err error) {
 	}
 	if err = out.Close(); err != nil {
 		_ = os.Remove(dst)
-		return fmt.Errorf("fermeture destination: %w", err)
+		return fmt.Errorf("closing destination: %w", err)
 	}
 	return nil
 }
@@ -70,13 +70,13 @@ func hashFile(path string) ([sha256.Size]byte, error) {
 	var sum [sha256.Size]byte
 	f, err := os.Open(path)
 	if err != nil {
-		return sum, fmt.Errorf("ouverture %q: %w", path, err)
+		return sum, fmt.Errorf("opening %q: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return sum, fmt.Errorf("lecture %q: %w", path, err)
+		return sum, fmt.Errorf("reading %q: %w", path, err)
 	}
 	copy(sum[:], h.Sum(nil))
 	return sum, nil

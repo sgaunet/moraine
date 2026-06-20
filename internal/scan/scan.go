@@ -19,7 +19,7 @@ type Found struct {
 
 // Scan recursively walks source and returns the recognised image files
 // (JPEG/PNG/HEIC, case-insensitive). The destRoot directory — even when nested
-// under source (e.g. "_trie") — is skipped entirely.
+// under source (e.g. "_sorted") — is skipped entirely.
 func Scan(source, destRoot string) ([]Found, error) {
 	cleanDest := filepath.Clean(destRoot)
 	var found []Found
@@ -40,7 +40,7 @@ func Scan(source, destRoot string) ([]Found, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("parcours du dossier source %q: %w", source, err)
+		return nil, fmt.Errorf("walking source directory %q: %w", source, err)
 	}
 	return found, nil
 }

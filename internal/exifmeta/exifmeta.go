@@ -26,7 +26,7 @@ func Read(path string, format photo.Format) (photo.Photo, error) {
 
 	f, err := os.Open(path)
 	if err != nil {
-		return photo.Photo{}, fmt.Errorf("ouverture %q: %w", path, err)
+		return photo.Photo{}, fmt.Errorf("opening %q: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 

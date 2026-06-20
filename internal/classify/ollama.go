@@ -145,11 +145,11 @@ var slugNonWord = regexp.MustCompile(`[^a-z0-9]+`)
 // prompt instructs the model to answer with exactly one configured theme slug.
 // It lists the allowed categories and forbids inventing new ones.
 func (o *OllamaClassifier) prompt() string {
-	return "Tu classes un ensemble de photos d'un même moment dans UNE SEULE catégorie. " +
-		"Catégories autorisées (réponds par l'une EXACTEMENT, en minuscules) : " +
+	return "You are classifying a set of photos from the same moment into ONE SINGLE category. " +
+		"Allowed categories (answer with EXACTLY one, in lowercase): " +
 		strings.Join(o.Themes, ", ") + ". " +
-		"Si aucune ne convient parfaitement, choisis la plus proche de la liste. " +
-		"Réponds par un seul mot de la liste, sans phrase ni ponctuation."
+		"If none fits perfectly, choose the closest from the list. " +
+		"Answer with a single word from the list, no sentence or punctuation."
 }
 
 // Classify returns one configured theme slug for the cluster, or an error on
@@ -163,9 +163,9 @@ func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (strin
 
 	images := sampleImages(c, o.Sample)
 	if len(images) == 0 {
-		o.log().Warn("classification ignorée : aucune image décodable (HEIC non envoyé au modèle)",
-			"taille_groupe", len(c.Photos))
-		return "", fmt.Errorf("aucune image décodable à classer")
+		o.log().Warn("classification skipped: no decodable image (HEIC not sent to the model)",
+			"group_size", len(c.Photos))
+		return "", fmt.Errorf("no decodable image to classify")
 	}
 	reqBody := chatRequest{
 		Model:    o.Model,
@@ -174,10 +174,10 @@ func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (strin
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("encodage requête ollama: %w", err)
+		return "", fmt.Errorf("encoding ollama request: %w", err)
 	}
 
-	o.log().Debug("contact du modèle", "url", o.BaseURL, "model", o.Model, "images", len(images))
+	o.log().Debug("contacting model", "url", o.BaseURL, "model", o.Model, "images", len(images))
 
 	const attempts = 2
 	var lastErr error
@@ -191,9 +191,9 @@ func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (strin
 			break // timeout/cancel: do not keep retrying
 		}
 	}
-	o.log().Warn("modèle indisponible ou réponse rejetée — repli",
+	o.log().Warn("model unavailable or answer rejected — fallback",
 		"url", o.BaseURL, "model", o.Model, "err", lastErr)
-	return "", fmt.Errorf("ollama indisponible après %d tentatives: %w", attempts, lastErr)
+	return "", fmt.Errorf("ollama unavailable after %d attempts: %w", attempts, lastErr)
 }
 
 func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, error) {
@@ -214,16 +214,16 @@ func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, 
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("statut %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var parsed chatResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("réponse ollama illisible: %w", err)
+		return "", fmt.Errorf("unreadable ollama response: %w", err)
 	}
 	theme := normaliseTheme(parsed.Message.Content, o.Themes)
 	if theme == "" {
-		return "", fmt.Errorf("catégorie hors ensemble: %q", strings.TrimSpace(parsed.Message.Content))
+		return "", fmt.Errorf("category out of set: %q", strings.TrimSpace(parsed.Message.Content))
 	}
 	return theme, nil
 }

@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,15 +25,27 @@ const (
 	exitUsage   = 2
 )
 
+// version is the build version, overridden with -ldflags "-X main.version=<v>".
+var version = "dev"
+
 func main() {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "erreur d'arguments :", err)
-		fmt.Fprintln(os.Stderr, "usage : moraine [flags] <dossier-ou-fichier>")
+		if errors.Is(err, config.ErrHelp) {
+			config.WriteUsage(os.Stdout)
+			os.Exit(exitOK)
+		}
+		fmt.Fprintln(os.Stderr, "argument error:", err)
+		fmt.Fprintln(os.Stderr, "usage: moraine [options] <directory-or-file>")
+		fmt.Fprintln(os.Stderr, "run `moraine -help` for detailed help")
 		os.Exit(exitUsage)
 	}
+	if cfg.ShowVersion {
+		fmt.Println("moraine", version)
+		os.Exit(exitOK)
+	}
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintln(os.Stderr, "erreur :", err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(exitRuntime)
 	}
 
@@ -42,7 +55,7 @@ func main() {
 	defer stop()
 
 	if _, err := app.Organize(ctx, cfg, logger); err != nil {
-		fmt.Fprintln(os.Stderr, "erreur :", err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(exitRuntime)
 	}
 	os.Exit(exitOK)

@@ -175,7 +175,7 @@ func TestOrganizeContinuesOnUnreadableImage(t *testing.T) {
 	if sum.Copied != 1 {
 		t.Fatalf("Copied = %d; want 1 (unreadable skipped)", sum.Copied)
 	}
-	if !strings.Contains(buf.String(), "fichier ignoré") {
+	if !strings.Contains(buf.String(), "file skipped") {
 		t.Error("expected a warning log for the unreadable file")
 	}
 }
@@ -191,7 +191,7 @@ func TestOrganizeLoggingContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	for _, want := range []string{"groupe", "methode", "theme", "photo", "action=copied", "dest=", "résumé"} {
+	for _, want := range []string{"group", "method", "theme", "photo", "action=copied", "dest=", "summary"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log missing %q\n---\n%s", want, out)
 		}
@@ -221,7 +221,7 @@ func TestOrganizeOllamaUnreachableWarnsAndFallsBack(t *testing.T) {
 	if sum.Copied != 1 {
 		t.Fatalf("Copied = %d; want 1 (placed via fallback)", sum.Copied)
 	}
-	if !strings.Contains(buf.String(), "Ollama injoignable") {
+	if !strings.Contains(buf.String(), "Ollama unreachable") {
 		t.Errorf("expected an actionable 'unreachable' warning, got:\n%s", buf.String())
 	}
 }
@@ -266,7 +266,7 @@ func TestOrganizeLogLevelWarnSuppressesInfo(t *testing.T) {
 	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(buf.String(), "groupe") {
+	if strings.Contains(buf.String(), "group") {
 		t.Errorf("warn level must suppress info lines, got:\n%s", buf.String())
 	}
 }

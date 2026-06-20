@@ -48,8 +48,8 @@ func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summ
 			return sum, err
 		}
 		theme, method := classify.Label(ctx, c, opts)
-		logger.Info("groupe",
-			"taille", len(c.Photos), "methode", string(method),
+		logger.Info("group",
+			"size", len(c.Photos), "method", string(method),
 			"theme", theme, "date", c.Start.Format("2006-01-02"))
 		sum.Groups++
 
@@ -58,9 +58,9 @@ func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summ
 		}
 	}
 
-	logger.Info("résumé",
-		"groupes", sum.Groups, "copiées", sum.Copied, "ignorées", sum.Skipped,
-		"renommées", sum.Renamed, "erreurs", sum.Errors)
+	logger.Info("summary",
+		"groups", sum.Groups, "copied", sum.Copied, "skipped", sum.Skipped,
+		"renamed", sum.Renamed, "errors", sum.Errors)
 	return sum, nil
 }
 
@@ -71,7 +71,7 @@ func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summ
 // heuristic + fallback theme (a theme is always assigned, FR-005).
 func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger) classify.Classifier {
 	if cfg.Sample <= 0 {
-		logger.Info("stage modèle désactivé (-sample 0) : heuristique + repli uniquement")
+		logger.Info("model stage disabled (-sample 0): heuristic + fallback only")
 		return nil
 	}
 	oc := classify.NewOllama(cfg.OllamaURL, cfg.Model, cfg.Sample, cfg.Themes)
@@ -79,15 +79,15 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 
 	switch oc.Preflight(ctx) {
 	case classify.StatusUnreachable:
-		logger.Warn("Ollama injoignable : classification par heuristique/repli uniquement ; démarrez-le avec `ollama serve`",
+		logger.Warn("Ollama unreachable: classifying via heuristic/fallback only; start it with `ollama serve`",
 			"url", cfg.OllamaURL)
 		return nil
 	case classify.StatusModelMissing:
-		logger.Warn("modèle absent d'Ollama : téléchargez-le puis relancez",
-			"model", cfg.Model, "commande", "ollama pull "+cfg.Model)
+		logger.Warn("model missing from Ollama: pull it then re-run",
+			"model", cfg.Model, "command", "ollama pull "+cfg.Model)
 		return nil
 	default:
-		logger.Info("modèle prêt", "url", cfg.OllamaURL, "model", cfg.Model)
+		logger.Info("model ready", "url", cfg.OllamaURL, "model", cfg.Model)
 		return oc
 	}
 }
@@ -96,7 +96,7 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 func tally(sum *Summary, r organize.Result, logger *slog.Logger) {
 	if r.Err != nil {
 		sum.Errors++
-		logger.Error("échec de placement", "source", r.Source, "err", r.Err)
+		logger.Error("placement failed", "source", r.Source, "err", r.Err)
 		return
 	}
 	switch r.Action {
@@ -121,13 +121,13 @@ func buildClusters(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, err
 	if err != nil {
 		return nil, err
 	}
-	logger.Info("scan", "images", len(found), "destination_exclue", cfg.DestRoot)
+	logger.Info("scan", "images", len(found), "excluded_dest", cfg.DestRoot)
 
 	photos := readMeta(found, logger)
-	logger.Info("exif", "lues", len(photos), "sur", len(found))
+	logger.Info("exif", "read", len(photos), "of", len(found))
 
 	clusters := cluster.Cluster(photos, cfg.Gap)
-	logger.Info("cluster", "photos", len(photos), "groupes", len(clusters), "gap", cfg.Gap.String())
+	logger.Info("cluster", "photos", len(photos), "groups", len(clusters), "gap", cfg.Gap.String())
 	return clusters, nil
 }
 
@@ -135,13 +135,13 @@ func buildClusters(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, err
 func singleCluster(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, error) {
 	format, ok := photo.FormatFromExt(cfg.Source)
 	if !ok {
-		return nil, fmt.Errorf("format non géré pour %q (attendu JPEG/PNG/HEIC)", cfg.Source)
+		return nil, fmt.Errorf("unsupported format for %q (expected JPEG/PNG/HEIC)", cfg.Source)
 	}
 	p, err := exifmeta.Read(cfg.Source, format)
 	if err != nil {
-		return nil, fmt.Errorf("lecture de %q: %w", cfg.Source, err)
+		return nil, fmt.Errorf("reading %q: %w", cfg.Source, err)
 	}
-	logger.Info("photo unique", "fichier", cfg.Source, "date", p.Taken.Format("2006-01-02"))
+	logger.Info("single photo", "file", cfg.Source, "date", p.Taken.Format("2006-01-02"))
 	return []photo.Cluster{{Photos: []photo.Photo{p}, Start: p.Taken, End: p.Taken}}, nil
 }
 
@@ -166,7 +166,7 @@ func readMeta(found []scan.Found, logger *slog.Logger) []photo.Photo {
 			defer func() { <-sem }()
 			p, err := exifmeta.Read(f.Path, f.Format)
 			if err != nil {
-				logger.Warn("fichier ignoré", "fichier", f.Path, "err", err)
+				logger.Warn("file skipped", "file", f.Path, "err", err)
 				return
 			}
 			mu.Lock()

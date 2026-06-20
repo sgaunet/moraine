@@ -31,7 +31,7 @@ func TestScanRecursiveAndFilters(t *testing.T) {
 	write(t, filepath.Join(src, "movie.mp4")) // ignored
 	write(t, filepath.Join(src, "raw.cr2"))   // ignored
 
-	dest := filepath.Join(src, "_trie")
+	dest := filepath.Join(src, "_sorted")
 
 	found, err := scan.Scan(src, dest)
 	if err != nil {
@@ -46,11 +46,11 @@ func TestScanRecursiveAndFilters(t *testing.T) {
 
 func TestScanExcludesDestRootUnderSource(t *testing.T) {
 	src := t.TempDir()
-	dest := filepath.Join(src, "_trie") // destination nested under source
+	dest := filepath.Join(src, "_sorted") // destination nested under source
 
 	write(t, filepath.Join(src, "keep.jpg"))
-	// Already-sorted photos living under _trie must be ignored.
-	write(t, filepath.Join(dest, "voyage", "old1.jpg"))
+	// Already-sorted photos living under _sorted must be ignored.
+	write(t, filepath.Join(dest, "trip", "old1.jpg"))
 	write(t, filepath.Join(dest, "old2.png"))
 
 	found, err := scan.Scan(src, dest)
@@ -66,7 +66,7 @@ func TestScanExcludesDestRootUnderSource(t *testing.T) {
 func TestScanFormatsClassified(t *testing.T) {
 	src := t.TempDir()
 	write(t, filepath.Join(src, "p.heic"))
-	found, err := scan.Scan(src, filepath.Join(src, "_trie"))
+	found, err := scan.Scan(src, filepath.Join(src, "_sorted"))
 	if err != nil {
 		t.Fatal(err)
 	}

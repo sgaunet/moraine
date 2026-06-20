@@ -15,13 +15,13 @@ import (
 
 // ErrInvalidDestSubdir is returned when a computed destination subdirectory
 // would escape the destination root (anti-traversal).
-var ErrInvalidDestSubdir = errors.New("sous-répertoire de destination invalide")
+var ErrInvalidDestSubdir = errors.New("invalid destination subdirectory")
 
 // safeJoin resolves subdir under root and guarantees the result stays within
 // root. Absolute subdirs and ".." escapes are rejected (anti-traversal).
 func safeJoin(root, subdir string) (string, error) {
 	if filepath.IsAbs(subdir) {
-		return "", fmt.Errorf("%w: chemin absolu %q interdit", ErrInvalidDestSubdir, subdir)
+		return "", fmt.Errorf("%w: absolute path %q is not allowed", ErrInvalidDestSubdir, subdir)
 	}
 	joined := filepath.Join(root, subdir)
 	rel, err := filepath.Rel(root, joined)
@@ -29,7 +29,7 @@ func safeJoin(root, subdir string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidDestSubdir, err.Error())
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: %q sortirait du répertoire de destination", ErrInvalidDestSubdir, subdir)
+		return "", fmt.Errorf("%w: %q would escape the destination directory", ErrInvalidDestSubdir, subdir)
 	}
 	return joined, nil
 }

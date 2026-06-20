@@ -1,10 +1,13 @@
 package config_test
 
 import (
+	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,16 +41,16 @@ func TestParseDefaults(t *testing.T) {
 }
 
 func TestParseCustomThemes(t *testing.T) {
-	cfg, err := config.Parse([]string{"-themes", "famille, montagne ,fete", "-fallback-theme", "divers", "/src"})
+	cfg, err := config.Parse([]string{"-themes", "friends, hiking ,party", "-fallback-theme", "misc", "/src"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []string{"famille", "montagne", "fete"}
+	want := []string{"friends", "hiking", "party"}
 	if !reflect.DeepEqual(cfg.Themes, want) {
 		t.Errorf("Themes: want %v, got %v", want, cfg.Themes)
 	}
-	if cfg.FallbackTheme != "divers" {
-		t.Errorf("Fallback: want divers, got %q", cfg.FallbackTheme)
+	if cfg.FallbackTheme != "misc" {
+		t.Errorf("Fallback: want misc, got %q", cfg.FallbackTheme)
 	}
 }
 
@@ -75,6 +78,43 @@ func TestParseErrors(t *testing.T) {
 				t.Fatalf("expected error for %v", tc.args)
 			}
 		})
+	}
+}
+
+func TestParseHelp(t *testing.T) {
+	for _, arg := range []string{"-help", "-h"} {
+		if _, err := config.Parse([]string{arg}); !errors.Is(err, config.ErrHelp) {
+			t.Errorf("Parse(%q): want ErrHelp, got %v", arg, err)
+		}
+	}
+}
+
+func TestParseVersion(t *testing.T) {
+	cfg, err := config.Parse([]string{"-version"}) // no source required
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.ShowVersion {
+		t.Error("want ShowVersion true for -version")
+	}
+}
+
+func TestWriteUsage(t *testing.T) {
+	var buf bytes.Buffer
+	config.WriteUsage(&buf)
+	out := buf.String()
+
+	wants := []string{
+		"-dest", "-gap", "-sample", "-model", "-ollama-url",
+		"-themes", "-fallback-theme", "-log-level", "-version",
+		config.DefaultThemes,              // default theme set
+		"<theme>/<year>/<year-month-day>", // destination layout
+		"Exit codes", "Examples",          // sections
+	}
+	for _, w := range wants {
+		if !strings.Contains(out, w) {
+			t.Errorf("WriteUsage output missing %q", w)
+		}
 	}
 }
 

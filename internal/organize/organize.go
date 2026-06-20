@@ -77,7 +77,7 @@ func (o *Organizer) dir(theme string, date time.Time) (string, error) {
 		return "", err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("création du dossier %q: %w", dir, err)
+		return "", fmt.Errorf("creating directory %q: %w", dir, err)
 	}
 	return dir, nil
 }
@@ -89,7 +89,7 @@ func (o *Organizer) placeOne(dir, src, name string) (string, Action, error) {
 	if exists(target) {
 		identical, err := sameContent(src, target)
 		if err != nil {
-			return target, "", fmt.Errorf("comparaison %q: %w", target, err)
+			return target, "", fmt.Errorf("comparing %q: %w", target, err)
 		}
 		if identical {
 			return target, ActionSkippedIdentical, nil

@@ -112,7 +112,7 @@ func TestPromptListsEveryTheme(t *testing.T) {
 
 func TestClassifyLogsRejectedAnswer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"message":{"content":"plage"}}`)) // not in the set
+		_, _ = w.Write([]byte(`{"message":{"content":"beach"}}`)) // not in the set
 	}))
 	defer srv.Close()
 
@@ -123,7 +123,7 @@ func TestClassifyLogsRejectedAnswer(t *testing.T) {
 		t.Fatal("expected error for out-of-set answer")
 	}
 	out := buf.String()
-	if !strings.Contains(out, "repli") || !strings.Contains(out, "plage") {
-		t.Errorf("expected a warn log naming the rejected answer 'plage', got:\n%s", out)
+	if !strings.Contains(out, "fallback") || !strings.Contains(out, "beach") {
+		t.Errorf("expected a warn log naming the rejected answer 'beach', got:\n%s", out)
 	}
 }
