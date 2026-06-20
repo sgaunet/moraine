@@ -44,16 +44,11 @@ builds:
 
     # Target architectures
     # Options: amd64, arm64, arm, 386, ppc64le, s390x
+    # NOTE: 32-bit arm (armv6/v7) is intentionally excluded — the imagemeta
+    # dependency overflows int on 32-bit and has no fixed release.
     goarch:
       - amd64   # x86_64: Most servers, desktops
-      - arm     # ARM 32-bit: Raspberry Pi, embedded
       - arm64   # ARM 64-bit: Apple Silicon, AWS Graviton, modern ARM
-
-    # ARM variants (only applies when goarch includes "arm")
-    # Options: "5", "6", "7"
-    goarm:
-      - "6"  # ARMv6: Raspberry Pi Zero/1
-      - "7"  # ARMv7: Raspberry Pi 2/3/4
 
     # Optional: Ignore specific combinations
     # ignore:

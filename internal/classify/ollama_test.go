@@ -59,7 +59,7 @@ func TestPreflightReady(t *testing.T) {
 func TestPreflightReadyUntaggedConfig(t *testing.T) {
 	srv := tagsServer(t, "qwen3-vl:8b")
 	defer srv.Close()
-	oc := classify.NewOllama(srv.URL, "qwen2.5vl", 3, themes) // no tag → match by base
+	oc := classify.NewOllama(srv.URL, "qwen3-vl", 3, themes) // no tag → match by base
 	if got := oc.Preflight(context.Background()); got != classify.StatusReady {
 		t.Fatalf("got %v; want StatusReady", got)
 	}

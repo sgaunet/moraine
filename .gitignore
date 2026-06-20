@@ -3,3 +3,6 @@
 /.claude
 /.specify
 /specs
+
+# GoReleaser build output
+/dist
