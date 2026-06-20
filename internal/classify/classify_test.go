@@ -18,6 +18,12 @@ import (
 	"github.com/sgaunet/moraine/internal/photo"
 )
 
+var themes = []string{"family", "mountain", "special-events", "nature"}
+
+func opts(c classify.Classifier) classify.Options {
+	return classify.Options{Themes: themes, Fallback: "other", Classifier: c}
+}
+
 // fakeClassifier is an in-memory Classifier (no network, no mock framework).
 type fakeClassifier struct {
 	label string
@@ -32,69 +38,67 @@ func (f *fakeClassifier) Classify(_ context.Context, _ photo.Cluster) (string, e
 
 func ptr(f float64) *float64 { return &f }
 
-func TestHeuristicMountainByAltitude(t *testing.T) {
-	c := photo.Cluster{
-		Start:  time.Now(),
-		Photos: []photo.Photo{{Altitude: ptr(2400)}},
-	}
-	if got := classify.Label(context.Background(), c, classify.Options{}); got != "montagne" {
-		t.Fatalf("Label = %q; want montagne", got)
+func TestHeuristicMountainInSet(t *testing.T) {
+	c := photo.Cluster{Start: time.Now(), Photos: []photo.Photo{{Altitude: ptr(2400)}}}
+	theme, method := classify.Label(context.Background(), c, opts(nil))
+	if theme != "mountain" || method != classify.MethodHeuristic {
+		t.Fatalf("got (%q,%q); want (mountain,heuristic)", theme, method)
 	}
 }
 
-func TestHeuristicTravelByDistance(t *testing.T) {
-	home := &photo.LatLng{Lat: 45.188, Lng: 5.724} // Grenoble
-	c := photo.Cluster{
-		Start:  time.Now(),
-		Photos: []photo.Photo{{GPS: &photo.LatLng{Lat: 41.902, Lng: 12.496}}}, // Rome (~640 km)
-	}
-	if got := classify.Label(context.Background(), c, classify.Options{Home: home}); got != "voyage" {
-		t.Fatalf("Label = %q; want voyage", got)
+func TestHeuristicMountainNotInSetFallsThrough(t *testing.T) {
+	c := photo.Cluster{Start: time.Now(), Photos: []photo.Photo{{Altitude: ptr(2400)}}}
+	o := classify.Options{Themes: []string{"family", "nature"}, Fallback: "other"}
+	theme, method := classify.Label(context.Background(), c, o)
+	if theme != "other" || method != classify.MethodFallback {
+		t.Fatalf("got (%q,%q); want (other,fallback)", theme, method)
 	}
 }
 
-func TestHeuristicNearHomeIsNotTravel(t *testing.T) {
-	home := &photo.LatLng{Lat: 45.188, Lng: 5.724}
-	start := time.Date(2025, 8, 12, 0, 0, 0, 0, time.UTC)
-	c := photo.Cluster{
-		Start:  start,
-		Photos: []photo.Photo{{GPS: &photo.LatLng{Lat: 45.19, Lng: 5.73}}}, // ~1 km away
-	}
-	// No mountain, near home, no classifier → date fallback.
-	if got := classify.Label(context.Background(), c, classify.Options{Home: home}); got != "2025-08-12" {
-		t.Fatalf("Label = %q; want date fallback 2025-08-12", got)
+func TestFallbackWhenNoClassifier(t *testing.T) {
+	c := photo.Cluster{Start: time.Now(), Photos: []photo.Photo{{}}}
+	theme, method := classify.Label(context.Background(), c, opts(nil))
+	if theme != "other" || method != classify.MethodFallback {
+		t.Fatalf("got (%q,%q); want (other,fallback)", theme, method)
 	}
 }
 
-func TestFallbackToDateWhenAllInconclusive(t *testing.T) {
-	start := time.Date(2024, 12, 25, 10, 0, 0, 0, time.UTC)
-	c := photo.Cluster{Start: start, Photos: []photo.Photo{{Taken: start}}}
-	got := classify.Label(context.Background(), c, classify.Options{})
-	if got != "2024-12-25" {
-		t.Fatalf("Label = %q; want 2024-12-25", got)
-	}
-}
-
-func TestClassifierUsedWhenHeuristicSilent(t *testing.T) {
-	fc := &fakeClassifier{label: "concert"}
-	start := time.Date(2024, 12, 25, 10, 0, 0, 0, time.UTC)
-	c := photo.Cluster{Start: start, Photos: []photo.Photo{{Taken: start}}}
-	got := classify.Label(context.Background(), c, classify.Options{Classifier: fc})
-	if got != "concert" {
-		t.Fatalf("Label = %q; want concert", got)
+func TestClassifierInSetSmallGroupIsModelAll(t *testing.T) {
+	fc := &fakeClassifier{label: "nature"}
+	c := photo.Cluster{Photos: []photo.Photo{{}, {}, {}}} // 3 → all
+	theme, method := classify.Label(context.Background(), c, opts(fc))
+	if theme != "nature" || method != classify.MethodModelAll {
+		t.Fatalf("got (%q,%q); want (nature,model-all)", theme, method)
 	}
 	if fc.calls != 1 {
-		t.Errorf("classifier called %d times; want 1", fc.calls)
+		t.Errorf("classifier calls = %d; want 1", fc.calls)
 	}
 }
 
-func TestClassifierErrorFallsBackToDate(t *testing.T) {
+func TestClassifierInSetLargeGroupIsModelSample(t *testing.T) {
+	fc := &fakeClassifier{label: "nature"}
+	c := photo.Cluster{Photos: []photo.Photo{{}, {}, {}, {}, {}}} // 5 → sample
+	theme, method := classify.Label(context.Background(), c, opts(fc))
+	if theme != "nature" || method != classify.MethodModelSample {
+		t.Fatalf("got (%q,%q); want (nature,model-sample)", theme, method)
+	}
+}
+
+func TestClassifierOutOfSetFallsBack(t *testing.T) {
+	fc := &fakeClassifier{label: "concert"} // not a configured theme
+	c := photo.Cluster{Photos: []photo.Photo{{}}}
+	theme, method := classify.Label(context.Background(), c, opts(fc))
+	if theme != "other" || method != classify.MethodFallback {
+		t.Fatalf("got (%q,%q); want (other,fallback)", theme, method)
+	}
+}
+
+func TestClassifierErrorFallsBack(t *testing.T) {
 	fc := &fakeClassifier{err: errors.New("ollama down")}
-	start := time.Date(2024, 12, 25, 10, 0, 0, 0, time.UTC)
-	c := photo.Cluster{Start: start, Photos: []photo.Photo{{Taken: start}}}
-	got := classify.Label(context.Background(), c, classify.Options{Classifier: fc})
-	if got != "2024-12-25" {
-		t.Fatalf("Label = %q; want date fallback on classifier error", got)
+	c := photo.Cluster{Photos: []photo.Photo{{}}}
+	theme, method := classify.Label(context.Background(), c, opts(fc))
+	if theme != "other" || method != classify.MethodFallback {
+		t.Fatalf("got (%q,%q); want (other,fallback)", theme, method)
 	}
 }
 
@@ -113,27 +117,46 @@ func writeTinyJPEG(t *testing.T, path string) {
 	}
 }
 
-func TestOllamaClassifyParsesCategory(t *testing.T) {
+func jpegCluster(t *testing.T, n int) photo.Cluster {
+	t.Helper()
+	dir := t.TempDir()
+	var ps []photo.Photo
+	for i := 0; i < n; i++ {
+		p := filepath.Join(dir, "p"+string(rune('0'+i))+".jpg")
+		writeTinyJPEG(t, p)
+		ps = append(ps, photo.Photo{Path: p, Name: filepath.Base(p), Format: photo.JPEG})
+	}
+	return photo.Cluster{Photos: ps}
+}
+
+func TestOllamaClassifyMapsInSetTheme(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/chat" {
 			t.Errorf("path = %q; want /api/chat", r.URL.Path)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"Sortie Montagne.\n"}}`))
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"Mountain.\n"}}`))
 	}))
 	defer srv.Close()
 
-	jpgPath := filepath.Join(t.TempDir(), "p.jpg")
-	writeTinyJPEG(t, jpgPath)
-	c := photo.Cluster{Photos: []photo.Photo{{Path: jpgPath, Format: photo.JPEG}}}
-
-	oc := classify.NewOllama(srv.URL, "qwen2.5vl:7b", 1)
-	got, err := oc.Classify(context.Background(), c)
+	oc := classify.NewOllama(srv.URL, "qwen2.5vl:7b", 1, themes)
+	got, err := oc.Classify(context.Background(), jpegCluster(t, 1))
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if got != "sortie montagne" {
-		t.Fatalf("category = %q; want normalised 'sortie montagne'", got)
+	if got != "mountain" {
+		t.Fatalf("theme = %q; want normalised 'mountain'", got)
+	}
+}
+
+func TestOllamaClassifyOutOfSetIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"content":"concert"}}`))
+	}))
+	defer srv.Close()
+
+	oc := classify.NewOllama(srv.URL, "m", 1, themes)
+	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err == nil {
+		t.Fatal("expected error for out-of-set answer")
 	}
 }
 
@@ -145,9 +168,8 @@ func TestOllamaClassifyRetriesThenFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	oc := classify.NewOllama(srv.URL, "m", 0)
-	_, err := oc.Classify(context.Background(), photo.Cluster{})
-	if err == nil {
+	oc := classify.NewOllama(srv.URL, "m", 1, themes)
+	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err == nil {
 		t.Fatal("expected error when Ollama returns 500")
 	}
 	if calls < 2 {
@@ -158,14 +180,31 @@ func TestOllamaClassifyRetriesThenFails(t *testing.T) {
 func TestOllamaClassifyTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(200 * time.Millisecond)
-		_, _ = w.Write([]byte(`{"message":{"content":"x"}}`))
+		_, _ = w.Write([]byte(`{"message":{"content":"mountain"}}`))
 	}))
 	defer srv.Close()
 
-	oc := classify.NewOllama(srv.URL, "m", 0)
+	oc := classify.NewOllama(srv.URL, "m", 1, themes)
 	oc.Timeout = 20 * time.Millisecond
-	_, err := oc.Classify(context.Background(), photo.Cluster{})
-	if err == nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err == nil {
 		t.Fatal("expected timeout error")
+	}
+}
+
+func TestOllamaClassifyHEICOnlyNoDecodableImage(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"message":{"content":"mountain"}}`))
+	}))
+	defer srv.Close()
+
+	c := photo.Cluster{Photos: []photo.Photo{{Path: "x.heic", Format: photo.HEIC}}}
+	oc := classify.NewOllama(srv.URL, "m", 3, themes)
+	if _, err := oc.Classify(context.Background(), c); err == nil {
+		t.Fatal("expected error: no decodable image to classify")
+	}
+	if calls != 0 {
+		t.Errorf("server called %d times; want 0 (HEIC not sent)", calls)
 	}
 }

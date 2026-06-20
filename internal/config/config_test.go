@@ -1,9 +1,10 @@
 package config_test
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
+	"reflect"
 	"testing"
 	"time"
 
@@ -11,116 +12,148 @@ import (
 )
 
 func TestParseDefaults(t *testing.T) {
-	cfg, err := config.Parse([]string{"/some/source"})
+	cfg, err := config.Parse([]string{"/some/src"})
 	if err != nil {
-		t.Fatalf("Parse: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Addr != "127.0.0.1:8080" {
-		t.Errorf("Addr = %q; want loopback default", cfg.Addr)
+	if cfg.Gap != time.Hour {
+		t.Errorf("Gap: want 1h, got %s", cfg.Gap)
 	}
-	if cfg.Gap != 4*time.Hour {
-		t.Errorf("Gap = %v; want 4h", cfg.Gap)
+	if cfg.Sample != config.DefaultSample {
+		t.Errorf("Sample: want %d, got %d", config.DefaultSample, cfg.Sample)
 	}
-	if cfg.Model != "qwen2.5vl:7b" {
-		t.Errorf("Model = %q; want qwen2.5vl:7b", cfg.Model)
+	if cfg.Model != config.DefaultModel {
+		t.Errorf("Model: want %q, got %q", config.DefaultModel, cfg.Model)
 	}
-	if cfg.Sample != 3 {
-		t.Errorf("Sample = %d; want 3", cfg.Sample)
+	if cfg.FallbackTheme != "other" {
+		t.Errorf("Fallback: want other, got %q", cfg.FallbackTheme)
 	}
-	if cfg.Home != nil {
-		t.Errorf("Home = %v; want nil by default", cfg.Home)
+	if cfg.LogLevel != slog.LevelInfo {
+		t.Errorf("LogLevel: want info, got %v", cfg.LogLevel)
+	}
+	want := []string{"family", "mountain", "special-events", "nature"}
+	if !reflect.DeepEqual(cfg.Themes, want) {
+		t.Errorf("Themes: want %v, got %v", want, cfg.Themes)
 	}
 }
 
-func TestParseDefaultDestUnderSource(t *testing.T) {
-	cfg, err := config.Parse([]string{"/photos/2025"})
+func TestParseCustomThemes(t *testing.T) {
+	cfg, err := config.Parse([]string{"-themes", "famille, montagne ,fete", "-fallback-theme", "divers", "/src"})
 	if err != nil {
-		t.Fatalf("Parse: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	want, _ := filepath.Abs(filepath.Join("/photos/2025", "_trie"))
-	if cfg.DestRoot != want {
-		t.Errorf("DestRoot = %q; want %q (<source>/_trie)", cfg.DestRoot, want)
+	want := []string{"famille", "montagne", "fete"}
+	if !reflect.DeepEqual(cfg.Themes, want) {
+		t.Errorf("Themes: want %v, got %v", want, cfg.Themes)
 	}
-}
-
-func TestParseExplicitDest(t *testing.T) {
-	cfg, err := config.Parse([]string{"-dest", "/elsewhere/sorted", "/photos/2025"})
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	want, _ := filepath.Abs("/elsewhere/sorted")
-	if cfg.DestRoot != want {
-		t.Errorf("DestRoot = %q; want %q", cfg.DestRoot, want)
+	if cfg.FallbackTheme != "divers" {
+		t.Errorf("Fallback: want divers, got %q", cfg.FallbackTheme)
 	}
 }
 
-func TestParseMissingSource(t *testing.T) {
-	_, err := config.Parse([]string{})
-	if err == nil {
-		t.Fatal("expected error for missing positional source argument")
+func TestParseErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"missing source", []string{}},
+		{"two sources", []string{"a", "b"}},
+		{"unknown flag addr", []string{"-addr", ":8080", "/src"}},
+		{"unknown flag home", []string{"-home", "1,2", "/src"}},
+		{"non-positive gap", []string{"-gap", "0", "/src"}},
+		{"negative sample", []string{"-sample", "-1", "/src"}},
+		{"invalid theme slug", []string{"-themes", "Bad Slug", "/src"}},
+		{"empty themes", []string{"-themes", " , ", "/src"}},
+		{"duplicate theme", []string{"-themes", "a,a", "/src"}},
+		{"fallback collides", []string{"-themes", "a,other", "/src"}},
+		{"invalid fallback slug", []string{"-fallback-theme", "Nope!", "/src"}},
+		{"invalid log level", []string{"-log-level", "verbose", "/src"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := config.Parse(tc.args); err == nil {
+				t.Fatalf("expected error for %v", tc.args)
+			}
+		})
 	}
 }
 
-func TestParseGapNonPositive(t *testing.T) {
-	for _, gap := range []string{"0", "-1h"} {
-		if _, err := config.Parse([]string{"-gap", gap, "/src"}); err == nil {
-			t.Errorf("expected error for -gap %s", gap)
+func TestParseLogLevels(t *testing.T) {
+	for in, want := range map[string]slog.Level{
+		"debug": slog.LevelDebug,
+		"info":  slog.LevelInfo,
+		"warn":  slog.LevelWarn,
+		"error": slog.LevelError,
+	} {
+		cfg, err := config.Parse([]string{"-log-level", in, "/src"})
+		if err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		if cfg.LogLevel != want {
+			t.Errorf("%s: want %v, got %v", in, want, cfg.LogLevel)
 		}
 	}
 }
 
-func TestParseHome(t *testing.T) {
-	cfg, err := config.Parse([]string{"-home", "45.188,5.724", "/src"})
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if cfg.Home == nil || cfg.Home.Lat != 45.188 || cfg.Home.Lng != 5.724 {
-		t.Fatalf("Home = %+v; want {45.188, 5.724}", cfg.Home)
-	}
-}
-
-func TestParseHomeUnparsable(t *testing.T) {
-	for _, h := range []string{"not-coords", "45.0", "a,b", "1,2,3"} {
-		if _, err := config.Parse([]string{"-home", h, "/src"}); err == nil {
-			t.Errorf("expected error for -home %q", h)
-		}
-	}
-}
-
-func TestValidateSourceMissing(t *testing.T) {
-	cfg, err := config.Parse([]string{"/definitely/does/not/exist/xyz"})
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected Validate error for non-existent source")
-	}
-}
-
-func TestValidateSourceIsFile(t *testing.T) {
-	f := filepath.Join(t.TempDir(), "afile.txt")
-	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Parse([]string{f})
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected Validate error when source is a file, not a directory")
-	}
-}
-
-func TestValidateOK(t *testing.T) {
+func TestValidateDirectorySource(t *testing.T) {
 	dir := t.TempDir()
 	cfg, err := config.Parse([]string{dir})
 	if err != nil {
-		t.Fatalf("Parse: %v", err)
+		t.Fatal(err)
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
+		t.Fatalf("validate: %v", err)
 	}
-	if !strings.HasSuffix(cfg.DestRoot, "_trie") {
-		t.Errorf("DestRoot = %q; want suffix _trie", cfg.DestRoot)
+	if !cfg.SourceIsDir {
+		t.Error("want SourceIsDir true for a directory")
+	}
+	if cfg.DestRoot != filepath.Join(dir, config.DefaultDestName) {
+		t.Errorf("DestRoot: want %q, got %q", filepath.Join(dir, config.DefaultDestName), cfg.DestRoot)
+	}
+}
+
+func TestValidateFileSource(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "photo.jpg")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Parse([]string{file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if cfg.SourceIsDir {
+		t.Error("want SourceIsDir false for a file")
+	}
+	if cfg.DestRoot != filepath.Join(dir, config.DefaultDestName) {
+		t.Errorf("DestRoot: want %q, got %q", filepath.Join(dir, config.DefaultDestName), cfg.DestRoot)
+	}
+}
+
+func TestValidateMissingSource(t *testing.T) {
+	cfg, err := config.Parse([]string{filepath.Join(t.TempDir(), "nope")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for missing source")
+	}
+}
+
+func TestValidateExplicitDest(t *testing.T) {
+	dir := t.TempDir()
+	dest := t.TempDir()
+	cfg, err := config.Parse([]string{"-dest", dest, dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DestRoot != dest {
+		t.Errorf("DestRoot: want %q, got %q", dest, cfg.DestRoot)
 	}
 }

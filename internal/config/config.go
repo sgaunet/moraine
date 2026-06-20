@@ -8,52 +8,59 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
 	"time"
-
-	"github.com/sgaunet/moraine/internal/photo"
 )
 
-// Config holds all runtime parameters for a moraine session.
+// Config holds all runtime parameters for a moraine organize run.
 type Config struct {
-	Source    string        // absolute path of the scanned directory
-	DestRoot  string        // absolute path where committed groups are moved (excluded from scan)
-	Addr      string        // listen address (loopback by default)
-	Model     string        // Ollama vision model
-	Gap       time.Duration // max temporal gap within an event
-	Home      *photo.LatLng // optional home coordinate for travel heuristic
-	Sample    int           // thumbnails sampled per group for the model
-	OllamaURL string        // base URL of the local Ollama API
+	Source        string        // absolute path of the source (a directory → batch, a file → single photo)
+	SourceIsDir   bool          // resolved by Validate: directory (batch) vs regular file (single)
+	DestRoot      string        // absolute path of the copy destination root (excluded from scan)
+	Model         string        // Ollama vision model
+	Gap           time.Duration // max temporal gap within an event
+	Sample        int           // photos sampled per large group for the model (0 disables the model stage)
+	OllamaURL     string        // base URL of the local Ollama API
+	Themes        []string      // configured theme slugs (folder names)
+	FallbackTheme string        // theme slug used when none is confidently chosen
+	LogLevel      slog.Level    // logging verbosity
 }
 
 // Default values surfaced in the CLI contract.
 const (
-	DefaultAddr      = "127.0.0.1:8080"
 	DefaultModel     = "qwen2.5vl:7b"
-	DefaultGap       = 4 * time.Hour
+	DefaultGap       = time.Hour
 	DefaultSample    = 3
 	DefaultOllamaURL = "http://127.0.0.1:11434"
+	DefaultThemes    = "family,mountain,special-events,nature"
+	DefaultFallback  = "other"
+	DefaultLogLevel  = "info"
 	DefaultDestName  = "_trie"
 )
 
+// slugPattern constrains theme slugs to filesystem-safe lowercase tokens.
+var slugPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
 // Parse builds a Config from CLI-style arguments (without the program name).
 // It reports usage/argument errors (exit code 2 at the call site). Filesystem
-// existence checks are deferred to Validate.
+// existence checks and destination-default resolution are deferred to Validate.
 func Parse(args []string) (Config, error) {
 	fs := flag.NewFlagSet("moraine", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // caller renders usage; avoid flag's own noise
 
 	var (
-		dest   = fs.String("dest", "", "racine de destination (défaut <source>/_trie ; exclue du scan)")
-		addr   = fs.String("addr", DefaultAddr, "adresse d'écoute du serveur")
-		model  = fs.String("model", DefaultModel, "modèle vision Ollama")
-		gap    = fs.Duration("gap", DefaultGap, "écart temporel max au sein d'un événement")
-		home   = fs.String("home", "", "coordonnées du domicile \"lat,lng\" (détection voyage)")
-		sample = fs.Int("sample", DefaultSample, "photos échantillonnées par groupe pour le modèle")
-		ollama = fs.String("ollama-url", DefaultOllamaURL, "URL de base de l'API Ollama locale")
+		dest     = fs.String("dest", "", "racine de destination (défaut <source>/_trie ; exclue du scan)")
+		model    = fs.String("model", DefaultModel, "modèle vision Ollama")
+		gap      = fs.Duration("gap", DefaultGap, "écart temporel max au sein d'un événement")
+		sample   = fs.Int("sample", DefaultSample, "photos échantillonnées par grand groupe (0 désactive le modèle)")
+		ollama   = fs.String("ollama-url", DefaultOllamaURL, "URL de base de l'API Ollama locale")
+		themes   = fs.String("themes", DefaultThemes, "thèmes (slugs séparés par des virgules)")
+		fallback = fs.String("fallback-theme", DefaultFallback, "thème de repli quand aucun n'est déterminé")
+		logLevel = fs.String("log-level", DefaultLogLevel, "verbosité des logs : debug|info|warn|error")
 	)
 
 	if err := fs.Parse(args); err != nil {
@@ -62,10 +69,10 @@ func Parse(args []string) (Config, error) {
 
 	rest := fs.Args()
 	if len(rest) == 0 {
-		return Config{}, errors.New("dossier source manquant : usage `moraine [flags] <dossier-source>`")
+		return Config{}, errors.New("source manquante : usage `moraine [flags] <dossier-ou-fichier>`")
 	}
 	if len(rest) > 1 {
-		return Config{}, fmt.Errorf("un seul dossier source est attendu, reçu %d (%v)", len(rest), rest)
+		return Config{}, fmt.Errorf("une seule source est attendue, reçu %d (%v)", len(rest), rest)
 	}
 
 	if *gap <= 0 {
@@ -75,68 +82,109 @@ func Parse(args []string) (Config, error) {
 		return Config{}, fmt.Errorf("-sample doit être positif ou nul (reçu %d)", *sample)
 	}
 
+	level, err := parseLevel(*logLevel)
+	if err != nil {
+		return Config{}, err
+	}
+
+	themeList, err := parseThemes(*themes, *fallback)
+	if err != nil {
+		return Config{}, err
+	}
+
 	source, err := filepath.Abs(rest[0])
 	if err != nil {
-		return Config{}, fmt.Errorf("dossier source illisible %q : %w", rest[0], err)
+		return Config{}, fmt.Errorf("source illisible %q : %w", rest[0], err)
 	}
 
-	destPath := *dest
-	if destPath == "" {
-		destPath = filepath.Join(source, DefaultDestName)
-	}
-	destRoot, err := filepath.Abs(destPath)
-	if err != nil {
-		return Config{}, fmt.Errorf("répertoire de destination illisible %q : %w", destPath, err)
-	}
-
-	var homeLL *photo.LatLng
-	if strings.TrimSpace(*home) != "" {
-		homeLL, err = parseHome(*home)
+	destRoot := ""
+	if strings.TrimSpace(*dest) != "" {
+		destRoot, err = filepath.Abs(*dest)
 		if err != nil {
-			return Config{}, err
+			return Config{}, fmt.Errorf("répertoire de destination illisible %q : %w", *dest, err)
 		}
 	}
 
 	return Config{
-		Source:    source,
-		DestRoot:  destRoot,
-		Addr:      *addr,
-		Model:     *model,
-		Gap:       *gap,
-		Home:      homeLL,
-		Sample:    *sample,
-		OllamaURL: *ollama,
+		Source:        source,
+		DestRoot:      destRoot,
+		Model:         *model,
+		Gap:           *gap,
+		Sample:        *sample,
+		OllamaURL:     *ollama,
+		Themes:        themeList,
+		FallbackTheme: strings.TrimSpace(*fallback),
+		LogLevel:      level,
 	}, nil
 }
 
 // Validate performs runtime checks (exit code 1 at the call site): the source
-// must exist and be a directory.
-func (c Config) Validate() error {
+// must exist (file or directory) and the destination default is resolved.
+func (c *Config) Validate() error {
 	info, err := os.Stat(c.Source)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("le dossier source %q n'existe pas", c.Source)
+			return fmt.Errorf("la source %q n'existe pas", c.Source)
 		}
-		return fmt.Errorf("le dossier source %q n'est pas lisible : %w", c.Source, err)
+		return fmt.Errorf("la source %q n'est pas lisible : %w", c.Source, err)
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("le chemin source %q n'est pas un dossier", c.Source)
+	c.SourceIsDir = info.IsDir()
+
+	if c.DestRoot == "" {
+		base := c.Source
+		if !c.SourceIsDir {
+			base = filepath.Dir(c.Source)
+		}
+		c.DestRoot = filepath.Join(base, DefaultDestName)
 	}
 	return nil
 }
 
-func parseHome(s string) (*photo.LatLng, error) {
-	parts := strings.Split(s, ",")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("-home doit être au format \"lat,lng\" (reçu %q)", s)
+// parseThemes splits a comma-separated slug list, validating each slug and the
+// fallback, and rejecting empties, duplicates, and a fallback that collides
+// with a theme.
+func parseThemes(list, fallback string) ([]string, error) {
+	fallback = strings.TrimSpace(fallback)
+	if !slugPattern.MatchString(fallback) {
+		return nil, fmt.Errorf("-fallback-theme invalide %q : attendu [a-z0-9-]", fallback)
 	}
-	lat, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-	if err != nil {
-		return nil, fmt.Errorf("-home : latitude invalide %q : %w", parts[0], err)
+	seen := make(map[string]struct{})
+	var themes []string
+	for raw := range strings.SplitSeq(list, ",") {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		if !slugPattern.MatchString(s) {
+			return nil, fmt.Errorf("thème invalide %q : attendu [a-z0-9-]", s)
+		}
+		if _, dup := seen[s]; dup {
+			return nil, fmt.Errorf("thème en double %q", s)
+		}
+		if s == fallback {
+			return nil, fmt.Errorf("le thème %q ne peut pas être identique au thème de repli", s)
+		}
+		seen[s] = struct{}{}
+		themes = append(themes, s)
 	}
-	lng, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-	if err != nil {
-		return nil, fmt.Errorf("-home : longitude invalide %q : %w", parts[1], err)
+	if len(themes) == 0 {
+		return nil, errors.New("-themes ne doit pas être vide")
 	}
-	return &photo.LatLng{Lat: lat, Lng: lng}, nil
+	return themes, nil
+}
+
+// parseLevel maps a textual level to slog.Level.
+func parseLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("-log-level invalide %q : attendu debug|info|warn|error", s)
+	}
 }

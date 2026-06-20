@@ -2,10 +2,7 @@ module github.com/sgaunet/moraine
 
 go 1.26.2
 
-require (
-	github.com/evanoberholster/imagemeta v1.0.0
-	golang.org/x/image v0.42.0
-)
+require github.com/evanoberholster/imagemeta v1.0.0
 
 require (
 	github.com/philhofer/fwd v1.2.0 // indirect

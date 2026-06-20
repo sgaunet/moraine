@@ -1,14 +1,24 @@
-package store
+// Package organize places photos onto disk under a deterministic
+// destination/<theme>/<year>/<year-month-day>/ layout. It only ever copies
+// (originals are preserved) and never overwrites or loses a file: identical
+// targets are skipped and same-named different content is suffixed. Business
+// logic only — no transport or global state (Constitution Principle III).
+package organize
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
+// ErrInvalidDestSubdir is returned when a computed destination subdirectory
+// would escape the destination root (anti-traversal).
+var ErrInvalidDestSubdir = errors.New("sous-répertoire de destination invalide")
+
 // safeJoin resolves subdir under root and guarantees the result stays within
-// root (VR-1, anti-traversal). Absolute subdirs and ".." escapes are rejected.
+// root. Absolute subdirs and ".." escapes are rejected (anti-traversal).
 func safeJoin(root, subdir string) (string, error) {
 	if filepath.IsAbs(subdir) {
 		return "", fmt.Errorf("%w: chemin absolu %q interdit", ErrInvalidDestSubdir, subdir)
@@ -25,8 +35,8 @@ func safeJoin(root, subdir string) (string, error) {
 }
 
 // uniqueName returns a file name under dir that does not collide with an
-// existing file, suffixing " (1)", " (2)", … as needed (VR-3 / I4). It never
-// proposes a name that would overwrite an existing file.
+// existing file, suffixing " (1)", " (2)", … as needed. It never proposes a
+// name that would overwrite an existing file.
 func uniqueName(dir, name string) string {
 	if !exists(filepath.Join(dir, name)) {
 		return name
