@@ -41,7 +41,7 @@ const (
 	DefaultGap       = 6 * time.Hour
 	DefaultSample    = 3
 	DefaultOllamaURL = "http://127.0.0.1:11434"
-	DefaultThemes    = "family,mountain,special-events,nature"
+	DefaultThemes    = "mountain,special-events,cook,family"
 	DefaultFallback  = "other"
 	DefaultLogLevel  = "info"
 	DefaultDestName  = "_sorted"

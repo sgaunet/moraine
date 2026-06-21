@@ -34,7 +34,7 @@ const (
 const SmallGroupMax = 3
 
 // mountainAltitudeM tunes the heuristic threshold.
-const mountainAltitudeM = 1500.0
+const mountainAltitudeM = 1000.0
 
 // Options configures the labelling pipeline.
 type Options struct {

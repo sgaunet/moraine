@@ -34,7 +34,7 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel: want info, got %v", cfg.LogLevel)
 	}
-	want := []string{"family", "mountain", "special-events", "nature"}
+	want := []string{"mountain", "special-events", "cook", "family"}
 	if !reflect.DeepEqual(cfg.Themes, want) {
 		t.Errorf("Themes: want %v, got %v", want, cfg.Themes)
 	}
