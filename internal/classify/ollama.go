@@ -271,6 +271,8 @@ func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, 
 		answer = structured.Category
 	}
 	theme := normaliseTheme(answer, o.Themes)
+	o.log().Debug("model answer",
+		"raw", strings.TrimSpace(parsed.Message.Content), "theme", theme)
 	if theme == "" {
 		return "", fmt.Errorf("category out of set: %q", strings.TrimSpace(parsed.Message.Content))
 	}

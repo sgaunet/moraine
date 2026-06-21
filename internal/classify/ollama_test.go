@@ -168,6 +168,41 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+func TestClassifyDebugLogsAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"content":"nature"}}`)) // valid, in-set
+	}))
+	defer srv.Close()
+
+	buf := &safeBuffer{}
+	oc := classify.NewOllama(srv.URL, "m", 1, themes)
+	oc.Logger = slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "model answer") || !strings.Contains(out, "nature") {
+		t.Errorf("expected a debug log naming the model answer 'nature', got:\n%s", out)
+	}
+}
+
+func TestClassifyAnswerNotLoggedAtInfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"content":"nature"}}`)) // valid, in-set
+	}))
+	defer srv.Close()
+
+	buf := &safeBuffer{}
+	oc := classify.NewOllama(srv.URL, "m", 1, themes)
+	oc.Logger = slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if out := buf.String(); strings.Contains(out, "model answer") {
+		t.Errorf("did not expect the model answer log at info level, got:\n%s", out)
+	}
+}
+
 func TestClassifyLogsRejectedAnswer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"message":{"content":"beach"}}`)) // not in the set
