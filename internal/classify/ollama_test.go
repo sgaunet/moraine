@@ -85,6 +85,7 @@ func TestPreflightUnreachable(t *testing.T) {
 
 func TestPromptListsEveryTheme(t *testing.T) {
 	// The prompt must give the model the full category list (user requirement).
+	// Instructions now span a system + user message, so check across both.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var got struct {
 			Messages []struct {
@@ -94,10 +95,13 @@ func TestPromptListsEveryTheme(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatal(err)
 		}
-		content := got.Messages[0].Content
+		var prompt string
+		for _, m := range got.Messages {
+			prompt += m.Content + "\n"
+		}
 		for _, theme := range themes {
-			if !strings.Contains(content, theme) {
-				t.Errorf("prompt missing theme %q\nprompt: %s", theme, content)
+			if !strings.Contains(prompt, theme) {
+				t.Errorf("prompt missing theme %q\nprompt: %s", theme, prompt)
 			}
 		}
 		_, _ = w.Write([]byte(`{"message":{"content":"nature"}}`))
@@ -108,6 +112,60 @@ func TestPromptListsEveryTheme(t *testing.T) {
 	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
+}
+
+func TestClassifyRequestCarriesEnumSchema(t *testing.T) {
+	// The request must use a system + user message and constrain the answer with
+	// a JSON Schema enum equal to the configured themes.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got struct {
+			Messages []struct {
+				Role string `json:"role"`
+			} `json:"messages"`
+			Format struct {
+				Properties struct {
+					Category struct {
+						Enum []string `json:"enum"`
+					} `json:"category"`
+				} `json:"properties"`
+			} `json:"format"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		roles := []string{}
+		for _, m := range got.Messages {
+			roles = append(roles, m.Role)
+		}
+		if len(roles) != 2 || roles[0] != "system" || roles[1] != "user" {
+			t.Errorf("message roles = %v; want [system user]", roles)
+		}
+		if got.Format.Properties.Category.Enum == nil {
+			t.Fatalf("request carried no format.properties.category.enum")
+		}
+		if !equalStrings(got.Format.Properties.Category.Enum, themes) {
+			t.Errorf("enum = %v; want %v", got.Format.Properties.Category.Enum, themes)
+		}
+		_, _ = w.Write([]byte(`{"message":{"content":"{\"category\":\"nature\"}"}}`))
+	}))
+	defer srv.Close()
+
+	oc := classify.NewOllama(srv.URL, "m", 1, themes)
+	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestClassifyLogsRejectedAnswer(t *testing.T) {

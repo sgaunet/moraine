@@ -95,7 +95,7 @@ func (o *OllamaClassifier) Preflight(ctx context.Context) Status {
 	}
 
 	var tags tagsResponse
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return StatusUnreachable
 	}
@@ -133,23 +133,60 @@ type chatRequest struct {
 	Model    string        `json:"model"`
 	Messages []chatMessage `json:"messages"`
 	Stream   bool          `json:"stream"`
+	Format   any           `json:"format,omitempty"`
 }
 
 type chatResponse struct {
 	Message chatMessage `json:"message"`
 }
 
+// schemaProperty is one property of a structured-output JSON Schema.
+type schemaProperty struct {
+	Type string   `json:"type"`
+	Enum []string `json:"enum,omitempty"`
+}
+
+// responseSchema is the JSON Schema sent in chatRequest.Format. Its enum
+// constrains Ollama's decoding so the model cannot emit an out-of-set theme.
+type responseSchema struct {
+	Type       string                    `json:"type"`
+	Properties map[string]schemaProperty `json:"properties"`
+	Required   []string                  `json:"required"`
+}
+
+// structuredAnswer is the shape the model is asked to return.
+type structuredAnswer struct {
+	Category string `json:"category"`
+}
+
 // slugNonWord matches runs of characters that are not slug-safe.
 var slugNonWord = regexp.MustCompile(`[^a-z0-9]+`)
 
-// prompt instructs the model to answer with exactly one configured theme slug.
-// It lists the allowed categories and forbids inventing new ones.
-func (o *OllamaClassifier) prompt() string {
-	return "You are classifying a set of photos from the same moment into ONE SINGLE category. " +
-		"Allowed categories (answer with EXACTLY one, in lowercase): " +
-		strings.Join(o.Themes, ", ") + ". " +
-		"If none fits perfectly, choose the closest from the list. " +
-		"Answer with a single word from the list, no sentence or punctuation."
+// systemPrompt is the stable output contract sent as the system message. It
+// fixes the model's role and the JSON shape; the per-request category list lives
+// in userPrompt. Naming JSON here is recommended alongside the Format schema.
+func (o *OllamaClassifier) systemPrompt() string {
+	return "You are an image classifier. You are shown several photos taken at the same moment. " +
+		`Respond ONLY with a JSON object of the form {"category": "<one allowed category>"}. ` +
+		"The category MUST be exactly one value from the allowed list, in lowercase, with no extra text."
+}
+
+// userPrompt carries the per-request data: the allowed categories and the task.
+func (o *OllamaClassifier) userPrompt() string {
+	return "Allowed categories: " + strings.Join(o.Themes, ", ") + ". " +
+		"If none fits perfectly, choose the closest. " +
+		"Classify these photos into exactly one of the allowed categories."
+}
+
+// schema constrains the model to answer with exactly one configured theme.
+func (o *OllamaClassifier) schema() responseSchema {
+	return responseSchema{
+		Type: "object",
+		Properties: map[string]schemaProperty{
+			"category": {Type: "string", Enum: o.Themes},
+		},
+		Required: []string{"category"},
+	}
 }
 
 // Classify returns one configured theme slug for the cluster, or an error on
@@ -168,9 +205,13 @@ func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (strin
 		return "", fmt.Errorf("no decodable image to classify")
 	}
 	reqBody := chatRequest{
-		Model:    o.Model,
-		Stream:   false,
-		Messages: []chatMessage{{Role: "user", Content: o.prompt(), Images: images}},
+		Model:  o.Model,
+		Stream: false,
+		Format: o.schema(),
+		Messages: []chatMessage{
+			{Role: "system", Content: o.systemPrompt()},
+			{Role: "user", Content: o.userPrompt(), Images: images},
+		},
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
@@ -209,7 +250,7 @@ func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", err
 	}
@@ -221,7 +262,15 @@ func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, 
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("unreadable ollama response: %w", err)
 	}
-	theme := normaliseTheme(parsed.Message.Content, o.Themes)
+	// Prefer the structured {"category": "..."} answer; fall back to the raw
+	// content for models that ignore the Format schema. normaliseTheme then
+	// validates either against the configured set.
+	answer := parsed.Message.Content
+	var structured structuredAnswer
+	if err := json.Unmarshal([]byte(answer), &structured); err == nil && structured.Category != "" {
+		answer = structured.Category
+	}
+	theme := normaliseTheme(answer, o.Themes)
 	if theme == "" {
 		return "", fmt.Errorf("category out of set: %q", strings.TrimSpace(parsed.Message.Content))
 	}

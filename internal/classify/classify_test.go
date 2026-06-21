@@ -148,6 +148,22 @@ func TestOllamaClassifyMapsInSetTheme(t *testing.T) {
 	}
 }
 
+func TestOllamaClassifyParsesStructuredJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"{\"category\":\"mountain\"}"}}`))
+	}))
+	defer srv.Close()
+
+	oc := classify.NewOllama(srv.URL, "qwen3-vl:8b", 1, themes)
+	got, err := oc.Classify(context.Background(), jpegCluster(t, 1))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got != "mountain" {
+		t.Fatalf("theme = %q; want 'mountain' from structured answer", got)
+	}
+}
+
 func TestOllamaClassifyOutOfSetIsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"message":{"content":"concert"}}`))
