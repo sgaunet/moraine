@@ -1,0 +1,8 @@
+# Binaries
+/moraine
+/.claude
+/.specify
+/specs
+
+# GoReleaser build output
+/dist
