@@ -2,9 +2,11 @@ package classify
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/jpeg"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,14 +94,88 @@ func TestSampleImagesSmallSendsAllLargeSamples(t *testing.T) {
 		}
 		return photo.Cluster{Photos: ps}
 	}
+	oc := func(n int) *OllamaClassifier { return &OllamaClassifier{Sample: n, Logger: slog.Default()} }
+	ctx := context.Background()
 
-	if got := sampleImages(mkCluster(2), 3); len(got) != 2 {
+	if got := oc(3).sampleImages(ctx, mkCluster(2)); len(got) != 2 {
 		t.Errorf("small group: sent %d images; want 2 (all)", len(got))
 	}
-	if got := sampleImages(mkCluster(5), 3); len(got) != 3 {
+	if got := oc(3).sampleImages(ctx, mkCluster(5)); len(got) != 3 {
 		t.Errorf("large group: sent %d images; want 3 (sample)", len(got))
 	}
-	if got := sampleImages(mkCluster(5), 0); got != nil {
+	if got := oc(0).sampleImages(ctx, mkCluster(5)); got != nil {
 		t.Errorf("sample 0: want nil, got %v", got)
 	}
+}
+
+// fakeRaw is a non-nil RawExtractor so RAW photos become model-eligible; the
+// returned bytes are irrelevant to choosePhotos (which only selects).
+type fakeRaw struct{}
+
+func (fakeRaw) Extract(context.Context, string) ([]byte, error) { return []byte("PREVIEW"), nil }
+
+func countFormats(ps []photo.Photo) (jpegs, raws int) {
+	for _, p := range ps {
+		switch {
+		case p.Format.Decodable():
+			jpegs++
+		case p.Format.IsRAW():
+			raws++
+		}
+	}
+	return
+}
+
+func TestChoosePhotosRAWEligibilityAndPreference(t *testing.T) {
+	jpg := photo.Photo{Path: "j.jpg", Format: photo.JPEG}
+	raw := photo.Photo{Path: "r.dng", Format: photo.RAW}
+	heic := photo.Photo{Path: "h.heic", Format: photo.HEIC}
+	rep := func(p photo.Photo, n int) []photo.Photo {
+		out := make([]photo.Photo, n)
+		for i := range out {
+			out[i] = p
+		}
+		return out
+	}
+
+	t.Run("small mixed group uses every eligible incl RAW", func(t *testing.T) {
+		o := &OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		got := o.choosePhotos(photo.Cluster{Photos: []photo.Photo{jpg, raw}}) // 2 ≤ 3
+		j, r := countFormats(got)
+		if j != 1 || r != 1 {
+			t.Errorf("small group chose jpeg=%d raw=%d; want 1 and 1", j, r)
+		}
+	})
+
+	t.Run("large group prefers JPEG, no RAW extracted when enough JPEG", func(t *testing.T) {
+		o := &OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		photos := append(rep(jpg, 4), rep(raw, 2)...) // 6 photos > 3
+		j, r := countFormats(o.choosePhotos(photo.Cluster{Photos: photos}))
+		if j != 3 || r != 0 {
+			t.Errorf("large group chose jpeg=%d raw=%d; want 3 and 0 (RAW avoided)", j, r)
+		}
+	})
+
+	t.Run("large group fills sample with RAW when JPEG scarce", func(t *testing.T) {
+		o := &OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		photos := append(rep(jpg, 1), rep(raw, 5)...) // 6 photos > 3
+		j, r := countFormats(o.choosePhotos(photo.Cluster{Photos: photos}))
+		if j != 1 || r != 2 {
+			t.Errorf("large group chose jpeg=%d raw=%d; want 1 and 2 (filled with RAW)", j, r)
+		}
+	})
+
+	t.Run("RAW ineligible without an extractor", func(t *testing.T) {
+		o := &OllamaClassifier{Sample: 3} // Raw nil
+		if got := o.choosePhotos(photo.Cluster{Photos: []photo.Photo{raw}}); got != nil {
+			t.Errorf("RAW without extractor must be skipped; got %v", got)
+		}
+	})
+
+	t.Run("HEIC excluded", func(t *testing.T) {
+		o := &OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		if got := o.choosePhotos(photo.Cluster{Photos: []photo.Photo{heic}}); got != nil {
+			t.Errorf("HEIC must be excluded; got %v", got)
+		}
+	})
 }

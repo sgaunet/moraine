@@ -20,6 +20,10 @@ const (
 	PNG
 	// HEIC covers .heic and .heif (metadata only — pixels not decoded).
 	HEIC
+	// RAW covers camera raw formats (.dng/.nef/.cr2/…). Metadata is read by
+	// imagemeta; pixels are not decoded in pure Go — a model-viewable preview is
+	// extracted via exiftool when needed (feature 003).
+	RAW
 )
 
 // String returns a short lowercase name, useful for logs.
@@ -31,15 +35,23 @@ func (f Format) String() string {
 		return "png"
 	case HEIC:
 		return "heic"
+	case RAW:
+		return "raw"
 	default:
 		return "unknown"
 	}
 }
 
 // Decodable reports whether the format's pixels can be decoded by the pure-Go
-// stdlib (for thumbnail generation). HEIC is not decodable → placeholder.
+// stdlib (for thumbnail generation). HEIC and RAW are not decodable.
 func (f Format) Decodable() bool {
 	return f == JPEG || f == PNG
+}
+
+// IsRAW reports whether the format is a camera RAW format. RAW pixels are not
+// decoded in pure Go; a model-viewable preview is extracted via exiftool.
+func (f Format) IsRAW() bool {
+	return f == RAW
 }
 
 // FormatFromExt maps a file name (or extension) to a recognised Format.
@@ -53,6 +65,8 @@ func FormatFromExt(name string) (Format, bool) {
 		return PNG, true
 	case ".heic", ".heif":
 		return HEIC, true
+	case ".dng", ".nef", ".cr2", ".cr3", ".arw", ".raf", ".rw2", ".orf", ".pef", ".srw":
+		return RAW, true
 	default:
 		return FormatUnknown, false
 	}

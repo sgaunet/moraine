@@ -21,6 +21,11 @@ the CLI transport and from disk I/O.
 - **`internal/cluster`** — groups photos into events by capture-time `-gap`.
 - **`internal/classify`** — assigns a theme to each cluster via the
   `Classifier` interface (altitude heuristic → optional Ollama → fallback).
+  For model input it reads JPEG/PNG directly and obtains RAW previews through
+  the `RawExtractor` interface.
+- **`internal/rawpreview`** — the only package that talks to **exiftool**:
+  `EnsureAvailable` (mandatory startup probe) and `Extract` (largest embedded
+  preview, captured in memory — never written to disk).
 - **`internal/organize`** — copies files to
   `dest/<theme>/<year>/<year-month-day>/`, enforcing copy-only/no-overwrite.
 - **`internal/app`** — orchestrates the pipeline and tallies the run summary.
@@ -39,12 +44,24 @@ the CLI transport and from disk I/O.
 4. **Interface-based classifier with guaranteed fallback** — a theme is
    always returned; the network/model stage is optional and degrades to the
    fallback when Ollama is unreachable.
+5. **RAW via mandatory exiftool, previews in memory** — RAW pixels can't be
+   decoded in pure Go, so `internal/rawpreview` shells out to exiftool to
+   extract the embedded JPEG preview (`JpgFromRaw → PreviewImage →
+   ThumbnailImage`) and feeds the bytes to the model without ever writing a
+   temp file. exiftool is **required**: `main.run()` calls
+   `rawpreview.EnsureAvailable` after `config.Validate` and before
+   `app.Organize`, so a missing dependency fails fast (exit 1) before any file
+   is touched. A RAW with no usable preview degrades like HEIC. Small events
+   send every eligible photo (RAW included); large events prefer JPEG/PNG and
+   fill the sample with RAW (FR-012).
 
 ## Integration Points
 
 - **External APIs**: optional local **Ollama** vision model
   (`-ollama-url`, `-model`); a startup `Preflight()` returns a typed status
   and the model stage is skipped (set to `nil`) on any non-ready status.
+- **External programs**: **exiftool** (required, `-exiftool`) for RAW preview
+  extraction, invoked via `os/exec` (argument vector, timeout-bounded, no shell).
 - **Database / queues**: none — the only persistent state is the copied
   output tree on the filesystem.
 

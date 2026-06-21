@@ -22,7 +22,10 @@ func TestFormatFromExt(t *testing.T) {
 		{"heic", "live.heic", photo.HEIC, true},
 		{"heif", "live.HEIF", photo.HEIC, true},
 		{"full path", "/a/b/c/IMG.jpg", photo.JPEG, true},
-		{"unknown raw", "RAW.cr2", photo.FormatUnknown, false},
+		{"raw cr2", "RAW.cr2", photo.RAW, true},
+		{"raw dng", "shot.dng", photo.RAW, true},
+		{"raw nef uppercase", "DSC.NEF", photo.RAW, true},
+		{"raw arw", "a.arw", photo.RAW, true},
 		{"unknown mp4", "clip.mp4", photo.FormatUnknown, false},
 		{"no extension", "README", photo.FormatUnknown, false},
 		{"empty", "", photo.FormatUnknown, false},
@@ -44,6 +47,7 @@ func TestFormatString(t *testing.T) {
 		photo.JPEG:          "jpeg",
 		photo.PNG:           "png",
 		photo.HEIC:          "heic",
+		photo.RAW:           "raw",
 		photo.FormatUnknown: "unknown",
 	}
 	for f, want := range tests {
@@ -59,5 +63,19 @@ func TestFormatDecodable(t *testing.T) {
 	}
 	if photo.HEIC.Decodable() {
 		t.Error("HEIC must not be decodable (placeholder path)")
+	}
+	if photo.RAW.Decodable() {
+		t.Error("RAW must not be decodable (preview extracted via exiftool)")
+	}
+}
+
+func TestFormatIsRAW(t *testing.T) {
+	if !photo.RAW.IsRAW() {
+		t.Error("RAW.IsRAW() must be true")
+	}
+	for _, f := range []photo.Format{photo.JPEG, photo.PNG, photo.HEIC, photo.FormatUnknown} {
+		if f.IsRAW() {
+			t.Errorf("%v.IsRAW() must be false", f)
+		}
 	}
 }

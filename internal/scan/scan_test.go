@@ -27,9 +27,10 @@ func TestScanRecursiveAndFilters(t *testing.T) {
 	write(t, filepath.Join(src, "sub", "c.png"))
 	write(t, filepath.Join(src, "sub", "deep", "d.HEIC"))
 	write(t, filepath.Join(src, "e.heif"))
-	write(t, filepath.Join(src, "notes.txt")) // ignored
-	write(t, filepath.Join(src, "movie.mp4")) // ignored
-	write(t, filepath.Join(src, "raw.cr2"))   // ignored
+	write(t, filepath.Join(src, "raw.cr2"))         // RAW now supported (feature 003)
+	write(t, filepath.Join(src, "sub", "shot.dng")) // RAW now supported
+	write(t, filepath.Join(src, "notes.txt"))       // ignored
+	write(t, filepath.Join(src, "movie.mp4"))       // ignored
 
 	dest := filepath.Join(src, "_sorted")
 
@@ -38,7 +39,7 @@ func TestScanRecursiveAndFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	names := relNames(t, src, found)
-	want := []string{"a.jpg", "b.JPEG", "e.heif", "sub/c.png", "sub/deep/d.HEIC"}
+	want := []string{"a.jpg", "b.JPEG", "e.heif", "raw.cr2", "sub/c.png", "sub/deep/d.HEIC", "sub/shot.dng"}
 	if !equal(names, want) {
 		t.Fatalf("found %v; want %v", names, want)
 	}

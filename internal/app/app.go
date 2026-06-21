@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/sgaunet/moraine/internal/classify"
 	"github.com/sgaunet/moraine/internal/cluster"
@@ -17,8 +18,12 @@ import (
 	"github.com/sgaunet/moraine/internal/exifmeta"
 	"github.com/sgaunet/moraine/internal/organize"
 	"github.com/sgaunet/moraine/internal/photo"
+	"github.com/sgaunet/moraine/internal/rawpreview"
 	"github.com/sgaunet/moraine/internal/scan"
 )
+
+// rawPreviewTimeout bounds each exiftool preview extraction.
+const rawPreviewTimeout = 30 * time.Second
 
 // Summary tallies what a run did, for the final log line and for tests.
 type Summary struct {
@@ -76,6 +81,9 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 	}
 	oc := classify.NewOllama(cfg.OllamaURL, cfg.Model, cfg.Sample, cfg.Themes)
 	oc.Logger = logger
+	ex := rawpreview.NewExtractor(cfg.ExifToolPath, rawPreviewTimeout)
+	ex.Logger = logger
+	oc.Raw = ex // RAW photos are classified via their exiftool-extracted preview
 
 	switch oc.Preflight(ctx) {
 	case classify.StatusUnreachable:
@@ -124,18 +132,29 @@ func buildClusters(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, err
 	logger.Info("scan", "images", len(found), "excluded_dest", cfg.DestRoot)
 
 	photos := readMeta(found, logger)
-	logger.Info("exif", "read", len(photos), "of", len(found))
+	logger.Info("exif", "read", len(photos), "of", len(found), "raw", countRAW(photos))
 
 	clusters := cluster.Cluster(photos, cfg.Gap)
 	logger.Info("cluster", "photos", len(photos), "groups", len(clusters), "gap", cfg.Gap.String())
 	return clusters, nil
 }
 
+// countRAW reports how many photos are RAW, for the run logs (FR-010).
+func countRAW(photos []photo.Photo) int {
+	n := 0
+	for _, p := range photos {
+		if p.Format.IsRAW() {
+			n++
+		}
+	}
+	return n
+}
+
 // singleCluster reads one file and wraps it as a one-photo cluster (single-photo mode).
 func singleCluster(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, error) {
 	format, ok := photo.FormatFromExt(cfg.Source)
 	if !ok {
-		return nil, fmt.Errorf("unsupported format for %q (expected JPEG/PNG/HEIC)", cfg.Source)
+		return nil, fmt.Errorf("unsupported format for %q (expected JPEG/PNG/HEIC/RAW)", cfg.Source)
 	}
 	p, err := exifmeta.Read(cfg.Source, format)
 	if err != nil {

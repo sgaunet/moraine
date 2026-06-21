@@ -17,6 +17,13 @@ import (
 	"github.com/sgaunet/moraine/internal/photo"
 )
 
+// RawExtractor turns a RAW file into model-viewable image bytes (its embedded
+// JPEG preview). It is implemented by *rawpreview.Extractor. A nil RawExtractor
+// disables RAW input: RAW photos are then skipped for the model (like HEIC).
+type RawExtractor interface {
+	Extract(ctx context.Context, rawPath string) ([]byte, error)
+}
+
 // OllamaClassifier asks a local Ollama vision model to pick one theme from the
 // configured set for a cluster. Every call is bounded by a context timeout and
 // retried once on a transient error. Any failure is the caller's cue to fall back.
@@ -28,6 +35,7 @@ type OllamaClassifier struct {
 	Timeout time.Duration
 	HTTP    *http.Client
 	Logger  *slog.Logger
+	Raw     RawExtractor // optional; extracts previews for RAW photos
 }
 
 // NewOllama builds an OllamaClassifier with sane defaults for the given themes.
@@ -198,11 +206,11 @@ func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (strin
 		defer cancel()
 	}
 
-	images := sampleImages(c, o.Sample)
+	images := o.sampleImages(ctx, c)
 	if len(images) == 0 {
-		o.log().Warn("classification skipped: no decodable image (HEIC not sent to the model)",
+		o.log().Warn("classification skipped: no usable image (HEIC, or RAW without a preview, is not sent to the model)",
 			"group_size", len(c.Photos))
-		return "", fmt.Errorf("no decodable image to classify")
+		return "", fmt.Errorf("no usable image to classify")
 	}
 	reqBody := chatRequest{
 		Model:  o.Model,
@@ -279,39 +287,70 @@ func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, 
 	return theme, nil
 }
 
-// sampleImages selects the photos to send: all decodable photos when the group
-// has ≤3 photos, otherwise an evenly-spaced sample of n decodable photos. HEIC
-// (non-decodable in pure Go) is skipped. Returns their base64 content.
-func sampleImages(c photo.Cluster, n int) []string {
-	if n <= 0 {
+// sampleImages selects the photos to send and returns their base64 content.
+// Eligible photos are JPEG/PNG (read directly) or RAW (preview via the extractor);
+// HEIC and unknown formats are excluded. A photo whose bytes cannot be obtained
+// (read error, or RAW with no usable preview) is skipped, never fatal (FR-007).
+func (o *OllamaClassifier) sampleImages(ctx context.Context, c photo.Cluster) []string {
+	chosen := o.choosePhotos(c)
+	if len(chosen) == 0 {
 		return nil
 	}
-	var decodable []photo.Photo
-	for _, p := range c.Photos {
-		if p.Format.Decodable() {
-			decodable = append(decodable, p)
-		}
-	}
-	if len(decodable) == 0 {
-		return nil
-	}
-
-	var chosen []photo.Photo
-	if len(c.Photos) <= SmallGroupMax || len(decodable) <= n {
-		chosen = decodable
-	} else {
-		chosen = evenlySpaced(decodable, n)
-	}
-
 	images := make([]string, 0, len(chosen))
 	for _, p := range chosen {
-		data, err := os.ReadFile(p.Path)
+		data, err := o.imageBytes(ctx, p)
 		if err != nil {
+			o.log().Warn("skipping photo for model input", "file", p.Path, "err", err)
 			continue
 		}
 		images = append(images, base64.StdEncoding.EncodeToString(data))
 	}
 	return images
+}
+
+// choosePhotos applies the eligibility and sampling rules. Small groups
+// (≤ SmallGroupMax) use every eligible photo, RAW included; large groups prefer
+// already-viewable JPEG/PNG and only extract RAW previews to fill the sample
+// size (FR-012).
+func (o *OllamaClassifier) choosePhotos(c photo.Cluster) []photo.Photo {
+	var direct, raw []photo.Photo
+	for _, p := range c.Photos {
+		switch {
+		case p.Format.Decodable():
+			direct = append(direct, p)
+		case p.Format.IsRAW() && o.Raw != nil:
+			raw = append(raw, p)
+		}
+	}
+	eligible := len(direct) + len(raw)
+	if o.Sample <= 0 || eligible == 0 {
+		return nil
+	}
+	// Small group, or few eligible: use every eligible photo (RAW included).
+	if len(c.Photos) <= SmallGroupMax || eligible <= o.Sample {
+		out := make([]photo.Photo, 0, eligible)
+		out = append(out, direct...)
+		return append(out, raw...)
+	}
+	// Large group: prefer JPEG/PNG; extract RAW only to fill the sample size.
+	if len(direct) >= o.Sample {
+		return evenlySpaced(direct, o.Sample)
+	}
+	out := make([]photo.Photo, 0, o.Sample)
+	out = append(out, direct...)
+	return append(out, evenlySpaced(raw, o.Sample-len(direct))...)
+}
+
+// imageBytes returns base64-able bytes for a model-eligible photo: the file
+// itself for JPEG/PNG, or the exiftool-extracted preview (in memory) for RAW.
+func (o *OllamaClassifier) imageBytes(ctx context.Context, p photo.Photo) ([]byte, error) {
+	if p.Format.IsRAW() {
+		if o.Raw == nil {
+			return nil, fmt.Errorf("no RAW extractor configured for %q", p.Path)
+		}
+		return o.Raw.Extract(ctx, p.Path)
+	}
+	return os.ReadFile(p.Path)
 }
 
 // evenlySpaced picks n photos spread across the slice (first … last), so a long

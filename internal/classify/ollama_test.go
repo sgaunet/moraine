@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,77 @@ import (
 	"testing"
 
 	"github.com/sgaunet/moraine/internal/classify"
+	"github.com/sgaunet/moraine/internal/photo"
+	"github.com/sgaunet/moraine/internal/rawpreview"
 )
+
+// fakeExtractor is an in-memory classify.RawExtractor for tests (no exiftool).
+type fakeExtractor struct {
+	data []byte
+	err  error
+}
+
+func (f fakeExtractor) Extract(context.Context, string) ([]byte, error) {
+	return f.data, f.err
+}
+
+func rawCluster(n int) photo.Cluster {
+	var ps []photo.Photo
+	for i := 0; i < n; i++ {
+		ps = append(ps, photo.Photo{Path: fmt.Sprintf("r%d.dng", i), Format: photo.RAW})
+	}
+	return photo.Cluster{Photos: ps}
+}
+
+func TestOllamaClassifyRAWUsesExtractor(t *testing.T) {
+	var gotImages int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Images []string `json:"images"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range body.Messages {
+			gotImages += len(m.Images)
+		}
+		_, _ = w.Write([]byte(`{"message":{"content":"mountain"}}`))
+	}))
+	defer srv.Close()
+
+	oc := classify.NewOllama(srv.URL, "m", 3, themes)
+	oc.Raw = fakeExtractor{data: []byte("PREVIEWBYTES")}
+	got, err := oc.Classify(context.Background(), rawCluster(1))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got != "mountain" {
+		t.Errorf("theme = %q; want mountain", got)
+	}
+	if gotImages < 1 {
+		t.Errorf("model received %d images; want ≥1 (RAW preview must be sent)", gotImages)
+	}
+}
+
+func TestOllamaClassifyRAWNoPreviewIsError(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"message":{"content":"mountain"}}`))
+	}))
+	defer srv.Close()
+
+	oc := classify.NewOllama(srv.URL, "m", 3, themes)
+	oc.Raw = fakeExtractor{err: rawpreview.ErrNoPreview}
+	if _, err := oc.Classify(context.Background(), rawCluster(1)); err == nil {
+		t.Fatal("expected error: a RAW with no preview yields no usable image")
+	}
+	if calls != 0 {
+		t.Errorf("server called %d times; want 0 (no image to send)", calls)
+	}
+}
 
 // safeBuffer is a concurrency-safe slog sink.
 type safeBuffer struct {

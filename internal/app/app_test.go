@@ -3,6 +3,7 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"image"
 	"image/png"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/sgaunet/moraine/internal/app"
 	"github.com/sgaunet/moraine/internal/config"
+	"github.com/sgaunet/moraine/internal/exiftooltest"
 )
 
 // safeBuffer is a concurrency-safe sink for slog output (readMeta logs from workers).
@@ -268,5 +270,174 @@ func TestOrganizeLogLevelWarnSuppressesInfo(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "group") {
 		t.Errorf("warn level must suppress info lines, got:\n%s", buf.String())
+	}
+}
+
+// makeRAW writes a dummy RAW file (content is not a real RAW; exifmeta falls back
+// to mtime, which is what determines the destination date).
+func makeRAW(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("not-a-real-raw"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, modTime, modTime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ollamaStub serves /api/tags (advertising model) and /api/chat (always
+// answering "mountain"), invoking onChat with the number of images received.
+func ollamaStub(t *testing.T, model string, onChat func(images int)) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			_, _ = w.Write([]byte(`{"models":[{"name":"` + model + `"}]}`))
+			return
+		}
+		var body struct {
+			Messages []struct {
+				Images []string `json:"images"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		n := 0
+		for _, m := range body.Messages {
+			n += len(m.Images)
+		}
+		if onChat != nil {
+			onChat(n)
+		}
+		_, _ = w.Write([]byte(`{"message":{"content":"mountain"}}`))
+	}))
+}
+
+func TestOrganizeRAWCopiedAndDated(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	makeRAW(t, filepath.Join(src, "shot.dng"))
+
+	// Sample 0 → no model; RAW is still recognized, dated, and copied (fallback theme).
+	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), quietLogger())
+	if err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+	if sum.Copied != 1 {
+		t.Fatalf("Copied = %d; want 1 (RAW copied)", sum.Copied)
+	}
+	if _, err := os.Stat(filepath.Join(expectedDir(dest), "shot.dng")); err != nil {
+		t.Errorf("RAW not placed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(src, "shot.dng")); err != nil {
+		t.Errorf("original RAW must be preserved: %v", err)
+	}
+}
+
+func TestOrganizeSingleRAWPhoto(t *testing.T) {
+	dir := t.TempDir()
+	dest := t.TempDir()
+	file := filepath.Join(dir, "single.nef")
+	makeRAW(t, file)
+
+	sum, err := app.Organize(context.Background(), baseCfg(file, dest, false), quietLogger())
+	if err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+	if sum.Groups != 1 || sum.Copied != 1 {
+		t.Fatalf("summary = %+v; want Groups=1 Copied=1", sum)
+	}
+	if _, err := os.Stat(filepath.Join(expectedDir(dest), "single.nef")); err != nil {
+		t.Errorf("single RAW not placed: %v", err)
+	}
+}
+
+func TestOrganizeRAWClassifiedViaPreview(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	makeRAW(t, filepath.Join(src, "peak.dng"))
+
+	exifPath, err := exiftooltest.Stub(t.TempDir(), exiftooltest.Options{
+		Previews: map[string][]byte{"JpgFromRaw": []byte("PREVIEW")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotImages int
+	srv := ollamaStub(t, "qwen3-vl:8b", func(n int) { gotImages = n })
+	defer srv.Close()
+
+	cfg := baseCfg(src, dest, true)
+	cfg.Sample = 3
+	cfg.Model = "qwen3-vl:8b"
+	cfg.OllamaURL = srv.URL
+	cfg.ExifToolPath = exifPath
+
+	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	if err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+	if sum.Copied != 1 {
+		t.Fatalf("Copied = %d; want 1", sum.Copied)
+	}
+	if gotImages < 1 {
+		t.Error("the model received no image for the RAW (preview not wired through)")
+	}
+	mountainDir := filepath.Join(dest, "mountain", modTime.Format("2006"), modTime.Format("2006-01-02"))
+	if _, err := os.Stat(filepath.Join(mountainDir, "peak.dng")); err != nil {
+		t.Errorf("RAW not placed under the preview-classified theme 'mountain': %v", err)
+	}
+}
+
+// TestOrganizeRAWPreservesOriginalAndLeavesNoTemp covers US3 at the app level
+// (SC-003, SC-005, SC-006): the original RAW is byte-identical after the run and
+// no preview artifact is written to the temp area.
+func TestOrganizeRAWPreservesOriginalAndLeavesNoTemp(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	rawPath := filepath.Join(src, "shot.dng")
+	makeRAW(t, rawPath)
+	before, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exifPath, err := exiftooltest.Stub(t.TempDir(), exiftooltest.Options{
+		Previews: map[string][]byte{"JpgFromRaw": []byte("PREVIEW")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := ollamaStub(t, "qwen3-vl:8b", nil)
+	defer srv.Close()
+
+	cfg := baseCfg(src, dest, true)
+	cfg.Sample = 3
+	cfg.Model = "qwen3-vl:8b"
+	cfg.OllamaURL = srv.URL
+	cfg.ExifToolPath = exifPath
+
+	// Redirect TMPDIR only after all helper temp dirs/stubs exist, so a stray
+	// preview temp write (there should be none) would land in the monitored dir.
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+
+	if _, err := app.Organize(context.Background(), cfg, quietLogger()); err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+
+	after, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("original RAW must be byte-identical after the run")
+	}
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("temp dir not empty after run: %v (previews must stay in memory)", entries)
 	}
 }

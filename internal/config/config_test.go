@@ -34,6 +34,9 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel: want info, got %v", cfg.LogLevel)
 	}
+	if cfg.ExifToolPath != config.DefaultExifTool {
+		t.Errorf("ExifToolPath: want %q, got %q", config.DefaultExifTool, cfg.ExifToolPath)
+	}
 	want := []string{"mountain", "special-events", "cook", "family"}
 	if !reflect.DeepEqual(cfg.Themes, want) {
 		t.Errorf("Themes: want %v, got %v", want, cfg.Themes)
@@ -51,6 +54,25 @@ func TestParseCustomThemes(t *testing.T) {
 	}
 	if cfg.FallbackTheme != "misc" {
 		t.Errorf("Fallback: want misc, got %q", cfg.FallbackTheme)
+	}
+}
+
+func TestParseExifTool(t *testing.T) {
+	// Custom path is honored.
+	cfg, err := config.Parse([]string{"-exiftool", "/opt/bin/exiftool", "/src"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ExifToolPath != "/opt/bin/exiftool" {
+		t.Errorf("ExifToolPath: want /opt/bin/exiftool, got %q", cfg.ExifToolPath)
+	}
+	// Empty value falls back to the default.
+	cfg, err = config.Parse([]string{"-exiftool", "  ", "/src"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ExifToolPath != config.DefaultExifTool {
+		t.Errorf("empty -exiftool: want default %q, got %q", config.DefaultExifTool, cfg.ExifToolPath)
 	}
 }
 
@@ -106,9 +128,10 @@ func TestWriteUsage(t *testing.T) {
 
 	wants := []string{
 		"-dest", "-gap", "-sample", "-model", "-ollama-url",
-		"-themes", "-fallback-theme", "-log-level", "-version",
+		"-themes", "-fallback-theme", "-log-level", "-version", "-exiftool",
 		config.DefaultThemes,              // default theme set
 		"<theme>/<year>/<year-month-day>", // destination layout
+		"RAW",                             // RAW support documented
 		"Exit codes", "Examples",          // sections
 	}
 	for _, w := range wants {

@@ -8,8 +8,12 @@ or deleted. Every step is explained in the logs.
 
 ## Features
 
-- **Pure Go, no CGo, single binary** — no service required other than Ollama (optional).
-- **Temporal grouping** of JPEG / PNG / HEIC photos (configurable gap).
+- **Pure Go, no CGo, single binary** — runtime deps: **exiftool** (required, for RAW)
+  and Ollama (optional).
+- **Temporal grouping** of JPEG / PNG / HEIC / RAW photos (configurable gap).
+- **RAW support** (`.dng/.nef/.cr2/.cr3/.arw/.raf/.rw2/.orf/.pef/.srw`): RAW pixels can't
+  be decoded in pure Go, so the camera-embedded JPEG preview is extracted with **exiftool**
+  (in memory, never written to disk) and sent to the model.
 - **Theme classification** in three stages: heuristic (altitude → `mountain`)
   → **Ollama** vision model constrained to the theme set (optional) → guaranteed
   **fallback** (`other`). A theme is **always** assigned, even without Ollama.
@@ -27,6 +31,10 @@ or deleted. Every step is explained in the logs.
 ## Requirements
 
 - **Go 1.26+** (`go version`).
+- **exiftool** (required) — used to read RAW files. Install with
+  `brew install exiftool` (macOS) or `sudo apt install libimage-exiftool-perl`
+  (Debian/Ubuntu). moraine verifies it at startup and exits if it is missing; point at a
+  custom binary with `-exiftool <path>`.
 - *(Optional)* [Ollama](https://ollama.com) running locally with a vision model:
   `ollama pull qwen3-vl:8b`. Without Ollama, classification falls back to the heuristic
   and then to the fallback theme.
@@ -78,6 +86,7 @@ Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 | `-themes`        | string   | `family,mountain,special-events,nature` | themes (comma-separated slugs)               |
 | `-fallback-theme`| string   | `other`                   | fallback theme when none is determined                     |
 | `-log-level`     | string   | `info`                    | `debug` \| `info` \| `warn` \| `error`                     |
+| `-exiftool`      | string   | `exiftool`                | exiftool executable (name on `PATH` or absolute path); **required** for RAW |
 | `-help` / `-h`   | bool     | —                         | print the detailed help and exit                           |
 | `-version`       | bool     | —                         | print the version and exit                                 |
 
@@ -86,6 +95,12 @@ Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 > **HEIC note**: HEIC photos are dated and organized, but **not** sent to the vision
 > model (no pure-Go HEIC decoding, due to the "no CGo" constraint). A HEIC-only group
 > falls back to the heuristic or to the fallback theme.
+>
+> **RAW note**: RAW photos are dated, organized, and **classified** via their embedded
+> preview, extracted with **exiftool** (required). Small events (≤3 photos) send every
+> eligible photo including RAW; large events prefer JPEG/PNG and extract RAW previews only
+> to fill the sample. A RAW with no usable preview is still copied and dated, and falls
+> back to the heuristic or the fallback theme.
 
 ## Architecture
 

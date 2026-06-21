@@ -27,6 +27,7 @@ type Config struct {
 	OllamaURL     string        // base URL of the local Ollama API
 	Themes        []string      // configured theme slugs (folder names)
 	FallbackTheme string        // theme slug used when none is confidently chosen
+	ExifToolPath  string        // exiftool executable (name on PATH or absolute path)
 	LogLevel      slog.Level    // logging verbosity
 	ShowVersion   bool          // -version: print version and exit before requiring a source
 }
@@ -45,6 +46,7 @@ const (
 	DefaultFallback  = "other"
 	DefaultLogLevel  = "info"
 	DefaultDestName  = "_sorted"
+	DefaultExifTool  = "exiftool"
 )
 
 // slugPattern constrains theme slugs to filesystem-safe lowercase tokens.
@@ -53,10 +55,10 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 // cliFlags holds the pointers returned by flag registration so that Parse and
 // WriteUsage share a single flag definition (no drift in names, defaults, or help).
 type cliFlags struct {
-	dest, model, ollama, themes, fallback, logLevel *string
-	gap                                             *time.Duration
-	sample                                          *int
-	version                                         *bool
+	dest, model, ollama, themes, fallback, logLevel, exiftool *string
+	gap                                                       *time.Duration
+	sample                                                    *int
+	version                                                   *bool
 }
 
 // registerFlags declares moraine's flags on fs. It is the single source of truth
@@ -71,6 +73,7 @@ func registerFlags(fs *flag.FlagSet) *cliFlags {
 		themes:   fs.String("themes", DefaultThemes, "themes ([a-z0-9-] slugs, comma-separated)"),
 		fallback: fs.String("fallback-theme", DefaultFallback, "fallback theme when none is determined"),
 		logLevel: fs.String("log-level", DefaultLogLevel, "log verbosity: debug|info|warn|error"),
+		exiftool: fs.String("exiftool", DefaultExifTool, "exiftool executable (name on PATH or absolute path); required to read RAW files"),
 		version:  fs.Bool("version", false, "print the version and exit"),
 	}
 }
@@ -139,6 +142,11 @@ func Parse(args []string) (Config, error) {
 		}
 	}
 
+	exiftool := strings.TrimSpace(*f.exiftool)
+	if exiftool == "" {
+		exiftool = DefaultExifTool
+	}
+
 	return Config{
 		Source:        source,
 		DestRoot:      destRoot,
@@ -148,6 +156,7 @@ func Parse(args []string) (Config, error) {
 		OllamaURL:     *ollama,
 		Themes:        themeList,
 		FallbackTheme: strings.TrimSpace(*fallback),
+		ExifToolPath:  exiftool,
 		LogLevel:      level,
 	}, nil
 }
@@ -186,6 +195,8 @@ Classification (a theme is always assigned):
   3. otherwise, or on failure/out-of-list answer: the fallback theme (-fallback-theme).
   HEIC photos are dated and organized but not sent to the model (no pure-Go HEIC
   decoding): a HEIC-only group follows the heuristic or the fallback.
+  RAW photos (.dng/.nef/.cr2/…) are organized too; their embedded preview is
+  extracted with exiftool (required, see -exiftool) and sent to the model.
 
 Destination:
   <dest>/<theme>/<year>/<year-month-day>/<name>
