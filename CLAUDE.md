@@ -50,8 +50,10 @@ go run . [-dest <out>] [-gap 6h] [-themes a,b,c] <source-dir>
 ## Code Quality Standards
 
 **Linters configured** (do not duplicate rules):
-- golangci-lint: see `.golangci.yml` (errcheck, govet, staticcheck, revive,
-  errorlint, bodyclose, misspell, unconvert, …; gofmt + goimports).
+- golangci-lint: see `.golangci.yml` — v2, `default: all` (76 linters) with
+  opinionated/stylistic ones disabled (err113, wrapcheck, mnd, gosec, cyclop,
+  funlen, paralleltest, testpackage, …); `revive` `exported` off; errcheck/dupl
+  relaxed in `_test.go`; gofmt + goimports. Tree is lint-clean.
 - CI: `.github/workflows/ci.yml` runs the gofmt check, `go vet`,
   `go test -race`, and golangci-lint.
 

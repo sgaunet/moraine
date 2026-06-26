@@ -102,6 +102,28 @@ func TestClassifierErrorFallsBack(t *testing.T) {
 	}
 }
 
+func TestModelWinsOverAltitude(t *testing.T) {
+	// A high-altitude cluster the model recognises as e.g. family must NOT be
+	// hard-overridden to "mountain": the model decides when it is available.
+	fc := &fakeClassifier{label: "family"}
+	c := photo.Cluster{Photos: []photo.Photo{{Altitude: ptr(2400)}}}
+	theme, method := classify.Label(context.Background(), c, opts(fc))
+	if theme != "family" || method != classify.MethodModelAll {
+		t.Fatalf("got (%q,%q); want (family,model-all)", theme, method)
+	}
+}
+
+func TestAltitudeFallbackWhenModelFails(t *testing.T) {
+	// When the model errors (or abstains), the altitude heuristic still applies
+	// so an offline / unavailable run keeps classifying obvious mountain photos.
+	fc := &fakeClassifier{err: errors.New("ollama down")}
+	c := photo.Cluster{Photos: []photo.Photo{{Altitude: ptr(2400)}}}
+	theme, method := classify.Label(context.Background(), c, opts(fc))
+	if theme != "mountain" || method != classify.MethodHeuristic {
+		t.Fatalf("got (%q,%q); want (mountain,heuristic)", theme, method)
+	}
+}
+
 // ---- Ollama HTTP client (httptest, no real Ollama) -------------------------
 
 func writeTinyJPEG(t *testing.T, path string) {

@@ -187,7 +187,9 @@ func TestPromptListsEveryTheme(t *testing.T) {
 
 func TestClassifyRequestCarriesEnumSchema(t *testing.T) {
 	// The request must use a system + user message and constrain the answer with
-	// a JSON Schema enum equal to the configured themes.
+	// a JSON Schema enum equal to the configured themes plus the "none" abstain
+	// sentinel (so the model can decline rather than be forced to pick a theme).
+	wantEnum := append(append([]string{}, themes...), "none")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var got struct {
 			Messages []struct {
@@ -214,14 +216,98 @@ func TestClassifyRequestCarriesEnumSchema(t *testing.T) {
 		if got.Format.Properties.Category.Enum == nil {
 			t.Fatalf("request carried no format.properties.category.enum")
 		}
-		if !equalStrings(got.Format.Properties.Category.Enum, themes) {
-			t.Errorf("enum = %v; want %v", got.Format.Properties.Category.Enum, themes)
+		if !equalStrings(got.Format.Properties.Category.Enum, wantEnum) {
+			t.Errorf("enum = %v; want %v", got.Format.Properties.Category.Enum, wantEnum)
 		}
 		_, _ = w.Write([]byte(`{"message":{"content":"{\"category\":\"nature\"}"}}`))
 	}))
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
+	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+}
+
+func TestClassifyRequestIsDeterministic(t *testing.T) {
+	// Every request must pin decoding (temperature 0 + fixed seed) so the same
+	// cluster classifies identically on re-runs.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got struct {
+			Options struct {
+				Temperature float64 `json:"temperature"`
+				Seed        int     `json:"seed"`
+			} `json:"options"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Options.Temperature != 0 {
+			t.Errorf("options.temperature = %v; want 0", got.Options.Temperature)
+		}
+		if got.Options.Seed != 42 {
+			t.Errorf("options.seed = %d; want 42", got.Options.Seed)
+		}
+		_, _ = w.Write([]byte(`{"message":{"content":"nature"}}`))
+	}))
+	defer srv.Close()
+
+	oc := classify.NewOllama(srv.URL, "m", 1, themes)
+	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+}
+
+func TestClassifyAbstainReturnsEmptyNoError(t *testing.T) {
+	// "none" is an intentional abstention, not a failure: Classify returns
+	// ("", nil) and does not retry, so the caller falls back cleanly.
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"message":{"content":"{\"category\":\"none\"}"}}`))
+	}))
+	defer srv.Close()
+
+	oc := classify.NewOllama(srv.URL, "m", 1, themes)
+	got, err := oc.Classify(context.Background(), jpegCluster(t, 1))
+	if err != nil {
+		t.Fatalf("abstain must not error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("theme = %q; want \"\" on abstain", got)
+	}
+	if calls != 1 {
+		t.Errorf("server called %d times; want 1 (abstain is not retried)", calls)
+	}
+}
+
+func TestPromptDescribesThemes(t *testing.T) {
+	// The prompt must describe each built-in theme, not pass a bare slug, so the
+	// vision model has something concrete to match.
+	describable := []string{"cook", "mountain"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		var prompt string
+		for _, m := range got.Messages {
+			prompt += m.Content + "\n"
+		}
+		for _, want := range []string{"cooking", "mountains"} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("prompt missing description %q\nprompt: %s", want, prompt)
+			}
+		}
+		_, _ = w.Write([]byte(`{"message":{"content":"cook"}}`))
+	}))
+	defer srv.Close()
+
+	oc := classify.NewOllama(srv.URL, "m", 1, describable)
 	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}

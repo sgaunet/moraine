@@ -1,6 +1,8 @@
 // Package classify assigns a theme to a cluster using a three-stage pipeline:
-// a pure-Go heuristic first, then an optional Ollama vision model constrained to
-// the configured theme set, then a guaranteed fallback theme (FR-004/FR-005).
+// an optional Ollama vision model (constrained to the configured theme set)
+// decides first; if it is unavailable, errors, or abstains, a pure-Go altitude
+// heuristic applies; otherwise a guaranteed fallback theme is used
+// (FR-004/FR-005).
 package classify
 
 import (
@@ -43,18 +45,20 @@ type Options struct {
 	Classifier Classifier // optional; nil skips the model stage
 }
 
-// Label returns a configured theme for the cluster and the Method used. It tries
-// the heuristic, then the model (if configured and reachable), then the fallback.
+// Label returns a configured theme for the cluster and the Method used. The
+// model (if configured and reachable) decides first so it sees the actual scene;
+// only when it is unavailable, errors, or abstains does the altitude heuristic
+// apply, and the fallback theme last.
 func Label(ctx context.Context, c photo.Cluster, opts Options) (string, Method) {
-	if l := heuristic(c, opts.Themes); l != "" {
-		return l, MethodHeuristic
-	}
 	if opts.Classifier != nil {
 		if l, err := opts.Classifier.Classify(ctx, c); err == nil {
 			if l = strings.TrimSpace(l); l != "" && inSet(l, opts.Themes) {
 				return l, modelMethod(c)
 			}
 		}
+	}
+	if l := heuristic(c, opts.Themes); l != "" {
+		return l, MethodHeuristic
 	}
 	return opts.Fallback, MethodFallback
 }
@@ -68,7 +72,9 @@ func modelMethod(c photo.Cluster) Method {
 }
 
 // heuristic returns "mountain" when a photo is high enough AND "mountain" is a
-// configured theme, otherwise "".
+// configured theme, otherwise "". It runs only as a fallback after the model
+// (see Label), so it no longer pre-empts the model — chiefly it keeps the
+// offline run (no Ollama) useful for clearly high-altitude clusters.
 func heuristic(c photo.Cluster, themes []string) string {
 	if !inSet("mountain", themes) {
 		return ""

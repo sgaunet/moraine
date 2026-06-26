@@ -142,7 +142,20 @@ type chatRequest struct {
 	Messages []chatMessage `json:"messages"`
 	Stream   bool          `json:"stream"`
 	Format   any           `json:"format,omitempty"`
+	Options  chatOptions   `json:"options"`
 }
+
+// chatOptions pins Ollama's decoding so the same cluster classifies to the same
+// theme on every run: temperature 0 removes sampling and a fixed seed removes
+// the remaining randomness. Determinism also gives the retry-once logic meaning
+// (a retry after a transient transport error yields the same answer).
+type chatOptions struct {
+	Temperature float64 `json:"temperature"`
+	Seed        int     `json:"seed"`
+}
+
+// ollamaSeed is the fixed RNG seed sent with every request for reproducibility.
+const ollamaSeed = 42
 
 type chatResponse struct {
 	Message chatMessage `json:"message"`
@@ -170,28 +183,59 @@ type structuredAnswer struct {
 // slugNonWord matches runs of characters that are not slug-safe.
 var slugNonWord = regexp.MustCompile(`[^a-z0-9]+`)
 
+// abstainCategory is the sentinel the model may return when no theme fits. It is
+// added to the schema enum and offered in the prompt; a "none" answer makes
+// Classify return ("", nil) so Label uses the configured fallback theme instead
+// of forcing an arbitrary theme onto e.g. a receipt or screenshot.
+const abstainCategory = "none"
+
+// themeHints maps each built-in default theme to a short description so the
+// vision model matches the scene instead of guessing at a bare slug. Custom
+// themes (not in this map) are listed by slug alone.
+var themeHints = map[string]string{
+	"mountain":       "mountains, peaks, alpine landscapes, hiking, snow, skiing",
+	"special-events": "weddings, parties, concerts, ceremonies, celebrations",
+	"cook":           "food, meals, cooking, plated dishes, restaurants",
+	"family":         "people, portraits, family gatherings, children, daily life",
+}
+
 // systemPrompt is the stable output contract sent as the system message. It
 // fixes the model's role and the JSON shape; the per-request category list lives
 // in userPrompt. Naming JSON here is recommended alongside the Format schema.
 func (o *OllamaClassifier) systemPrompt() string {
-	return "You are an image classifier. You are shown several photos taken at the same moment. " +
+	return "You are an image classifier. You are shown several photos from the same event. " +
 		`Respond ONLY with a JSON object of the form {"category": "<one allowed category>"}. ` +
-		"The category MUST be exactly one value from the allowed list, in lowercase, with no extra text."
+		`The category MUST be exactly one value from the allowed list (or "none"), in lowercase, with no extra text.`
 }
 
-// userPrompt carries the per-request data: the allowed categories and the task.
+// userPrompt carries the per-request data: the allowed categories (each with a
+// short description) and the task, including the option to abstain with "none".
 func (o *OllamaClassifier) userPrompt() string {
-	return "Allowed categories: " + strings.Join(o.Themes, ", ") + ". " +
-		"If none fits perfectly, choose the closest. " +
-		"Classify these photos into exactly one of the allowed categories."
+	var b strings.Builder
+	b.WriteString("Allowed categories:\n")
+	for _, t := range o.Themes {
+		if hint := themeHints[t]; hint != "" {
+			fmt.Fprintf(&b, "- %s: %s\n", t, hint)
+		} else {
+			fmt.Fprintf(&b, "- %s\n", t)
+		}
+	}
+	fmt.Fprintf(&b, "- %s: the photos do not clearly fit any category above\n", abstainCategory)
+	b.WriteString("Pick the single category that best describes these photos. ")
+	fmt.Fprintf(&b, "If none of them clearly fits, answer %q.", abstainCategory)
+	return b.String()
 }
 
-// schema constrains the model to answer with exactly one configured theme.
+// schema constrains the model to answer with exactly one configured theme, or
+// the abstain sentinel when nothing fits.
 func (o *OllamaClassifier) schema() responseSchema {
+	enum := make([]string, 0, len(o.Themes)+1)
+	enum = append(enum, o.Themes...)
+	enum = append(enum, abstainCategory)
 	return responseSchema{
 		Type: "object",
 		Properties: map[string]schemaProperty{
-			"category": {Type: "string", Enum: o.Themes},
+			"category": {Type: "string", Enum: enum},
 		},
 		Required: []string{"category"},
 	}
@@ -213,9 +257,10 @@ func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (strin
 		return "", fmt.Errorf("no usable image to classify")
 	}
 	reqBody := chatRequest{
-		Model:  o.Model,
-		Stream: false,
-		Format: o.schema(),
+		Model:   o.Model,
+		Stream:  false,
+		Format:  o.schema(),
+		Options: chatOptions{Temperature: 0, Seed: ollamaSeed},
 		Messages: []chatMessage{
 			{Role: "system", Content: o.systemPrompt()},
 			{Role: "user", Content: o.userPrompt(), Images: images},
@@ -271,20 +316,25 @@ func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, 
 		return "", fmt.Errorf("unreadable ollama response: %w", err)
 	}
 	// Prefer the structured {"category": "..."} answer; fall back to the raw
-	// content for models that ignore the Format schema. normaliseTheme then
-	// validates either against the configured set.
+	// content for models that ignore the Format schema. slugifyAnswer then
+	// reduces it to a slug we validate against the set (or the abstain sentinel).
 	answer := parsed.Message.Content
 	var structured structuredAnswer
 	if err := json.Unmarshal([]byte(answer), &structured); err == nil && structured.Category != "" {
 		answer = structured.Category
 	}
-	theme := normaliseTheme(answer, o.Themes)
-	o.log().Debug("model answer",
-		"raw", strings.TrimSpace(parsed.Message.Content), "theme", theme)
-	if theme == "" {
-		return "", fmt.Errorf("category out of set: %q", strings.TrimSpace(parsed.Message.Content))
+	raw := strings.TrimSpace(parsed.Message.Content)
+	slug := slugifyAnswer(answer)
+	o.log().Debug("model answer", "raw", raw, "slug", slug)
+	if slug == abstainCategory {
+		// Intentional abstention, not a failure: return "" with a nil error so
+		// the retry loop stops and Label uses the configured fallback theme.
+		return "", nil
 	}
-	return theme, nil
+	if !inSet(slug, o.Themes) {
+		return "", fmt.Errorf("category out of set: %q", raw)
+	}
+	return slug, nil
 }
 
 // sampleImages selects the photos to send and returns their base64 content.
@@ -371,18 +421,24 @@ func evenlySpaced(photos []photo.Photo, n int) []photo.Photo {
 	return out
 }
 
-// normaliseTheme slugifies the model output and returns it only if it is one of
-// the configured themes, otherwise "".
-func normaliseTheme(s string, themes []string) string {
+// slugifyAnswer reduces raw model output to a slug: its first line, lowercased,
+// with runs of non-slug characters collapsed to single hyphens (e.g.
+// "Special Events." → "special-events"). It does not validate against any set.
+func slugifyAnswer(s string) string {
 	s = strings.TrimSpace(s)
 	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
 		s = s[:idx]
 	}
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = slugNonWord.ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-")
-	if inSet(s, themes) {
-		return s
+	return strings.Trim(s, "-")
+}
+
+// normaliseTheme slugifies the model output and returns it only if it is one of
+// the configured themes, otherwise "".
+func normaliseTheme(s string, themes []string) string {
+	if slug := slugifyAnswer(s); inSet(slug, themes) {
+		return slug
 	}
 	return ""
 }
