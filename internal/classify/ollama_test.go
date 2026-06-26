@@ -28,8 +28,8 @@ func (f fakeExtractor) Extract(context.Context, string) ([]byte, error) {
 }
 
 func rawCluster(n int) photo.Cluster {
-	var ps []photo.Photo
-	for i := 0; i < n; i++ {
+	ps := make([]photo.Photo, 0, n)
+	for i := range n {
 		ps = append(ps, photo.Photo{Path: fmt.Sprintf("r%d.dng", i), Format: photo.RAW})
 	}
 	return photo.Cluster{Photos: ps}
@@ -105,7 +105,7 @@ func (s *safeBuffer) String() string {
 
 func tagsServer(t *testing.T, names ...string) *httptest.Server {
 	t.Helper()
-	var quoted []string
+	quoted := make([]string, 0, len(names))
 	for _, n := range names {
 		quoted = append(quoted, `{"name":"`+n+`"}`)
 	}
@@ -166,10 +166,12 @@ func TestPromptListsEveryTheme(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatal(err)
 		}
-		var prompt string
+		var b strings.Builder
 		for _, m := range got.Messages {
-			prompt += m.Content + "\n"
+			b.WriteString(m.Content)
+			b.WriteString("\n")
 		}
+		prompt := b.String()
 		for _, theme := range themes {
 			if !strings.Contains(prompt, theme) {
 				t.Errorf("prompt missing theme %q\nprompt: %s", theme, prompt)
@@ -180,7 +182,7 @@ func TestPromptListsEveryTheme(t *testing.T) {
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 }
@@ -206,7 +208,7 @@ func TestClassifyRequestCarriesEnumSchema(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatal(err)
 		}
-		roles := []string{}
+		roles := make([]string, 0, len(got.Messages))
 		for _, m := range got.Messages {
 			roles = append(roles, m.Role)
 		}
@@ -224,7 +226,7 @@ func TestClassifyRequestCarriesEnumSchema(t *testing.T) {
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 }
@@ -253,7 +255,7 @@ func TestClassifyRequestIsDeterministic(t *testing.T) {
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 }
@@ -269,7 +271,7 @@ func TestClassifyAbstainReturnsEmptyNoError(t *testing.T) {
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
-	got, err := oc.Classify(context.Background(), jpegCluster(t, 1))
+	got, err := oc.Classify(context.Background(), jpegCluster(t))
 	if err != nil {
 		t.Fatalf("abstain must not error: %v", err)
 	}
@@ -294,10 +296,12 @@ func TestPromptDescribesThemes(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatal(err)
 		}
-		var prompt string
+		var b strings.Builder
 		for _, m := range got.Messages {
-			prompt += m.Content + "\n"
+			b.WriteString(m.Content)
+			b.WriteString("\n")
 		}
+		prompt := b.String()
 		for _, want := range []string{"cooking", "mountains"} {
 			if !strings.Contains(prompt, want) {
 				t.Errorf("prompt missing description %q\nprompt: %s", want, prompt)
@@ -308,7 +312,7 @@ func TestPromptDescribesThemes(t *testing.T) {
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "m", 1, describable)
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 }
@@ -334,7 +338,7 @@ func TestClassifyDebugLogsAnswer(t *testing.T) {
 	buf := &safeBuffer{}
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
 	oc.Logger = slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 	out := buf.String()
@@ -352,7 +356,7 @@ func TestClassifyAnswerNotLoggedAtInfo(t *testing.T) {
 	buf := &safeBuffer{}
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
 	oc.Logger = slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err != nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 	if out := buf.String(); strings.Contains(out, "model answer") {
@@ -369,7 +373,7 @@ func TestClassifyLogsRejectedAnswer(t *testing.T) {
 	buf := &safeBuffer{}
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
 	oc.Logger = slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err == nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err == nil {
 		t.Fatal("expected error for out-of-set answer")
 	}
 	out := buf.String()

@@ -1,4 +1,4 @@
-package classify
+package classify_test
 
 import (
 	"bytes"
@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sgaunet/moraine/internal/classify"
 	"github.com/sgaunet/moraine/internal/photo"
 )
 
@@ -34,7 +35,7 @@ func TestEvenlySpaced(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := evenlySpaced(mk(tc.size), tc.n)
+			got := classify.EvenlySpaced(mk(tc.size), tc.n)
 			var names []string
 			for _, p := range got {
 				names = append(names, p.Name)
@@ -64,7 +65,7 @@ func TestNormaliseTheme(t *testing.T) {
 		"mountain hicking": "", // multi-word not in set
 	}
 	for in, want := range tests {
-		if got := normaliseTheme(in, set); got != want {
+		if got := classify.NormaliseTheme(in, set); got != want {
 			t.Errorf("normaliseTheme(%q) = %q; want %q", in, got, want)
 		}
 	}
@@ -86,24 +87,26 @@ func writeJPEG(t *testing.T, path string) {
 func TestSampleImagesSmallSendsAllLargeSamples(t *testing.T) {
 	dir := t.TempDir()
 	mkCluster := func(n int) photo.Cluster {
-		var ps []photo.Photo
-		for i := 0; i < n; i++ {
+		ps := make([]photo.Photo, 0, n)
+		for i := range n {
 			p := filepath.Join(dir, "img"+string(rune('a'+i))+".jpg")
 			writeJPEG(t, p)
 			ps = append(ps, photo.Photo{Path: p, Format: photo.JPEG})
 		}
 		return photo.Cluster{Photos: ps}
 	}
-	oc := func(n int) *OllamaClassifier { return &OllamaClassifier{Sample: n, Logger: slog.Default()} }
+	oc := func(n int) *classify.OllamaClassifier {
+		return &classify.OllamaClassifier{Sample: n, Logger: slog.Default()}
+	}
 	ctx := context.Background()
 
-	if got := oc(3).sampleImages(ctx, mkCluster(2)); len(got) != 2 {
+	if got := oc(3).SampleImages(ctx, mkCluster(2)); len(got) != 2 {
 		t.Errorf("small group: sent %d images; want 2 (all)", len(got))
 	}
-	if got := oc(3).sampleImages(ctx, mkCluster(5)); len(got) != 3 {
+	if got := oc(3).SampleImages(ctx, mkCluster(5)); len(got) != 3 {
 		t.Errorf("large group: sent %d images; want 3 (sample)", len(got))
 	}
-	if got := oc(0).sampleImages(ctx, mkCluster(5)); got != nil {
+	if got := oc(0).SampleImages(ctx, mkCluster(5)); got != nil {
 		t.Errorf("sample 0: want nil, got %v", got)
 	}
 }
@@ -139,8 +142,8 @@ func TestChoosePhotosRAWEligibilityAndPreference(t *testing.T) {
 	}
 
 	t.Run("small mixed group uses every eligible incl RAW", func(t *testing.T) {
-		o := &OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
-		got := o.choosePhotos(photo.Cluster{Photos: []photo.Photo{jpg, raw}}) // 2 ≤ 3
+		o := &classify.OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		got := o.ChoosePhotos(photo.Cluster{Photos: []photo.Photo{jpg, raw}}) // 2 ≤ 3
 		j, r := countFormats(got)
 		if j != 1 || r != 1 {
 			t.Errorf("small group chose jpeg=%d raw=%d; want 1 and 1", j, r)
@@ -148,33 +151,33 @@ func TestChoosePhotosRAWEligibilityAndPreference(t *testing.T) {
 	})
 
 	t.Run("large group prefers JPEG, no RAW extracted when enough JPEG", func(t *testing.T) {
-		o := &OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		o := &classify.OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
 		photos := append(rep(jpg, 4), rep(raw, 2)...) // 6 photos > 3
-		j, r := countFormats(o.choosePhotos(photo.Cluster{Photos: photos}))
+		j, r := countFormats(o.ChoosePhotos(photo.Cluster{Photos: photos}))
 		if j != 3 || r != 0 {
 			t.Errorf("large group chose jpeg=%d raw=%d; want 3 and 0 (RAW avoided)", j, r)
 		}
 	})
 
 	t.Run("large group fills sample with RAW when JPEG scarce", func(t *testing.T) {
-		o := &OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		o := &classify.OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
 		photos := append(rep(jpg, 1), rep(raw, 5)...) // 6 photos > 3
-		j, r := countFormats(o.choosePhotos(photo.Cluster{Photos: photos}))
+		j, r := countFormats(o.ChoosePhotos(photo.Cluster{Photos: photos}))
 		if j != 1 || r != 2 {
 			t.Errorf("large group chose jpeg=%d raw=%d; want 1 and 2 (filled with RAW)", j, r)
 		}
 	})
 
 	t.Run("RAW ineligible without an extractor", func(t *testing.T) {
-		o := &OllamaClassifier{Sample: 3} // Raw nil
-		if got := o.choosePhotos(photo.Cluster{Photos: []photo.Photo{raw}}); got != nil {
+		o := &classify.OllamaClassifier{Sample: 3} // Raw nil
+		if got := o.ChoosePhotos(photo.Cluster{Photos: []photo.Photo{raw}}); got != nil {
 			t.Errorf("RAW without extractor must be skipped; got %v", got)
 		}
 	})
 
 	t.Run("HEIC excluded", func(t *testing.T) {
-		o := &OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
-		if got := o.choosePhotos(photo.Cluster{Photos: []photo.Photo{heic}}); got != nil {
+		o := &classify.OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		if got := o.ChoosePhotos(photo.Cluster{Photos: []photo.Photo{heic}}); got != nil {
 			t.Errorf("HEIC must be excluded; got %v", got)
 		}
 	})

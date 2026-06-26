@@ -4,6 +4,7 @@
 package exiftooltest
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +29,7 @@ type Options struct {
 // Point Config.ExifToolPath (or an Extractor.Path) at it.
 func Stub(dir string, opts Options) (string, error) {
 	if runtime.GOOS == "windows" {
-		return "", fmt.Errorf("exiftooltest stub is not supported on windows")
+		return "", errors.New("exiftooltest stub is not supported on windows")
 	}
 	version := opts.Version
 	if version == "" {

@@ -139,16 +139,12 @@ func writeTinyJPEG(t *testing.T, path string) {
 	}
 }
 
-func jpegCluster(t *testing.T, n int) photo.Cluster {
+func jpegCluster(t *testing.T) photo.Cluster {
 	t.Helper()
 	dir := t.TempDir()
-	var ps []photo.Photo
-	for i := 0; i < n; i++ {
-		p := filepath.Join(dir, "p"+string(rune('0'+i))+".jpg")
-		writeTinyJPEG(t, p)
-		ps = append(ps, photo.Photo{Path: p, Name: filepath.Base(p), Format: photo.JPEG})
-	}
-	return photo.Cluster{Photos: ps}
+	p := filepath.Join(dir, "p0.jpg")
+	writeTinyJPEG(t, p)
+	return photo.Cluster{Photos: []photo.Photo{{Path: p, Name: filepath.Base(p), Format: photo.JPEG}}}
 }
 
 func TestOllamaClassifyMapsInSetTheme(t *testing.T) {
@@ -161,7 +157,7 @@ func TestOllamaClassifyMapsInSetTheme(t *testing.T) {
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "qwen3-vl:8b", 1, themes)
-	got, err := oc.Classify(context.Background(), jpegCluster(t, 1))
+	got, err := oc.Classify(context.Background(), jpegCluster(t))
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -177,7 +173,7 @@ func TestOllamaClassifyParsesStructuredJSON(t *testing.T) {
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "qwen3-vl:8b", 1, themes)
-	got, err := oc.Classify(context.Background(), jpegCluster(t, 1))
+	got, err := oc.Classify(context.Background(), jpegCluster(t))
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -193,7 +189,7 @@ func TestOllamaClassifyOutOfSetIsError(t *testing.T) {
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err == nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err == nil {
 		t.Fatal("expected error for out-of-set answer")
 	}
 }
@@ -207,7 +203,7 @@ func TestOllamaClassifyRetriesThenFails(t *testing.T) {
 	defer srv.Close()
 
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err == nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err == nil {
 		t.Fatal("expected error when Ollama returns 500")
 	}
 	if calls < 2 {
@@ -224,7 +220,7 @@ func TestOllamaClassifyTimeout(t *testing.T) {
 
 	oc := classify.NewOllama(srv.URL, "m", 1, themes)
 	oc.Timeout = 20 * time.Millisecond
-	if _, err := oc.Classify(context.Background(), jpegCluster(t, 1)); err == nil {
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err == nil {
 		t.Fatal("expected timeout error")
 	}
 }

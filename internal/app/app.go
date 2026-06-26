@@ -94,10 +94,12 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 		logger.Warn("model missing from Ollama: pull it then re-run",
 			"model", cfg.Model, "command", "ollama pull "+cfg.Model)
 		return nil
-	default:
+	case classify.StatusReady:
 		logger.Info("model ready", "url", cfg.OllamaURL, "model", cfg.Model)
 		return oc
 	}
+	// Unreachable: Preflight returns only the three Status values handled above.
+	return nil
 }
 
 // tally records one placement Result into the summary and logs it.

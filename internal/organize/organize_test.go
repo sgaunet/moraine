@@ -1,4 +1,4 @@
-package organize
+package organize_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgaunet/moraine/internal/organize"
 	"github.com/sgaunet/moraine/internal/photo"
 )
 
@@ -34,12 +35,12 @@ func TestSafeJoin(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := safeJoin(root, tc.subdir)
+			got, err := organize.SafeJoin(root, tc.subdir)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got %q", got)
 				}
-				if !errors.Is(err, ErrInvalidDestSubdir) {
+				if !errors.Is(err, organize.ErrInvalidDestSubdir) {
 					t.Fatalf("expected ErrInvalidDestSubdir, got %v", err)
 				}
 				return
@@ -53,15 +54,15 @@ func TestSafeJoin(t *testing.T) {
 
 func TestUniqueName(t *testing.T) {
 	dir := t.TempDir()
-	if got := uniqueName(dir, "a.jpg"); got != "a.jpg" {
+	if got := organize.UniqueName(dir, "a.jpg"); got != "a.jpg" {
 		t.Fatalf("no collision: want a.jpg, got %q", got)
 	}
 	writeFile(t, filepath.Join(dir, "a.jpg"), "x")
-	if got := uniqueName(dir, "a.jpg"); got != "a (1).jpg" {
+	if got := organize.UniqueName(dir, "a.jpg"); got != "a (1).jpg" {
 		t.Fatalf("first collision: want 'a (1).jpg', got %q", got)
 	}
 	writeFile(t, filepath.Join(dir, "a (1).jpg"), "x")
-	if got := uniqueName(dir, "a.jpg"); got != "a (2).jpg" {
+	if got := organize.UniqueName(dir, "a.jpg"); got != "a (2).jpg" {
 		t.Fatalf("second collision: want 'a (2).jpg', got %q", got)
 	}
 }
@@ -72,7 +73,7 @@ func TestCopyFile(t *testing.T) {
 	dst := filepath.Join(dir, "dst.bin")
 	writeFile(t, src, "hello")
 
-	if err := copyFile(src, dst); err != nil {
+	if err := organize.CopyFile(src, dst); err != nil {
 		t.Fatalf("copyFile: %v", err)
 	}
 	got, _ := os.ReadFile(dst)
@@ -83,7 +84,7 @@ func TestCopyFile(t *testing.T) {
 		t.Fatalf("source must be preserved: %v", err)
 	}
 	// O_EXCL: refuse to overwrite an existing destination.
-	if err := copyFile(src, dst); err == nil {
+	if err := organize.CopyFile(src, dst); err == nil {
 		t.Fatal("expected error overwriting existing dst")
 	}
 }
@@ -97,17 +98,17 @@ func TestSameContent(t *testing.T) {
 	writeFile(t, b, "same")
 	writeFile(t, c, "different-length")
 
-	if ok, err := sameContent(a, b); err != nil || !ok {
+	if ok, err := organize.SameContent(a, b); err != nil || !ok {
 		t.Fatalf("identical: ok=%v err=%v", ok, err)
 	}
-	if ok, err := sameContent(a, c); err != nil || ok {
+	if ok, err := organize.SameContent(a, c); err != nil || ok {
 		t.Fatalf("size mismatch must be false: ok=%v err=%v", ok, err)
 	}
 	// same size, different bytes
 	d := filepath.Join(dir, "d")
 	writeFile(t, d, "samz")
 	writeFile(t, a, "same")
-	if ok, err := sameContent(a, d); err != nil || ok {
+	if ok, err := organize.SameContent(a, d); err != nil || ok {
 		t.Fatalf("different bytes must be false: ok=%v err=%v", ok, err)
 	}
 }
@@ -115,7 +116,7 @@ func TestSameContent(t *testing.T) {
 func clusterOf(t *testing.T, dir string, names ...string) photo.Cluster {
 	t.Helper()
 	date := time.Date(2025, 8, 12, 10, 0, 0, 0, time.UTC)
-	var ps []photo.Photo
+	ps := make([]photo.Photo, 0, len(names))
 	for i, n := range names {
 		p := filepath.Join(dir, n)
 		writeFile(t, p, "content-"+n)
@@ -129,7 +130,7 @@ func TestPlaceCopiesIntoLayout(t *testing.T) {
 	dest := t.TempDir()
 	c := clusterOf(t, src, "IMG_1.jpg", "IMG_2.jpg")
 
-	results := New(dest).Place(context.Background(), c, "nature")
+	results := organize.New(dest).Place(context.Background(), c, "nature")
 	if len(results) != 2 {
 		t.Fatalf("want 2 results, got %d", len(results))
 	}
@@ -138,7 +139,7 @@ func TestPlaceCopiesIntoLayout(t *testing.T) {
 		if r.Err != nil {
 			t.Fatalf("placement error: %v", r.Err)
 		}
-		if r.Action != ActionCopied {
+		if r.Action != organize.ActionCopied {
 			t.Fatalf("want copied, got %s", r.Action)
 		}
 		if filepath.Dir(r.Dest) != wantDir {
@@ -158,22 +159,22 @@ func TestPlaceSkipsIdenticalAndRenamesDifferent(t *testing.T) {
 	dest := t.TempDir()
 	c := clusterOf(t, src, "IMG_1.jpg")
 
-	org := New(dest)
+	org := organize.New(dest)
 	first := org.Place(context.Background(), c, "family")
-	if first[0].Action != ActionCopied {
+	if first[0].Action != organize.ActionCopied {
 		t.Fatalf("first run: want copied, got %s", first[0].Action)
 	}
 
 	// Re-run identical → skipped.
 	second := org.Place(context.Background(), c, "family")
-	if second[0].Action != ActionSkippedIdentical {
+	if second[0].Action != organize.ActionSkippedIdentical {
 		t.Fatalf("re-run: want skipped-identical, got %s", second[0].Action)
 	}
 
 	// Different content, same name → renamed.
 	writeFile(t, filepath.Join(src, "IMG_1.jpg"), "totally-different-bytes")
 	third := org.Place(context.Background(), c, "family")
-	if third[0].Action != ActionRenamed {
+	if third[0].Action != organize.ActionRenamed {
 		t.Fatalf("different content: want renamed, got %s", third[0].Action)
 	}
 	if filepath.Base(third[0].Dest) != "IMG_1 (1).jpg" {
@@ -187,7 +188,7 @@ func TestPlaceCancelledContext(t *testing.T) {
 	c := clusterOf(t, src, "IMG_1.jpg")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	results := New(dest).Place(ctx, c, "nature")
+	results := organize.New(dest).Place(ctx, c, "nature")
 	if results[0].Err == nil {
 		t.Fatal("expected context error")
 	}

@@ -39,7 +39,7 @@ func (s *safeBuffer) String() string {
 	return s.b.String()
 }
 
-var modTime = time.Date(2025, 8, 12, 12, 0, 0, 0, time.Local)
+var modTime = time.Date(2025, 8, 12, 12, 0, 0, 0, time.UTC)
 
 func makePNG(t *testing.T, path string) {
 	t.Helper()

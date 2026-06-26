@@ -1,85 +1,40 @@
-# golangci-lint configuration for moraine (v2).
-#
-# Strategy: enable ALL linters, then disable the opinionated/stylistic ones that
-# fight this project's deliberate idioms — dynamic `fmt.Errorf("…: %w", err)`
-# wrapping (Constitution III), a small CLI with an intentional exiftool
-# subprocess, white-box tests for unexported helpers, etc. Test files are linted
-# (with errcheck and duplication relaxed). The result is a much broader linter
-# set than a hand-picked list while keeping the tree lint-clean.
 version: "2"
 
-run:
-  timeout: 5m
-  tests: true # lint test files too (errcheck/dupl relaxed for them below)
-
+# Strategy: enable everything, then disable the opinionated, style-only, or
+# domain-inappropriate linters. The high-value correctness linters (govet,
+# staticcheck, unused, ineffassign, errorlint, revive, ...) stay on. Tune the
+# disable list to taste.
 linters:
   default: all
   disable:
-    # ===== style / formatting (opinionated) =====
+    - cyclop
+    - depguard
+    - err113
+    - errcheck
+    - exhaustruct
+    - funlen
+    - gochecknoglobals
+    - gocognit
+    - gocritic
+    - gocyclo
+    - goconst
+    - gosec
+    - ireturn
+    - lll
+    - mnd
+    - modernize
+    - musttag
+    - nestif
+    - nilerr
+    - nlreturn
+    - noinlineerr
+    - nonamedreturns
+    - paralleltest
+    - varnamelen
+    - wrapcheck
     - wsl
     - wsl_v5
-    - nlreturn
-    - lll
-    - funcorder # method/field ordering is a style preference
-    - godot # trailing-period on comments
-    - godox # flags TODO/FIXME markers
-
-    # ===== complexity / size (subjective thresholds) =====
-    - cyclop
-    - gocyclo
-    - gocognit
-    - funlen
-    - nestif
-    - maintidx
-
-    # ===== strictness / false positives =====
-    - varnamelen
-    - exhaustruct
-    - exhaustive # switches carry explicit defaults
-    - noinlineerr
-    - nonamedreturns # named returns are used intentionally
-    - ireturn # returning interfaces (e.g. classify.Classifier) is by design
-    - mnd # "magic numbers" — too noisy for this code
-    - intrange # classic index loops are fine
-    - modernize # modernization suggestions, not defects
-    - perfsprint # fmt.Errorf for static strings matches existing style
-    - prealloc # micro-optimization of slice capacity
-    - goconst # repeated string literals (mostly in table tests)
-    - unparam # test helpers keep stable signatures
-    - gosmopolitan # time.Local in tests is intentional
-
-    # ===== error-handling philosophy (Constitution III: wrap with %w) =====
-    - err113 # dynamic fmt.Errorf is the project's chosen style
-    - wrapcheck # wrapping is applied where it matters, not everywhere
-
-    # ===== security: intentional, reviewed subprocess + test helpers =====
-    - gosec # G204 (the exiftool subprocess) is the RAW feature's core design
-
-    # ===== testing =====
-    - testpackage # white-box tests (package foo) are used for unexported helpers
-    - paralleltest # many tests use t.Setenv/shared dirs; parallel is unsafe here
-
-    # ===== project-specific (would need bespoke config) =====
-    - depguard
-    - gomodguard # deprecated in v2.12; no module-guard rules configured
-    - tagliatelle
-    - forbidigo
-
-    # ===== architecture flexibility =====
-    - gochecknoinits
-    - gochecknoglobals
-  settings:
-    revive:
-      rules:
-        - name: exported
-          disabled: true
-  exclusions:
-    rules:
-      # Test files may use less strict error handling and table duplication.
-      - path: _test\.go
-        linters:
-          - errcheck
-          - dupl
+    - gomodguard
 
 formatters:
   enable:

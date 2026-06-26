@@ -41,13 +41,6 @@ func NewExtractor(path string, timeout time.Duration) *Extractor {
 	return &Extractor{Path: path, Timeout: timeout, Logger: slog.Default()}
 }
 
-func (e *Extractor) log() *slog.Logger {
-	if e.Logger != nil {
-		return e.Logger
-	}
-	return slog.Default()
-}
-
 // Extract returns the largest available embedded JPEG preview of rawPath, in
 // memory. It tries previewTags in order and returns the first non-empty result.
 // It returns ErrNoPreview when every tag is empty, or a wrapped error when
@@ -64,6 +57,13 @@ func (e *Extractor) Extract(ctx context.Context, rawPath string) ([]byte, error)
 		}
 	}
 	return nil, ErrNoPreview
+}
+
+func (e *Extractor) log() *slog.Logger {
+	if e.Logger != nil {
+		return e.Logger
+	}
+	return slog.Default()
 }
 
 // run executes exiftool with the given args (no shell), bounded by e.Timeout,

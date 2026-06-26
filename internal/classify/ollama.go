@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -49,14 +50,6 @@ func NewOllama(baseURL, model string, sample int, themes []string) *OllamaClassi
 		HTTP:    &http.Client{},
 		Logger:  slog.Default(),
 	}
-}
-
-// log returns the configured logger or the default, never nil.
-func (o *OllamaClassifier) log() *slog.Logger {
-	if o.Logger != nil {
-		return o.Logger
-	}
-	return slog.Default()
 }
 
 // Status is the outcome of an Ollama Preflight check.
@@ -199,6 +192,63 @@ var themeHints = map[string]string{
 	"family":         "people, portraits, family gatherings, children, daily life",
 }
 
+// Classify returns one configured theme slug for the cluster, or an error on
+// failure (transport, timeout, or an answer outside the configured set).
+func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (string, error) {
+	if o.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
+		defer cancel()
+	}
+
+	images := o.sampleImages(ctx, c)
+	if len(images) == 0 {
+		o.log().Warn("classification skipped: no usable image (HEIC, or RAW without a preview, is not sent to the model)",
+			"group_size", len(c.Photos))
+		return "", errors.New("no usable image to classify")
+	}
+	reqBody := chatRequest{
+		Model:   o.Model,
+		Stream:  false,
+		Format:  o.schema(),
+		Options: chatOptions{Temperature: 0, Seed: ollamaSeed},
+		Messages: []chatMessage{
+			{Role: "system", Content: o.systemPrompt()},
+			{Role: "user", Content: o.userPrompt(), Images: images},
+		},
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("encoding ollama request: %w", err)
+	}
+
+	o.log().Debug("contacting model", "url", o.BaseURL, "model", o.Model, "images", len(images))
+
+	const attempts = 2
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		theme, err := o.doChat(ctx, payload)
+		if err == nil {
+			return theme, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			break // timeout/cancel: do not keep retrying
+		}
+	}
+	o.log().Warn("model unavailable or answer rejected — fallback",
+		"url", o.BaseURL, "model", o.Model, "err", lastErr)
+	return "", fmt.Errorf("ollama unavailable after %d attempts: %w", attempts, lastErr)
+}
+
+// log returns the configured logger or the default, never nil.
+func (o *OllamaClassifier) log() *slog.Logger {
+	if o.Logger != nil {
+		return o.Logger
+	}
+	return slog.Default()
+}
+
 // systemPrompt is the stable output contract sent as the system message. It
 // fixes the model's role and the JSON shape; the per-request category list lives
 // in userPrompt. Naming JSON here is recommended alongside the Format schema.
@@ -239,55 +289,6 @@ func (o *OllamaClassifier) schema() responseSchema {
 		},
 		Required: []string{"category"},
 	}
-}
-
-// Classify returns one configured theme slug for the cluster, or an error on
-// failure (transport, timeout, or an answer outside the configured set).
-func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (string, error) {
-	if o.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
-		defer cancel()
-	}
-
-	images := o.sampleImages(ctx, c)
-	if len(images) == 0 {
-		o.log().Warn("classification skipped: no usable image (HEIC, or RAW without a preview, is not sent to the model)",
-			"group_size", len(c.Photos))
-		return "", fmt.Errorf("no usable image to classify")
-	}
-	reqBody := chatRequest{
-		Model:   o.Model,
-		Stream:  false,
-		Format:  o.schema(),
-		Options: chatOptions{Temperature: 0, Seed: ollamaSeed},
-		Messages: []chatMessage{
-			{Role: "system", Content: o.systemPrompt()},
-			{Role: "user", Content: o.userPrompt(), Images: images},
-		},
-	}
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("encoding ollama request: %w", err)
-	}
-
-	o.log().Debug("contacting model", "url", o.BaseURL, "model", o.Model, "images", len(images))
-
-	const attempts = 2
-	var lastErr error
-	for attempt := 1; attempt <= attempts; attempt++ {
-		theme, err := o.doChat(ctx, payload)
-		if err == nil {
-			return theme, nil
-		}
-		lastErr = err
-		if ctx.Err() != nil {
-			break // timeout/cancel: do not keep retrying
-		}
-	}
-	o.log().Warn("model unavailable or answer rejected — fallback",
-		"url", o.BaseURL, "model", o.Model, "err", lastErr)
-	return "", fmt.Errorf("ollama unavailable after %d attempts: %w", attempts, lastErr)
 }
 
 func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, error) {
@@ -414,7 +415,7 @@ func evenlySpaced(photos []photo.Photo, n int) []photo.Photo {
 		return append(out, photos[0])
 	}
 	step := float64(len(photos)-1) / float64(n-1)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		idx := int(float64(i)*step + 0.5)
 		out = append(out, photos[idx])
 	}

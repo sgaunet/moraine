@@ -37,6 +37,8 @@ func (f Format) String() string {
 		return "heic"
 	case RAW:
 		return "raw"
+	case FormatUnknown:
+		return "unknown"
 	default:
 		return "unknown"
 	}
