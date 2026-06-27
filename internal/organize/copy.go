@@ -1,10 +1,11 @@
 package organize
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/sgaunet/moraine/internal/contenthash"
 )
 
 // copyFile copies src to dst durably and non-destructively: it opens dst with
@@ -54,30 +55,13 @@ func sameContent(a, b string) (bool, error) {
 	if ai.Size() != bi.Size() {
 		return false, nil
 	}
-	ah, err := hashFile(a)
+	ah, err := contenthash.Hash(a)
 	if err != nil {
 		return false, err
 	}
-	bh, err := hashFile(b)
+	bh, err := contenthash.Hash(b)
 	if err != nil {
 		return false, err
 	}
 	return ah == bh, nil
-}
-
-// hashFile returns the SHA-256 digest of the file at path as an array.
-func hashFile(path string) ([sha256.Size]byte, error) {
-	var sum [sha256.Size]byte
-	f, err := os.Open(path)
-	if err != nil {
-		return sum, fmt.Errorf("opening %q: %w", path, err)
-	}
-	defer func() { _ = f.Close() }()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return sum, fmt.Errorf("reading %q: %w", path, err)
-	}
-	copy(sum[:], h.Sum(nil))
-	return sum, nil
 }

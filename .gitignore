@@ -6,3 +6,7 @@
 
 # GoReleaser build output
 /dist
+
+# Go test & coverage artifacts
+*.test
+*.out

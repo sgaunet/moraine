@@ -84,3 +84,68 @@ func TestRunWithExiftoolProceeds(t *testing.T) {
 		t.Error("expected the PNG to be organized under dest when exiftool is available")
 	}
 }
+
+func TestRunCleanDispatchDeletes(t *testing.T) {
+	src := t.TempDir()
+	dst := filepath.Join(src, "_sorted")
+	orig := filepath.Join(src, "a.jpg")
+	if err := os.MkdirAll(filepath.Join(dst, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orig, []byte("PIC"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "x", "a.jpg"), []byte("PIC"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := run([]string{"clean", "-delete", "-dest", dst, src}, io.Discard, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit = %d; stderr: %s", code, stderr.String())
+	}
+	if _, err := os.Lstat(orig); err == nil {
+		t.Error("`clean -delete` should remove the copied original")
+	}
+}
+
+func TestRunCleanHelp(t *testing.T) {
+	var stdout bytes.Buffer
+	code := run([]string{"clean", "-help"}, &stdout, io.Discard)
+	if code != exitOK {
+		t.Errorf("clean -help exit = %d, want %d", code, exitOK)
+	}
+	if !strings.Contains(stdout.String(), "moraine clean —") {
+		t.Errorf("clean help banner missing; got: %s", stdout.String())
+	}
+}
+
+func TestRunCleanUsageError(t *testing.T) {
+	code := run([]string{"clean"}, io.Discard, io.Discard) // missing source
+	if code != exitUsage {
+		t.Errorf("missing source exit = %d, want %d (usage)", code, exitUsage)
+	}
+}
+
+func TestRunCleanMissingDest(t *testing.T) {
+	src := t.TempDir()
+	code := run([]string{"clean", "-dest", filepath.Join(src, "nope"), src}, io.Discard, io.Discard)
+	if code != exitRuntime {
+		t.Errorf("missing dest exit = %d, want %d (runtime)", code, exitRuntime)
+	}
+}
+
+func TestRunSortHelpStillWorks(t *testing.T) {
+	var stdout bytes.Buffer
+	code := run([]string{"-help"}, &stdout, io.Discard)
+	if code != exitOK {
+		t.Errorf("sort -help exit = %d, want %d", code, exitOK)
+	}
+	out := stdout.String()
+	if strings.Contains(out, "moraine clean —") {
+		t.Error("-help should show the sort usage, not the clean banner")
+	}
+	if !strings.Contains(out, "automatic photo organizer") {
+		t.Errorf("sort usage banner missing; got: %s", out)
+	}
+}

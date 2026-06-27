@@ -175,6 +175,7 @@ or deleted.
 
 Usage:
   moraine [options] <directory-or-file>
+  moraine clean [options] <source-dir>   (delete originals already copied; see `+"`moraine clean -help`"+`)
 
 Argument:
   <directory-or-file>   directory (batch mode) or file (single photo)
