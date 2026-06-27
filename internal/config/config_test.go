@@ -1,21 +1,34 @@
 package config_test
 
 import (
-	"bytes"
-	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/sgaunet/moraine/internal/config"
 )
 
-func TestParseDefaults(t *testing.T) {
-	cfg, err := config.Parse([]string{"/some/src"})
+// defOpts returns Options pre-populated with the CLI defaults (the transport layer
+// supplies these via flag defaults), so a test only tweaks the field under test.
+func defOpts(src string) config.Options {
+	return config.Options{
+		Source:    src,
+		Model:     config.DefaultModel,
+		Gap:       config.DefaultGap,
+		Sample:    config.DefaultSample,
+		OllamaURL: config.DefaultOllamaURL,
+		Themes:    config.DefaultThemes,
+		Fallback:  config.DefaultFallback,
+		LogLevel:  config.DefaultLogLevel,
+		ExifTool:  config.DefaultExifTool,
+	}
+}
+
+func TestNewDefaults(t *testing.T) {
+	cfg, err := config.New(defOpts("/some/src"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,8 +56,11 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
-func TestParseCustomThemes(t *testing.T) {
-	cfg, err := config.Parse([]string{"-themes", "friends, hiking ,party", "-fallback-theme", "misc", "/src"})
+func TestNewCustomThemes(t *testing.T) {
+	o := defOpts("/src")
+	o.Themes = "friends, hiking ,party"
+	o.Fallback = "misc"
+	cfg, err := config.New(o)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,9 +73,11 @@ func TestParseCustomThemes(t *testing.T) {
 	}
 }
 
-func TestParseExifTool(t *testing.T) {
+func TestNewExifTool(t *testing.T) {
 	// Custom path is honored.
-	cfg, err := config.Parse([]string{"-exiftool", "/opt/bin/exiftool", "/src"})
+	o := defOpts("/src")
+	o.ExifTool = "/opt/bin/exiftool"
+	cfg, err := config.New(o)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,88 +85,51 @@ func TestParseExifTool(t *testing.T) {
 		t.Errorf("ExifToolPath: want /opt/bin/exiftool, got %q", cfg.ExifToolPath)
 	}
 	// Empty value falls back to the default.
-	cfg, err = config.Parse([]string{"-exiftool", "  ", "/src"})
+	o.ExifTool = "  "
+	cfg, err = config.New(o)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.ExifToolPath != config.DefaultExifTool {
-		t.Errorf("empty -exiftool: want default %q, got %q", config.DefaultExifTool, cfg.ExifToolPath)
+		t.Errorf("empty exiftool: want default %q, got %q", config.DefaultExifTool, cfg.ExifToolPath)
 	}
 }
 
-func TestParseErrors(t *testing.T) {
+func TestNewErrors(t *testing.T) {
 	tests := []struct {
-		name string
-		args []string
+		name   string
+		mutate func(*config.Options)
 	}{
-		{"missing source", []string{}},
-		{"two sources", []string{"a", "b"}},
-		{"unknown flag addr", []string{"-addr", ":8080", "/src"}},
-		{"unknown flag home", []string{"-home", "1,2", "/src"}},
-		{"non-positive gap", []string{"-gap", "0", "/src"}},
-		{"negative sample", []string{"-sample", "-1", "/src"}},
-		{"invalid theme slug", []string{"-themes", "Bad Slug", "/src"}},
-		{"empty themes", []string{"-themes", " , ", "/src"}},
-		{"duplicate theme", []string{"-themes", "a,a", "/src"}},
-		{"fallback collides", []string{"-themes", "a,other", "/src"}},
-		{"invalid fallback slug", []string{"-fallback-theme", "Nope!", "/src"}},
-		{"invalid log level", []string{"-log-level", "verbose", "/src"}},
+		{"non-positive gap", func(o *config.Options) { o.Gap = 0 }},
+		{"negative sample", func(o *config.Options) { o.Sample = -1 }},
+		{"invalid theme slug", func(o *config.Options) { o.Themes = "Bad Slug" }},
+		{"empty themes", func(o *config.Options) { o.Themes = " , " }},
+		{"duplicate theme", func(o *config.Options) { o.Themes = "a,a" }},
+		{"fallback collides", func(o *config.Options) { o.Themes = "a,other" }},
+		{"invalid fallback slug", func(o *config.Options) { o.Fallback = "Nope!" }},
+		{"invalid log level", func(o *config.Options) { o.LogLevel = "verbose" }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := config.Parse(tc.args); err == nil {
-				t.Fatalf("expected error for %v", tc.args)
+			o := defOpts("/src")
+			tc.mutate(&o)
+			if _, err := config.New(o); err == nil {
+				t.Fatalf("expected error for %s", tc.name)
 			}
 		})
 	}
 }
 
-func TestParseHelp(t *testing.T) {
-	for _, arg := range []string{"-help", "-h"} {
-		if _, err := config.Parse([]string{arg}); !errors.Is(err, config.ErrHelp) {
-			t.Errorf("Parse(%q): want ErrHelp, got %v", arg, err)
-		}
-	}
-}
-
-func TestParseVersion(t *testing.T) {
-	cfg, err := config.Parse([]string{"-version"}) // no source required
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !cfg.ShowVersion {
-		t.Error("want ShowVersion true for -version")
-	}
-}
-
-func TestWriteUsage(t *testing.T) {
-	var buf bytes.Buffer
-	config.WriteUsage(&buf)
-	out := buf.String()
-
-	wants := []string{
-		"-dest", "-gap", "-sample", "-model", "-ollama-url",
-		"-themes", "-fallback-theme", "-log-level", "-version", "-exiftool",
-		config.DefaultThemes,              // default theme set
-		"<theme>/<year>/<year-month-day>", // destination layout
-		"RAW",                             // RAW support documented
-		"Exit codes", "Examples",          // sections
-	}
-	for _, w := range wants {
-		if !strings.Contains(out, w) {
-			t.Errorf("WriteUsage output missing %q", w)
-		}
-	}
-}
-
-func TestParseLogLevels(t *testing.T) {
+func TestNewLogLevels(t *testing.T) {
 	for in, want := range map[string]slog.Level{
 		"debug": slog.LevelDebug,
 		"info":  slog.LevelInfo,
 		"warn":  slog.LevelWarn,
 		"error": slog.LevelError,
 	} {
-		cfg, err := config.Parse([]string{"-log-level", in, "/src"})
+		o := defOpts("/src")
+		o.LogLevel = in
+		cfg, err := config.New(o)
 		if err != nil {
 			t.Fatalf("%s: %v", in, err)
 		}
@@ -160,7 +141,7 @@ func TestParseLogLevels(t *testing.T) {
 
 func TestValidateDirectorySource(t *testing.T) {
 	dir := t.TempDir()
-	cfg, err := config.Parse([]string{dir})
+	cfg, err := config.New(defOpts(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +162,7 @@ func TestValidateFileSource(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Parse([]string{file})
+	cfg, err := config.New(defOpts(file))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +178,7 @@ func TestValidateFileSource(t *testing.T) {
 }
 
 func TestValidateMissingSource(t *testing.T) {
-	cfg, err := config.Parse([]string{filepath.Join(t.TempDir(), "nope")})
+	cfg, err := config.New(defOpts(filepath.Join(t.TempDir(), "nope")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +190,9 @@ func TestValidateMissingSource(t *testing.T) {
 func TestValidateExplicitDest(t *testing.T) {
 	dir := t.TempDir()
 	dest := t.TempDir()
-	cfg, err := config.Parse([]string{"-dest", dest, dir})
+	o := defOpts(dir)
+	o.Dest = dest
+	cfg, err := config.New(o)
 	if err != nil {
 		t.Fatal(err)
 	}

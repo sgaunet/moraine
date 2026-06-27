@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,8 +8,8 @@ import (
 	"github.com/sgaunet/moraine/internal/config"
 )
 
-func TestParseCleanDefaults(t *testing.T) {
-	cfg, err := config.ParseClean([]string{"some/src"})
+func TestNewCleanDefaults(t *testing.T) {
+	cfg, err := config.NewClean(config.CleanOptions{Source: "some/src", LogLevel: config.DefaultLogLevel})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -25,41 +24,24 @@ func TestParseCleanDefaults(t *testing.T) {
 	}
 }
 
-func TestParseCleanDeleteAndDest(t *testing.T) {
-	cfg, err := config.ParseClean([]string{"-delete", "-dest", "out", "src"})
+func TestNewCleanDeleteAndDest(t *testing.T) {
+	cfg, err := config.NewClean(config.CleanOptions{
+		Source: "src", Dest: "out", Delete: true, LogLevel: config.DefaultLogLevel,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !cfg.Delete {
-		t.Error("-delete should set Delete true")
+		t.Error("--delete should set Delete true")
 	}
 	if !filepath.IsAbs(cfg.DestRoot) || filepath.Base(cfg.DestRoot) != "out" {
 		t.Errorf("DestRoot = %q, want an absolute path ending in out", cfg.DestRoot)
 	}
 }
 
-func TestParseCleanErrors(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-	}{
-		{"missing source", []string{}},
-		{"extra source", []string{"a", "b"}},
-		{"bad log level", []string{"-log-level", "loud", "a"}},
-		{"unknown flag", []string{"-nope", "a"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, err := config.ParseClean(tt.args); err == nil {
-				t.Errorf("expected an error for args %v", tt.args)
-			}
-		})
-	}
-}
-
-func TestParseCleanHelp(t *testing.T) {
-	if _, err := config.ParseClean([]string{"-help"}); !errors.Is(err, config.ErrHelp) {
-		t.Errorf("expected ErrHelp, got %v", err)
+func TestNewCleanErrors(t *testing.T) {
+	if _, err := config.NewClean(config.CleanOptions{Source: "a", LogLevel: "loud"}); err == nil {
+		t.Error("expected an error for an invalid log level")
 	}
 }
 

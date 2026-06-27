@@ -1,10 +1,7 @@
 package config
 
 import (
-	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,7 +9,7 @@ import (
 )
 
 // CleanConfig holds the typed configuration for one `clean` invocation. It is built
-// once by ParseClean (syntax/flags, no I/O) and finalised by Validate (filesystem).
+// once by NewClean (syntax/cross-field, no I/O) and finalised by Validate (filesystem).
 type CleanConfig struct {
 	Source   string     // absolute path of the source tree to clean
 	DestRoot string     // absolute path of the destination library (the "already archived" set)
@@ -20,69 +17,42 @@ type CleanConfig struct {
 	LogLevel slog.Level // logging verbosity
 }
 
-// cleanFlags holds the pointers returned by flag registration so ParseClean and
-// WriteCleanUsage share a single flag definition (no drift in names or defaults).
-type cleanFlags struct {
-	dest, logLevel *string
-	del            *bool
+// CleanOptions carries the already-parsed CLI inputs for a clean run. The transport
+// layer fills it from typed flags and a single positional Source, then calls NewClean.
+type CleanOptions struct {
+	Source   string // positional argument (source directory)
+	Dest     string // --dest (empty ⇒ resolved to <source>/_sorted in Validate)
+	Delete   bool   // --delete
+	LogLevel string // --log-level (textual)
 }
 
-// registerCleanFlags declares the clean subcommand's flags on fs. It is the single
-// source of truth for those flags; WriteCleanUsage reuses it via PrintDefaults.
-func registerCleanFlags(fs *flag.FlagSet) *cleanFlags {
-	return &cleanFlags{
-		dest:     fs.String("dest", "", "destination root holding the copies (default <source>/_sorted; never deleted from)"),
-		del:      fs.Bool("delete", false, "actually delete matched originals (default: dry-run, deletes nothing)"),
-		logLevel: fs.String("log-level", DefaultLogLevel, "log verbosity: debug|info|warn|error"),
-	}
-}
-
-// ParseClean builds a CleanConfig from the arguments that follow the `clean`
-// subcommand (the program name and the "clean" token already stripped). It reports
-// usage/argument errors (exit code 2 at the call site) and returns ErrHelp on
-// -h/-help. Filesystem checks are deferred to Validate.
-func ParseClean(args []string) (CleanConfig, error) {
-	fs := flag.NewFlagSet("moraine clean", flag.ContinueOnError)
-	fs.SetOutput(io.Discard) // caller renders usage; avoid flag's own noise
-	f := registerCleanFlags(fs)
-
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return CleanConfig{}, ErrHelp
-		}
-		return CleanConfig{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-
-	rest := fs.Args()
-	if len(rest) == 0 {
-		return CleanConfig{}, errors.New("missing source: a directory is expected")
-	}
-	if len(rest) > 1 {
-		return CleanConfig{}, fmt.Errorf("exactly one source is expected, got %d (%v)", len(rest), rest)
-	}
-
-	level, err := parseLevel(*f.logLevel)
+// NewClean builds a validated CleanConfig from already-parsed CLI Options. It
+// performs syntax/cross-field checks only (an invalid log-level, an unreadable
+// path) — these map to a usage error (exit 2) at the call site. Filesystem checks
+// are deferred to Validate.
+func NewClean(o CleanOptions) (CleanConfig, error) {
+	level, err := parseLevel(o.LogLevel)
 	if err != nil {
 		return CleanConfig{}, err
 	}
 
-	source, err := filepath.Abs(rest[0])
+	source, err := filepath.Abs(o.Source)
 	if err != nil {
-		return CleanConfig{}, fmt.Errorf("unreadable source %q: %w", rest[0], err)
+		return CleanConfig{}, fmt.Errorf("unreadable source %q: %w", o.Source, err)
 	}
 
 	destRoot := ""
-	if strings.TrimSpace(*f.dest) != "" {
-		destRoot, err = filepath.Abs(*f.dest)
+	if strings.TrimSpace(o.Dest) != "" {
+		destRoot, err = filepath.Abs(o.Dest)
 		if err != nil {
-			return CleanConfig{}, fmt.Errorf("unreadable destination directory %q: %w", *f.dest, err)
+			return CleanConfig{}, fmt.Errorf("unreadable destination directory %q: %w", o.Dest, err)
 		}
 	}
 
 	return CleanConfig{
 		Source:   source,
 		DestRoot: destRoot,
-		Delete:   *f.del,
+		Delete:   o.Delete,
 		LogLevel: level,
 	}, nil
 }
@@ -110,7 +80,7 @@ func (c *CleanConfig) Validate() error {
 	dinfo, err := os.Stat(c.DestRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("destination %q does not exist; run the sort first or pass -dest", c.DestRoot)
+			return fmt.Errorf("destination %q does not exist; run the sort first or pass --dest", c.DestRoot)
 		}
 		return fmt.Errorf("destination %q is not readable: %w", c.DestRoot, err)
 	}
@@ -118,45 +88,4 @@ func (c *CleanConfig) Validate() error {
 		return fmt.Errorf("destination %q must be a directory", c.DestRoot)
 	}
 	return nil
-}
-
-// WriteCleanUsage prints the clean subcommand's help screen to w. It is rendered on
-// -h/-help (to stdout, exit 0) and may be reused on usage errors.
-func WriteCleanUsage(w io.Writer) {
-	// Write errors to the help writer (stdout) are not actionable; ignore them.
-	_, _ = fmt.Fprint(w, `moraine clean — delete source originals already copied to the destination.
-
-Recursively matches each source file against the destination by SHA-256 content
-(never by filename) and deletes a source original only when a byte-identical copy
-exists under the destination. Non-photo files and anything not safely copied are
-left untouched. The default is a DRY RUN: pass -delete to actually remove files.
-
-Usage:
-  moraine clean [options] <source-dir>
-
-Argument:
-  <source-dir>   directory whose already-copied originals should be cleaned
-
-Options:
-`)
-	// Reuse the real flag definitions so names/defaults/descriptions never drift.
-	fs := flag.NewFlagSet("moraine clean", flag.ContinueOnError)
-	fs.SetOutput(w)
-	registerCleanFlags(fs)
-	fs.PrintDefaults()
-
-	_, _ = fmt.Fprint(w, `
-Safety:
-  - Dry-run by default; -delete is required to remove anything.
-  - Files under the destination tree are never deleted (even nested inside source).
-  - On any read/hash/permission error, the original is kept (fail-safe).
-  - Only regular files are considered; symlinks and special files are skipped.
-
-Exit codes:
-  0  success        1  runtime error        2  usage error
-
-Examples:
-  moraine clean -dest ~/Photos/sorted ~/Photos/2025            # preview (deletes nothing)
-  moraine clean -delete -dest ~/Photos/sorted ~/Photos/2025    # delete copied originals
-`)
 }

@@ -84,30 +84,36 @@ go run . [-dest <out>] [-gap 6h] [-themes a,b,c] <source-dir>
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Active feature: **004-clean-originals** (new `clean` subcommand that deletes source
-originals already safely copied to the destination; non-photo and uncopied files are
-left behind). Read the current plan: `specs/004-clean-originals/plan.md` (see also its
-`research.md`, `data-model.md`, `contracts/cli-clean.md`, `quickstart.md`). Base feature
-**002-auto-photo-organizer** is implemented (its `spec.md` is the authority for the core
-pipeline; its `plan.md` was lost); **003-raw-file-support** added RAW inputs via
-exiftool-extracted previews.
+Active feature: **005-cobra-cli-refactor** (replace the stdlib-`flag` CLI with a **Cobra**
+command tree — explicit `sort`/`clean`/`version` subcommands, GNU-style `--flags` with
+common shorthands `-d/-g/-s/-l`, `--version` flag, example-driven help). Read the current
+plan: `specs/005-cobra-cli-refactor/plan.md` (see also its `research.md`, `data-model.md`,
+`contracts/cli.md`, `quickstart.md`). This is a **deliberate breaking change at v0**: the
+rootless `moraine <dir>` sort form and single-dash long flags (`-dest`, `-version`) are
+removed — `moraine sort <dir>` and `moraine version` replace them (migration note shipped).
+Prior features implemented: **002-auto-photo-organizer** (core pipeline; its `spec.md` is
+authoritative, `plan.md` lost), **003-raw-file-support** (RAW via exiftool previews),
+**004-clean-originals** (`clean` subcommand; content-hash matching, dry-run default).
 
-Sort pipeline (unchanged): scan → EXIF → temporal cluster (`-gap`) → classify into a
-configurable theme set (default `mountain`/`special-events`/`cook`/`family`, fallback
-`other`) → **copy** to `dest/<theme>/<year>/<year-month-day>/`.
+Sort pipeline (behavior unchanged; now invoked as `moraine sort`): scan → EXIF → temporal
+cluster (`--gap`) → classify into a configurable theme set (default
+`mountain`/`special-events`/`cook`/`family`, fallback `other`) → **copy** to
+`dest/<theme>/<year>/<year-month-day>/`.
 
-004 adds (all additive; sort path untouched): subcommand dispatch in `main.go`
-(`args[0]=="clean"`); typed `config.CleanConfig`/`ParseClean` (`internal/config/clean.go`);
-new pure-logic `internal/clean` (size-bucketed SHA-256 matching, dry-run default,
-`-delete` to commit, fail-safe retention, dest-tree exclusion); extracted
-`internal/contenthash` (`Hash`/`Sum`, reused by `organize`); `app.Clean` orchestrator
-mirroring `app.Organize`. `clean` depends on NO classifier/Ollama/exiftool/imagemeta —
-filesystem + content hashing only.
+005 changes (argument/transport surface only; domain logic untouched): new
+`internal/cli` package owns the Cobra tree (`cli.Execute(version, args, stdout, stderr) int`),
+wiring each subcommand to `app.Organize`/`app.Clean`; `main.go` collapses to a shim.
+`internal/config` keeps typed `Config`/`CleanConfig`+`Validate()` but drops stdlib-`flag`
+parsing/usage — flag *parsing* moves to Cobra/pflag, cross-field validation moves to pure
+`config.New`/`NewClean` constructors. Exit codes 0/1/2 preserved via a `runtimeError`
+marker classifying `Execute()`'s error (`asRuntime` wraps runtime failures; everything else
+→ usage). New dep: `github.com/spf13/cobra` (first third-party CLI dep, confined to
+`internal/cli`).
 
 Project constitution: `.specify/memory/constitution.md` (v1.0.0). Key constraints:
 pure Go / no CGo / single binary; business logic decoupled from transport & storage;
 test-first (`go test ./... -race`, happy + failure paths); typed centralized config;
 never overwrite/lose a file (content-hash identity); destructive actions require an
-explicit documented flag (here: dry-run default + `-delete`); CLI errors machine-readable
+explicit documented flag (`clean` dry-run default + `--delete`); CLI errors machine-readable
 & actionable with exit codes 0/1/2.
 <!-- SPECKIT END -->

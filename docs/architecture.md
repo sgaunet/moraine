@@ -2,22 +2,27 @@
 
 ## System Overview
 
-`moraine` is a layered, single-binary CLI with two subcommands. The default
-(sort) pipeline (`scan → exifmeta → cluster → classify → organize`) is wired
-exclusively behind the exported `internal/app.Organize()` function (Constitution
-Principle III). The `clean` subcommand (delete originals already copied) is wired
-behind `internal/app.Clean()`, backed by the pure-logic `internal/clean` package.
-`main.go` is a thin shell: it dispatches on the first argument (`clean` vs the
-default), parses configuration, and calls the matching `app` function, holding no
-domain logic itself. Each stage is a distinct package with a single, narrow
-responsibility, so business logic stays decoupled from the CLI transport and from
-disk I/O.
+`moraine` is a layered, single-binary CLI with three subcommands (`sort`, `clean`,
+`version`). The `sort` pipeline (`scan → exifmeta → cluster → classify → organize`)
+is wired exclusively behind the exported `internal/app.Organize()` function
+(Constitution Principle III). The `clean` subcommand (delete originals already copied)
+is wired behind `internal/app.Clean()`, backed by the pure-logic `internal/clean`
+package. The CLI transport lives in `internal/cli` (a **Cobra** command tree): it binds
+flags, builds the typed config, runs the matching `app` function, and maps the outcome to
+the exit code. `main.go` is a shim that injects the build version and calls
+`cli.Execute`, holding no domain logic itself. Each stage is a distinct package with a
+single, narrow responsibility, so business logic stays decoupled from the CLI transport
+and from disk I/O — no domain package imports Cobra.
 
 ## Components
 
-- **`internal/config`** — single immutable `Config` struct holding every
-  runtime parameter; `Parse` (syntax/flags, no I/O) is split from `Validate`
-  (filesystem checks, default-destination resolution).
+- **`internal/cli`** — the CLI transport: a Cobra command tree (root + `sort`/
+  `clean`/`version`) that binds flags into `config.Options`/`CleanOptions`, calls the
+  config constructors and `app` orchestrators, and maps execution to exit codes
+  0/1/2 via a `runtimeError` marker. The only package that imports Cobra.
+- **`internal/config`** — single immutable `Config`/`CleanConfig` struct holding every
+  runtime parameter; `New`/`NewClean` (syntax/cross-field checks, no I/O) is split from
+  `Validate` (filesystem checks, default-destination resolution).
 - **`internal/scan`** — walks the source tree, produces `[]Found`.
 - **`internal/exifmeta`** — reads EXIF, turns `Found` into `[]photo.Photo`.
 - **`internal/photo`** — core domain types (`Photo`, `Cluster`).
@@ -43,12 +48,14 @@ disk I/O.
 
 ## Design Decisions
 
-1. **Thin entrypoint + `Organize()` facade** — keeps domain logic testable
-   and independent of the CLI, satisfying the decoupling principle.
-2. **Parse/Validate split with `ErrHelp` sentinel** — syntactic parsing has
-   no side effects; `-h` returns a machine-testable sentinel so `main.go`
-   exits 0 via `errors.Is`. Flags are registered in one place to prevent drift
-   between parsing and usage output.
+1. **Thin entrypoint + `Organize()` facade** — `main.go` only injects the version and
+   calls `cli.Execute`; the Cobra tree in `internal/cli` is the sole transport, keeping
+   domain logic testable and independent of the CLI, satisfying the decoupling principle.
+2. **New/Validate split + Cobra-owned parsing** — flag parsing lives in `internal/cli`
+   (Cobra/pflag); `config.New`/`NewClean` do the no-I/O cross-field checks and `Validate`
+   does the filesystem checks. `cli.Execute` silences Cobra's own output and classifies the
+   returned error into exit codes: cross-field/parse/arity errors → usage (2), validation/
+   dependency/run failures (wrapped with `asRuntime`) → runtime (1), help/version → 0.
 3. **Copy-only + `O_EXCL` + SHA-256** — overwriting is structurally
    impossible; content hashing makes re-runs idempotent (skip identical,
    suffix-rename same-name/different-content). Originals are never touched.
