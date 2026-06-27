@@ -51,46 +51,69 @@ CGO_ENABLED=0 go build -ldflags "-X main.version=$(git describe --tags --always)
 
 ## Usage
 
+`moraine` is organized into subcommands: **`sort`** (organize photos), **`clean`**
+(delete originals already copied), and **`version`**. Run `moraine --help` to list them
+and `moraine <command> --help` for command-specific options and examples.
+
 ```bash
 # Organize a photo directory
-./moraine -dest ~/Photos/sorted ~/Photos/2025
+./moraine sort --dest ~/Photos/sorted ~/Photos/2025
 
-# A single photo
-./moraine -dest ~/Photos/sorted ~/Photos/2025/IMG_1234.jpg
+# A single photo (short flags: -d dest)
+./moraine sort -d ~/Photos/sorted ~/Photos/2025/IMG_1234.jpg
 
-# Disable Ollama entirely (heuristic + fallback only)
-./moraine -sample 0 -dest ~/Photos/sorted ~/Photos/2025
+# Disable Ollama entirely (heuristic + fallback only; -s sample)
+./moraine sort -s 0 -d ~/Photos/sorted ~/Photos/2025
 
-# Custom theme vocabulary + verbose logs
-./moraine -themes "friends,hiking,party,nature" -fallback-theme "misc" \
-  -log-level debug -dest ~/Photos/sorted ~/Photos/2025
+# Custom theme vocabulary + verbose logs (-l log-level)
+./moraine sort --themes "friends,hiking,party,nature" --fallback-theme "misc" \
+  -l debug -d ~/Photos/sorted ~/Photos/2025
 
-# Detailed help and version
-./moraine -help
-./moraine -version
+# Delete originals already safely copied — dry-run by default, then commit
+./moraine clean -d ~/Photos/sorted ~/Photos/2025            # preview (deletes nothing)
+./moraine clean --delete -d ~/Photos/sorted ~/Photos/2025   # actually delete
+
+# Help and version
+./moraine --help
+./moraine sort --help
+./moraine version          # or: ./moraine --version
 ```
 
 Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 (e.g. `~/Photos/sorted/nature/2025/2025-08-12/IMG_1234.jpg`). Originals stay in place.
 
-### Flags
+> **Migrating from the pre-1.0 flag CLI**: the interface moved to subcommands with
+> GNU-style flags. `moraine <dir>` → `moraine sort <dir>`; `-dest` → `--dest` (or `-d`);
+> `-version` → `moraine version` (or `--version`). The old rootless form and single-dash
+> long flags are no longer accepted.
 
-| Flag             | Type     | Default                   | Role                                                       |
-|------------------|----------|---------------------------|------------------------------------------------------------|
-| `<source>`       | argument | *(required)*              | **directory** (batch) or **file** (single photo)           |
-| `-dest`          | string   | `<source>/_sorted`        | destination root (excluded from the scan)                  |
-| `-gap`           | duration | `6h`                      | max time gap within an event                               |
-| `-sample`        | int      | `3`                       | photos sampled per **large** group (`0` = no AI)           |
-| `-model`         | string   | `qwen3-vl:8b`             | Ollama vision model                                        |
-| `-ollama-url`    | string   | `http://127.0.0.1:11434`  | base URL of the Ollama API                                 |
-| `-themes`        | string   | `family,mountain,special-events,nature` | themes (comma-separated slugs)               |
-| `-fallback-theme`| string   | `other`                   | fallback theme when none is determined                     |
-| `-log-level`     | string   | `info`                    | `debug` \| `info` \| `warn` \| `error`                     |
-| `-exiftool`      | string   | `exiftool`                | exiftool executable (name on `PATH` or absolute path); **required** for RAW |
-| `-help` / `-h`   | bool     | —                         | print the detailed help and exit                           |
-| `-version`       | bool     | —                         | print the version and exit                                 |
+### `sort` flags
 
-**Exit codes**: `0` success, `1` runtime error, `2` usage error.
+| Flag               | Short | Type     | Default                   | Role                                                       |
+|--------------------|-------|----------|---------------------------|------------------------------------------------------------|
+| `<source>`         |       | argument | *(required)*              | **directory** (batch) or **file** (single photo)           |
+| `--dest`           | `-d`  | string   | `<source>/_sorted`        | destination root (excluded from the scan)                  |
+| `--gap`            | `-g`  | duration | `6h`                      | max time gap within an event                               |
+| `--sample`         | `-s`  | int      | `3`                       | photos sampled per **large** group (`0` = no AI)           |
+| `--model`          |       | string   | `qwen3-vl:8b`             | Ollama vision model                                        |
+| `--ollama-url`     |       | string   | `http://127.0.0.1:11434`  | base URL of the Ollama API                                 |
+| `--themes`         |       | string   | `mountain,special-events,cook,family` | themes (comma-separated slugs)                 |
+| `--fallback-theme` |       | string   | `other`                   | fallback theme when none is determined                     |
+| `--log-level`      | `-l`  | string   | `info`                    | `debug` \| `info` \| `warn` \| `error`                     |
+| `--exiftool`       |       | string   | `exiftool`                | exiftool executable (name on `PATH` or absolute path); **required** for RAW |
+| `--help`           | `-h`  | bool     | —                         | print the detailed help and exit                           |
+
+### `clean` flags
+
+| Flag          | Short | Type     | Default            | Role                                                          |
+|---------------|-------|----------|--------------------|--------------------------------------------------------------|
+| `<source>`    |       | argument | *(required)*       | source **directory** to clean                                |
+| `--dest`      | `-d`  | string   | `<source>/_sorted` | destination library holding the copies (**never** deleted from) |
+| `--delete`    |       | bool     | `false`            | actually delete matched originals (default: dry-run)         |
+| `--log-level` | `-l`  | string   | `info`             | `debug` \| `info` \| `warn` \| `error`                       |
+
+`moraine version` (or `--version`) prints the version. **Exit codes**: `0` success,
+`1` runtime error, `2` usage error.
 
 > **HEIC note**: HEIC photos are dated and organized, but **not** sent to the vision
 > model (no pure-Go HEIC decoding, due to the "no CGo" constraint). A HEIC-only group
@@ -107,8 +130,9 @@ Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 Business logic in pure Go packages, decoupled from transport (Constitution, Principle III):
 
 ```
-main.go                 parse flags → typed Config → app.Organize → exit codes
+main.go                 inject build version → cli.Execute → exit codes
 internal/
+  cli/      Cobra command tree (sort/clean/version), flag binding, exit-code mapping
   config/   centralized typed configuration + validation (slugs, file/directory source)
   app/      testable orchestration: scan → exif → cluster → classify → organize + logs
   photo/    domain types (Photo, Cluster, Format)
