@@ -84,24 +84,30 @@ go run . [-dest <out>] [-gap 6h] [-themes a,b,c] <source-dir>
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Active feature: **003-raw-file-support** (add camera RAW inputs; classify them via
-exiftool-extracted embedded previews). Read the current plan:
-`specs/003-raw-file-support/plan.md` (see also its `research.md`, `data-model.md`,
-`contracts/`, `quickstart.md`). Base feature **002-auto-photo-organizer** is implemented;
-its `spec.md` remains the authority for the core pipeline (its `plan.md` was lost and not
-reconstructed).
+Active feature: **004-clean-originals** (new `clean` subcommand that deletes source
+originals already safely copied to the destination; non-photo and uncopied files are
+left behind). Read the current plan: `specs/004-clean-originals/plan.md` (see also its
+`research.md`, `data-model.md`, `contracts/cli-clean.md`, `quickstart.md`). Base feature
+**002-auto-photo-organizer** is implemented (its `spec.md` is the authority for the core
+pipeline; its `plan.md` was lost); **003-raw-file-support** added RAW inputs via
+exiftool-extracted previews.
 
-Pipeline: scan → EXIF → temporal cluster (`-gap`) → classify into a configurable theme set
-(default `mountain`/`special-events`/`cook`/`family`, fallback `other`) → **copy** to
-`dest/<theme>/<year>/<year-month-day>/`. 003 adds: RAW extensions in `photo`; new
-`internal/rawpreview` (mandatory exiftool probe + in-memory preview extraction); an
-image-bytes provider in `classify/ollama.go`; `ExifToolPath` in `config`; a mandatory
-exiftool preflight at the top of `app.Organize`. `scan`/`exifmeta`/`cluster`/`organize`
-are unchanged by 003.
+Sort pipeline (unchanged): scan → EXIF → temporal cluster (`-gap`) → classify into a
+configurable theme set (default `mountain`/`special-events`/`cook`/`family`, fallback
+`other`) → **copy** to `dest/<theme>/<year>/<year-month-day>/`.
+
+004 adds (all additive; sort path untouched): subcommand dispatch in `main.go`
+(`args[0]=="clean"`); typed `config.CleanConfig`/`ParseClean` (`internal/config/clean.go`);
+new pure-logic `internal/clean` (size-bucketed SHA-256 matching, dry-run default,
+`-delete` to commit, fail-safe retention, dest-tree exclusion); extracted
+`internal/contenthash` (`Hash`/`Sum`, reused by `organize`); `app.Clean` orchestrator
+mirroring `app.Organize`. `clean` depends on NO classifier/Ollama/exiftool/imagemeta —
+filesystem + content hashing only.
 
 Project constitution: `.specify/memory/constitution.md` (v1.0.0). Key constraints:
 pure Go / no CGo / single binary; business logic decoupled from transport & storage;
 test-first (`go test ./... -race`, happy + failure paths); typed centralized config;
-copy-only this feature (originals preserved); never overwrite/lose a photo (content-hash
-identity → skip-identical / suffix-different); CLI errors machine-readable & actionable.
+never overwrite/lose a file (content-hash identity); destructive actions require an
+explicit documented flag (here: dry-run default + `-delete`); CLI errors machine-readable
+& actionable with exit codes 0/1/2.
 <!-- SPECKIT END -->

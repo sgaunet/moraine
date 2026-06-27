@@ -38,6 +38,12 @@ func main() {
 // mandatory exiftool dependency is present, then organizes. It returns the
 // process exit code and writes user-facing output to stdout/stderr.
 func run(args []string, stdout, stderr io.Writer) int {
+	// Subcommand dispatch: `moraine clean ...` cleans already-copied originals; any
+	// other first token keeps the default sort/organize behavior unchanged.
+	if len(args) > 0 && args[0] == "clean" {
+		return runClean(args[1:], stdout, stderr)
+	}
+
 	cfg, err := config.Parse(args)
 	if err != nil {
 		if errors.Is(err, config.ErrHelp) {
@@ -70,6 +76,39 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	if _, err := app.Organize(ctx, cfg, logger); err != nil {
+		_, _ = fmt.Fprintln(stderr, "error:", err)
+		return exitRuntime
+	}
+	return exitOK
+}
+
+// runClean is the testable body of the `clean` subcommand: it parses the clean
+// flags, validates them, then deletes (or, by default, previews) source originals
+// already copied to the destination. It needs neither exiftool nor the classifier
+// (FR-014), so it skips the sort path's exiftool preflight.
+func runClean(args []string, stdout, stderr io.Writer) int {
+	cfg, err := config.ParseClean(args)
+	if err != nil {
+		if errors.Is(err, config.ErrHelp) {
+			config.WriteCleanUsage(stdout)
+			return exitOK
+		}
+		_, _ = fmt.Fprintln(stderr, "argument error:", err)
+		_, _ = fmt.Fprintln(stderr, "usage: moraine clean [options] <source-dir>")
+		_, _ = fmt.Fprintln(stderr, "run `moraine clean -help` for detailed help")
+		return exitUsage
+	}
+	if err := cfg.Validate(); err != nil {
+		_, _ = fmt.Fprintln(stderr, "error:", err)
+		return exitRuntime
+	}
+
+	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if _, err := app.Clean(ctx, cfg, logger); err != nil {
 		_, _ = fmt.Fprintln(stderr, "error:", err)
 		return exitRuntime
 	}
