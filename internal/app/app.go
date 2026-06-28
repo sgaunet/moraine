@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -32,13 +33,18 @@ type Summary struct {
 	Skipped int
 	Renamed int
 	Errors  int
+	// Companion (sidecar) outcomes, kept separate from photo outcomes (FR-010).
+	CompanionsCopied  int
+	CompanionsSkipped int
+	CompanionsRenamed int
+	CompanionsErrors  int
 }
 
 // Organize runs the full pipeline for cfg and returns a Summary. A directory
 // source is organized in batch; a single file is organized on its own. Per-photo
 // failures are logged and tallied but do not abort the run (FR-012).
 func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summary, error) {
-	clusters, err := buildClusters(cfg, logger)
+	clusters, primaries, err := buildClusters(cfg, logger)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -46,6 +52,11 @@ func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summ
 	opts := classify.Options{Themes: cfg.Themes, Fallback: cfg.FallbackTheme}
 	opts.Classifier = buildClassifier(ctx, cfg, logger)
 	org := organize.New(cfg.DestRoot)
+	org.Sidecars = cfg.Sidecars
+	org.IsPrimary = func(p string) bool {
+		_, ok := primaries[filepath.Clean(p)]
+		return ok
+	}
 
 	var sum Summary
 	for _, c := range clusters {
@@ -65,7 +76,9 @@ func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summ
 
 	logger.Info("summary",
 		"groups", sum.Groups, "copied", sum.Copied, "skipped", sum.Skipped,
-		"renamed", sum.Renamed, "errors", sum.Errors)
+		"renamed", sum.Renamed, "errors", sum.Errors,
+		"companions_copied", sum.CompanionsCopied, "companions_skipped", sum.CompanionsSkipped,
+		"companions_renamed", sum.CompanionsRenamed, "companions_errors", sum.CompanionsErrors)
 	return sum, nil
 }
 
@@ -102,8 +115,13 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 	return nil
 }
 
-// tally records one placement Result into the summary and logs it.
+// tally records one placement Result into the summary and logs it, routing
+// companion (sidecar) outcomes into their own counters (FR-010).
 func tally(sum *Summary, r organize.Result, logger *slog.Logger) {
+	if r.IsCompanion {
+		tallyCompanion(sum, r, logger)
+		return
+	}
 	if r.Err != nil {
 		sum.Errors++
 		logger.Error("placement failed", "source", r.Source, "err", r.Err)
@@ -120,25 +138,55 @@ func tally(sum *Summary, r organize.Result, logger *slog.Logger) {
 	logger.Info("photo", "action", string(r.Action), "source", r.Source, "dest", r.Dest)
 }
 
-// buildClusters produces the clusters to organize: many for a directory source,
-// exactly one for a single file.
-func buildClusters(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, error) {
+// tallyCompanion records one companion Result and logs it. A per-companion
+// failure is non-fatal (FR-008): counted and logged, the run continues.
+func tallyCompanion(sum *Summary, r organize.Result, logger *slog.Logger) {
+	if r.Err != nil {
+		sum.CompanionsErrors++
+		logger.Error("companion failed", "source", r.Source, "of", r.Of, "err", r.Err)
+		return
+	}
+	switch r.Action {
+	case organize.ActionCopied:
+		sum.CompanionsCopied++
+	case organize.ActionSkippedIdentical:
+		sum.CompanionsSkipped++
+	case organize.ActionRenamed:
+		sum.CompanionsRenamed++
+	}
+	logger.Info("companion", "action", string(r.Action), "source", r.Source, "dest", r.Dest, "of", r.Of)
+}
+
+// buildClusters produces the clusters to organize plus the set of scanned primary
+// photo paths (cleaned absolute), used to keep a photo from being copied as its
+// own companion (FR-006). A directory source yields many clusters; a single file
+// yields exactly one and a one-element primary set.
+func buildClusters(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, map[string]struct{}, error) {
 	if !cfg.SourceIsDir {
-		return singleCluster(cfg, logger)
+		clusters, err := singleCluster(cfg, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		return clusters, map[string]struct{}{filepath.Clean(cfg.Source): {}}, nil
 	}
 
 	found, err := scan.Scan(cfg.Source, cfg.DestRoot)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	logger.Info("scan", "images", len(found), "excluded_dest", cfg.DestRoot)
+
+	primaries := make(map[string]struct{}, len(found))
+	for _, f := range found {
+		primaries[filepath.Clean(f.Path)] = struct{}{}
+	}
 
 	photos := readMeta(found, logger)
 	logger.Info("exif", "read", len(photos), "of", len(found), "raw", countRAW(photos))
 
 	clusters := cluster.Cluster(photos, cfg.Gap)
 	logger.Info("cluster", "photos", len(photos), "groups", len(clusters), "gap", cfg.Gap.String())
-	return clusters, nil
+	return clusters, primaries, nil
 }
 
 // countRAW reports how many photos are RAW, for the run logs (FR-010).

@@ -32,6 +32,7 @@ type Config struct {
 	FallbackTheme string        // theme slug used when none is confidently chosen
 	ExifToolPath  string        // exiftool executable (name on PATH or absolute path)
 	LogLevel      slog.Level    // logging verbosity
+	Sidecars      bool          // copy each photo's companion (sidecar) files alongside it
 }
 
 // Default values surfaced in the CLI contract.
@@ -64,6 +65,7 @@ type Options struct {
 	Fallback  string        // --fallback-theme
 	LogLevel  string        // --log-level (textual)
 	ExifTool  string        // --exiftool
+	Sidecars  bool          // --sidecars (copy companion files; default true at the flag)
 }
 
 // New builds a validated Config from already-parsed CLI Options. It performs
@@ -118,6 +120,7 @@ func New(o Options) (Config, error) {
 		FallbackTheme: strings.TrimSpace(o.Fallback),
 		ExifToolPath:  exiftool,
 		LogLevel:      level,
+		Sidecars:      o.Sidecars,
 	}, nil
 }
 

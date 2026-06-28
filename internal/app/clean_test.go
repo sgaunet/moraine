@@ -90,3 +90,74 @@ func TestCleanPreviewThenCommit(t *testing.T) {
 		t.Error("commit must delete the copied original")
 	}
 }
+
+// TestCleanRemovesCompanionByContent covers US2 independently of sort: a
+// companion-shaped original whose identical bytes exist under the destination is
+// deleted (FR-012), while a companion-shaped original that was never archived is
+// retained (FR-013). Matching is purely by content; dry-run gates deletion (FR-014).
+func TestCleanRemovesCompanionByContent(t *testing.T) {
+	src := t.TempDir()
+	dst := filepath.Join(src, "_sorted")
+	archived := filepath.Join(src, "IMG.jpg.xmp")
+	writeCleanFile(t, archived, []byte("SIDECAR"))
+	writeCleanFile(t, filepath.Join(dst, "fam", "2025", "2025-01-01", "IMG.jpg.xmp"), []byte("SIDECAR"))
+	orphan := filepath.Join(src, "IMG.xmp")
+	writeCleanFile(t, orphan, []byte("NOT-ARCHIVED-DIFFERENT-SIZE"))
+
+	preview, err := app.Clean(context.Background(),
+		config.CleanConfig{Source: src, DestRoot: dst, Delete: false}, discardLogger())
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if preview.WouldDelete != 1 {
+		t.Errorf("WouldDelete = %d, want 1", preview.WouldDelete)
+	}
+	if _, e := os.Lstat(archived); e != nil {
+		t.Error("dry-run must not delete the companion")
+	}
+
+	sum, err := app.Clean(context.Background(),
+		config.CleanConfig{Source: src, DestRoot: dst, Delete: true}, discardLogger())
+	if err != nil {
+		t.Fatalf("Clean: %v", err)
+	}
+	if sum.Deleted != 1 {
+		t.Errorf("Deleted = %d, want 1", sum.Deleted)
+	}
+	if _, e := os.Lstat(archived); e == nil {
+		t.Error("archived companion original should be deleted")
+	}
+	if _, e := os.Lstat(orphan); e != nil {
+		t.Error("un-archived companion must be retained (FR-013)")
+	}
+}
+
+// TestCleanRemovesCompanionsAfterSort covers SC-004 end-to-end: after a sort that
+// copied a photo and its companions, clean removes all three originals.
+func TestCleanRemovesCompanionsAfterSort(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	makePNG(t, filepath.Join(src, "a.png"))
+	writeSidecar(t, filepath.Join(src, "a.png.xmp"), "appended")
+	writeSidecar(t, filepath.Join(src, "a.xmp"), "base")
+
+	cfg := baseCfg(src, dst, true)
+	cfg.Sidecars = true
+	if _, err := app.Organize(context.Background(), cfg, discardLogger()); err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+
+	sum, err := app.Clean(context.Background(),
+		config.CleanConfig{Source: src, DestRoot: dst, Delete: true}, discardLogger())
+	if err != nil {
+		t.Fatalf("Clean: %v", err)
+	}
+	if sum.Deleted != 3 {
+		t.Fatalf("Deleted = %d, want 3 (photo + 2 companions); summary=%+v", sum.Deleted, sum)
+	}
+	for _, n := range []string{"a.png", "a.png.xmp", "a.xmp"} {
+		if _, e := os.Lstat(filepath.Join(src, n)); e == nil {
+			t.Errorf("source %s should be deleted after sort+clean", n)
+		}
+	}
+}

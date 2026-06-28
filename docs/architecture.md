@@ -35,7 +35,11 @@ and from disk I/O — no domain package imports Cobra.
   `EnsureAvailable` (mandatory startup probe) and `Extract` (largest embedded
   preview, captured in memory — never written to disk).
 - **`internal/organize`** — copies files to
-  `dest/<theme>/<year>/<year-month-day>/`, enforcing copy-only/no-overwrite.
+  `dest/<theme>/<year>/<year-month-day>/`, enforcing copy-only/no-overwrite. Also
+  copies each photo's **companion (sidecar)** files (`sidecar.go`) into the same
+  folder, naming them to track the photo's final name; a caller-injected
+  `IsPrimary` predicate keeps a scanned photo from being copied as a companion, so
+  the package stays decoupled from `scan`.
 - **`internal/contenthash`** — the single definition of content identity
   (`Hash(path) → Sum`, a streaming SHA-256). Shared by `organize` (dedup on copy)
   and `clean` (matching originals to copies) so both agree on "same content".

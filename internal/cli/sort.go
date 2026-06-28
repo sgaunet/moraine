@@ -45,6 +45,9 @@ exiftool (required, see --exiftool) and sent to the model.`,
   # without Ollama (heuristic + fallback only)
   moraine sort -s 0 -d ~/Photos/sorted ~/Photos/2025
 
+  # photos only — do not copy companion/sidecar files
+  moraine sort --sidecars=false -d ~/Photos/sorted ~/Photos/2025
+
   # custom vocabulary + verbose logs
   moraine sort --themes "friends,hiking,party,nature" --fallback-theme misc \
     -l debug -d ~/Photos/sorted ~/Photos/2025`,
@@ -86,6 +89,7 @@ exiftool (required, see --exiftool) and sent to the model.`,
 	f.StringVar(&opts.Fallback, "fallback-theme", config.DefaultFallback, "fallback theme when none is determined")
 	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
 	f.StringVar(&opts.ExifTool, "exiftool", config.DefaultExifTool, "exiftool executable (name on PATH or absolute path); required to read RAW files")
+	f.BoolVar(&opts.Sidecars, "sidecars", true, "also copy companion/sidecar files next to each photo (e.g. IMG.jpg.xmp, IMG.xmp); --sidecars=false to disable")
 
 	return cmd
 }
