@@ -56,6 +56,20 @@ func TestNewDefaults(t *testing.T) {
 	}
 }
 
+func TestNewSidecarsPassthrough(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		o := defOpts("/some/src")
+		o.Sidecars = want
+		cfg, err := config.New(o)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Sidecars != want {
+			t.Errorf("Sidecars: want %v, got %v", want, cfg.Sidecars)
+		}
+	}
+}
+
 func TestNewCustomThemes(t *testing.T) {
 	o := defOpts("/src")
 	o.Themes = "friends, hiking ,party"

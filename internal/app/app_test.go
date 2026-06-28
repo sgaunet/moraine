@@ -441,3 +441,118 @@ func TestOrganizeRAWPreservesOriginalAndLeavesNoTemp(t *testing.T) {
 		t.Errorf("temp dir not empty after run: %v (previews must stay in memory)", entries)
 	}
 }
+
+// writeSidecar writes a non-image companion file beside a photo.
+func writeSidecar(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOrganizeCopiesCompanions covers US1 at the app level: a photo's appended and
+// base-name companions are copied into the same destination folder and tallied
+// distinctly from photos (FR-001, FR-010, SC-001).
+func TestOrganizeCopiesCompanions(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	makePNG(t, filepath.Join(src, "a.png"))
+	writeSidecar(t, filepath.Join(src, "a.png.xmp"), "appended")
+	writeSidecar(t, filepath.Join(src, "a.xmp"), "base")
+
+	cfg := baseCfg(src, dest, true)
+	cfg.Sidecars = true
+	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	if err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+	if sum.Copied != 1 || sum.CompanionsCopied != 2 {
+		t.Fatalf("summary = %+v; want Copied=1 CompanionsCopied=2", sum)
+	}
+	for _, n := range []string{"a.png.xmp", "a.xmp"} {
+		if _, err := os.Stat(filepath.Join(expectedDir(dest), n)); err != nil {
+			t.Errorf("companion %s not placed: %v", n, err)
+		}
+		if _, err := os.Stat(filepath.Join(src, n)); err != nil {
+			t.Errorf("source companion %s must be preserved: %v", n, err)
+		}
+	}
+}
+
+// TestOrganizeSingleFileCompanions covers FR-011: companion copying also applies
+// when sorting a single file.
+func TestOrganizeSingleFileCompanions(t *testing.T) {
+	dir := t.TempDir()
+	dest := t.TempDir()
+	file := filepath.Join(dir, "single.png")
+	makePNG(t, file)
+	writeSidecar(t, filepath.Join(dir, "single.png.xmp"), "appended")
+	writeSidecar(t, filepath.Join(dir, "single.xmp"), "base")
+
+	cfg := baseCfg(file, dest, false)
+	cfg.Sidecars = true
+	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	if err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+	if sum.Copied != 1 || sum.CompanionsCopied != 2 {
+		t.Fatalf("summary = %+v; want Copied=1 CompanionsCopied=2", sum)
+	}
+	for _, n := range []string{"single.png.xmp", "single.xmp"} {
+		if _, err := os.Stat(filepath.Join(expectedDir(dest), n)); err != nil {
+			t.Errorf("single-file companion %s not placed: %v", n, err)
+		}
+	}
+}
+
+// TestOrganizeCompanionThatIsAnImageIsSortedOnce covers FR-006: a companion-named
+// file that is itself a recognized image is sorted as its own primary photo and is
+// not additionally copied as a companion.
+func TestOrganizeCompanionThatIsAnImageIsSortedOnce(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	makePNG(t, filepath.Join(src, "a.png"))
+	makePNG(t, filepath.Join(src, "a.png.png")) // matches a.png as an appended companion, but is an image
+
+	cfg := baseCfg(src, dest, true)
+	cfg.Sidecars = true
+	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	if err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+	if sum.Copied != 2 {
+		t.Fatalf("Copied = %d; want 2 (both images sorted as primaries)", sum.Copied)
+	}
+	if sum.CompanionsCopied != 0 {
+		t.Fatalf("CompanionsCopied = %d; want 0 (an image is never a companion, FR-006)", sum.CompanionsCopied)
+	}
+}
+
+// TestOrganizeCompanionFailureNonFatal covers FR-008: a companion that cannot be
+// copied is tallied as a companion error and does not abort the run.
+func TestOrganizeCompanionFailureNonFatal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits are ignored")
+	}
+	src := t.TempDir()
+	dest := t.TempDir()
+	makePNG(t, filepath.Join(src, "a.png"))
+	bad := filepath.Join(src, "a.xmp")
+	if err := os.WriteFile(bad, []byte("base"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(bad, 0o644) })
+
+	cfg := baseCfg(src, dest, true)
+	cfg.Sidecars = true
+	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	if err != nil {
+		t.Fatalf("run must not abort on a companion failure: %v", err)
+	}
+	if sum.Copied != 1 {
+		t.Fatalf("Copied = %d; want 1 (photo still placed)", sum.Copied)
+	}
+	if sum.CompanionsErrors != 1 {
+		t.Fatalf("CompanionsErrors = %d; want 1 (summary=%+v)", sum.CompanionsErrors, sum)
+	}
+}

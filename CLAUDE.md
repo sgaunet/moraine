@@ -84,31 +84,37 @@ go run . [-dest <out>] [-gap 6h] [-themes a,b,c] <source-dir>
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Active feature: **005-cobra-cli-refactor** (replace the stdlib-`flag` CLI with a **Cobra**
-command tree — explicit `sort`/`clean`/`version` subcommands, GNU-style `--flags` with
-common shorthands `-d/-g/-s/-l`, `--version` flag, example-driven help). Read the current
-plan: `specs/005-cobra-cli-refactor/plan.md` (see also its `research.md`, `data-model.md`,
-`contracts/cli.md`, `quickstart.md`). This is a **deliberate breaking change at v0**: the
-rootless `moraine <dir>` sort form and single-dash long flags (`-dest`, `-version`) are
-removed — `moraine sort <dir>` and `moraine version` replace them (migration note shipped).
-Prior features implemented: **002-auto-photo-organizer** (core pipeline; its `spec.md` is
-authoritative, `plan.md` lost), **003-raw-file-support** (RAW via exiftool previews),
-**004-clean-originals** (`clean` subcommand; content-hash matching, dry-run default).
+Active feature: **006-sidecar-files** (companion/sidecar file copying & cleaning). Read the
+current plan: `specs/006-sidecar-files/plan.md` (see also its `research.md`, `data-model.md`,
+`contracts/cli.md`, `contracts/companion-matching.md`, `quickstart.md`). `sort` now, **by
+default**, copies each photo's **companion (sidecar)** files from the photo's source directory
+into the same destination folder, renaming them to track the photo's final name so the link
+survives a collision rename. A companion of `IMG.jpg` is a same-dir regular file named either
+(a) `IMG.jpg.<suffix>` (full-name prefix) or (b) `IMG.<other-ext>` (same base name, different
+extension). Opt out with `--sidecars=false` (reproduces photos-only output byte-for-byte).
+This is an intentional **v0 default-on behavior change** (additive, copy-only, reversible;
+migration note shipped). Prior features implemented: **002-auto-photo-organizer** (core
+pipeline; `spec.md` authoritative, `plan.md` lost), **003-raw-file-support** (RAW via exiftool
+previews), **004-clean-originals** (`clean`; content-hash matching, dry-run default),
+**005-cobra-cli-refactor** (Cobra `sort`/`clean`/`version` tree; `internal/cli` transport;
+`config.New`/`NewClean` constructors; exit codes 0/1/2).
 
-Sort pipeline (behavior unchanged; now invoked as `moraine sort`): scan → EXIF → temporal
-cluster (`--gap`) → classify into a configurable theme set (default
-`mountain`/`special-events`/`cook`/`family`, fallback `other`) → **copy** to
-`dest/<theme>/<year>/<year-month-day>/`.
+Sort pipeline: scan → EXIF → temporal cluster (`--gap`) → classify into a configurable theme
+set (default `mountain`/`special-events`/`cook`/`family`, fallback `other`) → **copy** to
+`dest/<theme>/<year>/<year-month-day>/` (+ companions, by default).
 
-005 changes (argument/transport surface only; domain logic untouched): new
-`internal/cli` package owns the Cobra tree (`cli.Execute(version, args, stdout, stderr) int`),
-wiring each subcommand to `app.Organize`/`app.Clean`; `main.go` collapses to a shim.
-`internal/config` keeps typed `Config`/`CleanConfig`+`Validate()` but drops stdlib-`flag`
-parsing/usage — flag *parsing* moves to Cobra/pflag, cross-field validation moves to pure
-`config.New`/`NewClean` constructors. Exit codes 0/1/2 preserved via a `runtimeError`
-marker classifying `Execute()`'s error (`asRuntime` wraps runtime failures; everything else
-→ usage). New dep: `github.com/spf13/cobra` (first third-party CLI dep, confined to
-`internal/cli`).
+006 changes (domain placement only; transport surface gains one flag): companion placement
+lives in `internal/organize` (new `sidecar.go` — `matchCompanion`/`companionTargetName`/
+`placeCompanions`), reusing the existing `copyFile`/`sameContent`/`uniqueName`/`placeOne`
+primitives (copy-only, `O_EXCL`, skip-identical, ` (N)` suffix). `Organizer` gains
+`Sidecars bool`, an injected `IsPrimary func(string) bool` (excludes scanned images from
+companion copying — keeps `organize` decoupled from `scan`), and a lazy per-source-dir
+listing cache (linear discovery, SC-006). `organize.Result` gains `IsCompanion`/`Of`;
+`app.Summary` gains companion counters; `app.Organize` builds the primary-path set and logs
+companions distinctly. `config.Config`/`Options` add `Sidecars bool` (default true via the
+`--sidecars` flag in `internal/cli/sort.go`). **`clean` is unchanged**: it deletes purely by
+SHA-256 content identity, so copied companions are already removed (proven by new tests;
+never deletes an un-archived companion).
 
 Project constitution: `.specify/memory/constitution.md` (v1.0.0). Key constraints:
 pure Go / no CGo / single binary; business logic decoupled from transport & storage;

@@ -26,6 +26,11 @@ or deleted. Every step is explained in the logs.
 - **Safe, idempotent copy**: `O_EXCL` + `fsync`, never overwrites. An identical file
   already present is **skipped** (safe re-runs); a same-named file with different content
   is **suffixed** ` (1)`.
+- **Companion (sidecar) files** (on by default): files other software leaves next to a
+  photo are copied into the same folder — both appended sidecars (`IMG.jpg.xmp`,
+  `IMG.jpg.json`) and same-base-name sidecars (`IMG.xmp`). They follow the photo's final
+  name on a collision rename, obey the same no-overwrite rules, and are removed by `clean`
+  too. Disable with `--sidecars=false`.
 - **Single-photo mode**: pass a file instead of a directory.
 
 ## Requirements
@@ -65,6 +70,9 @@ and `moraine <command> --help` for command-specific options and examples.
 # Disable Ollama entirely (heuristic + fallback only; -s sample)
 ./moraine sort -s 0 -d ~/Photos/sorted ~/Photos/2025
 
+# photos only — do not copy companion/sidecar files
+./moraine sort --sidecars=false -d ~/Photos/sorted ~/Photos/2025
+
 # Custom theme vocabulary + verbose logs (-l log-level)
 ./moraine sort --themes "friends,hiking,party,nature" --fallback-theme "misc" \
   -l debug -d ~/Photos/sorted ~/Photos/2025
@@ -101,6 +109,7 @@ Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 | `--fallback-theme` |       | string   | `other`                   | fallback theme when none is determined                     |
 | `--log-level`      | `-l`  | string   | `info`                    | `debug` \| `info` \| `warn` \| `error`                     |
 | `--exiftool`       |       | string   | `exiftool`                | exiftool executable (name on `PATH` or absolute path); **required** for RAW |
+| `--sidecars`       |       | bool     | `true`                    | also copy each photo's companion/sidecar files (`--sidecars=false` to disable) |
 | `--help`           | `-h`  | bool     | —                         | print the detailed help and exit                           |
 
 ### `clean` flags
@@ -124,6 +133,15 @@ Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 > eligible photo including RAW; large events prefer JPEG/PNG and extract RAW previews only
 > to fill the sample. A RAW with no usable preview is still copied and dated, and falls
 > back to the heuristic or the fallback theme.
+>
+> **Companion (sidecar) note**: by default `sort` also copies, into a photo's destination
+> folder, any file in the photo's source directory whose name is either the photo's full
+> name plus a suffix (`IMG.jpg.xmp`, `IMG.jpg.json`) or its base name with a different
+> extension (`IMG.xmp`). Companions follow the photo's final name when it is collision-
+> renamed (`IMG (1).jpg.xmp`), are never overwritten, and are removed by `clean` once
+> archived (matched by content). A companion-named file that is itself a photo is sorted on
+> its own, not duplicated. **Behavior change (v0):** companion copying is on by default;
+> earlier versions copied photos only — pass `--sidecars=false` for the previous behavior.
 
 ## Architecture
 

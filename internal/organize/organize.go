@@ -22,20 +22,34 @@ const (
 	ActionRenamed Action = "renamed"
 )
 
-// Result is the outcome of placing one photo.
+// Result is the outcome of placing one file (a photo or one of its companions).
 type Result struct {
-	Source string    // absolute source path
-	Dest   string    // absolute destination path actually targeted (after any suffix)
-	Theme  string    // theme slug used
-	Date   time.Time // representative date used for <year>/<date>
-	Action Action    // copied | skipped-identical | renamed
-	Err    error     // non-nil on a placement failure (run continues)
+	Source      string    // absolute source path
+	Dest        string    // absolute destination path actually targeted (after any suffix)
+	Theme       string    // theme slug used
+	Date        time.Time // representative date used for <year>/<date>
+	Action      Action    // copied | skipped-identical | renamed
+	Err         error     // non-nil on a placement failure (run continues)
+	IsCompanion bool      // true ⇒ this Result is a sidecar of a photo (see Of)
+	Of          string    // owning photo's source path, when IsCompanion
 }
 
-// Organizer copies photos under a destination root using the
-// <theme>/<year>/<year-month-day>/ layout.
+// Organizer copies photos (and, when Sidecars is set, their companion files)
+// under a destination root using the <theme>/<year>/<year-month-day>/ layout.
 type Organizer struct {
 	DestRoot string
+	// Sidecars enables copying each photo's companion (sidecar) files into the
+	// same destination folder as the photo.
+	Sidecars bool
+	// IsPrimary reports whether an absolute source path is itself a scanned
+	// primary photo, so it is never also copied as another photo's companion
+	// (FR-006). Injected by the caller to keep this package decoupled from the
+	// scanner; nil ⇒ "never primary".
+	IsPrimary func(absPath string) bool
+	// dirEntries caches one os.ReadDir result per source directory so companion
+	// discovery stays linear (one listing per directory). Place runs sequentially,
+	// so no synchronisation is needed.
+	dirEntries map[string][]os.DirEntry
 }
 
 // New builds an Organizer writing under destRoot.
@@ -65,6 +79,18 @@ func (o *Organizer) Place(ctx context.Context, c photo.Cluster, theme string) []
 		}
 		res.Dest, res.Action, res.Err = o.placeOne(dir, p.Path, p.Name)
 		results = append(results, res)
+
+		// Bring the photo's companion (sidecar) files along, for any successful
+		// placement action (copied/skipped-identical/renamed). They inherit the
+		// photo's theme and date and a name that tracks its final placed name.
+		if o.Sidecars && res.Err == nil {
+			comps := o.placeCompanions(dir, p.Path, filepath.Base(res.Dest))
+			for i := range comps {
+				comps[i].Theme = theme
+				comps[i].Date = date
+			}
+			results = append(results, comps...)
+		}
 	}
 	return results
 }
