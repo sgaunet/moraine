@@ -98,8 +98,7 @@ brews:
     homepage: 'https://github.com/sgaunet/moraine'
 
     # Project description
-    # CUSTOMIZE: Add meaningful description
-    description: 'A tool for [describe your project]'
+    description: 'Organize photos into event folders by capture time and theme'
 
     # Tap repository directory
     directory: Formula
