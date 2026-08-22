@@ -9,72 +9,140 @@ defines how to plan, verify, and iterate in this repository: plan mode,
 subagent strategy, verification gates, self-improvement loop, and the
 communication contract. Treat it as load-bearing context.
 
+## Behavioral Guidelines
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
 ## Repository Overview
 
-`moraine` is a single-binary, **pure-Go (no CGo)** command-line photo
-organizer. It scans a source folder, groups photos into events by capture
-time, assigns each group a theme, then **copies** them to
-`dest/<theme>/<year>/<year-month-day>/`. Originals are never modified or
+`moraine` is a single-binary, **pure-Go (no CGo)** command-line photo organizer.
+It scans a source folder, groups photos into events by capture time, assigns each
+group a theme, then **copies** them — plus each photo's companion (sidecar) files —
+to `dest/<theme>/<year>/<year-month-day>/`. Originals are never modified or
 deleted. Repo: `github.com/sgaunet/moraine` (MIT).
 
 ## Architecture
 
-- **Layered pipeline** orchestrated by `internal/app.Organize()`:
-  `scan → exifmeta → cluster → classify → organize`. `main.go` only parses
-  config and calls `Organize`; it holds no domain logic.
-- **Centralized typed config** (`internal/config`) splits `Parse` (syntax /
-  flags, no I/O) from `Validate` (filesystem); exposes the `ErrHelp` sentinel.
-- **Copy-only, no-overwrite**: destination opened with `O_EXCL`; SHA-256
-  content hashing dedupes (skip-identical vs ` (N)` suffix-rename).
-- **Interface-based classifier**: altitude heuristic → optional Ollama vision
-  model (constrained to the theme set) → guaranteed fallback theme. Degrades
-  gracefully when Ollama is unreachable (model stage is skipped).
+- **Three layers**: `main.go` (injects the build version, nothing else) →
+  `internal/cli` (Cobra transport: `sort`/`clean`/`version`, flags, exit codes) →
+  `internal/app` (single testable orchestrator) → domain packages. No domain
+  package imports Cobra.
+- **Procedural pipeline** in `app.Organize`: `scan → exifmeta` (worker pool sized by
+  `GOMAXPROCS`) `→ cluster → classify → organize.Place`, tallying a `Summary`.
+- **Typed config split** (`internal/config`): `New`/`NewClean` do pure syntax and
+  cross-field checks, no I/O (usage errors → exit 2); the `Validate()` methods do
+  filesystem checks and resolve the `<source>/_sorted` default (→ exit 1).
+- **Copy-only, no-clobber**: destinations opened `O_EXCL` then fsynced;
+  `internal/contenthash` (SHA-256) is the single content-identity source, shared by
+  `organize` (skip-identical) and `clean` (match originals); collisions get a
+  deterministic ` (N)` suffix; `safeJoin`/`ErrInvalidDestSubdir` block traversal.
+- **Injected extension points**: `classify.Classifier` (nil = skip the model stage),
+  `organize.Organizer.IsPrimary func(string) bool` (keeps `organize` decoupled from
+  `scan`), `rawpreview.Extractor`. A failed Ollama preflight degrades to the
+  altitude heuristic, then the fallback theme.
 - See `docs/architecture.md` for detailed design decisions.
 
 ## Development Commands
 
+Tool versions are pinned in `mise.toml` (go 1.26.2, task, golangci-lint, goreleaser).
+
 ```bash
-# Build (production: CGO disabled → single static binary)
-CGO_ENABLED=0 go build ./...
+task build   # CGO_ENABLED=0 go build -o moraine .
+task test    # go test -count=2 -race ./...
+task lint    # golangci-lint run
+task check-before-commit   # lint + test + snapshot
 
-# Test (race detector requires CGO)
-CGO_ENABLED=1 go test ./... -race -count=1
-
-# Lint
-golangci-lint run
-
-# Run — source is a positional arg; -dest defaults to <source>/_sorted
-go run . [-dest <out>] [-gap 6h] [-themes a,b,c] <source-dir>
+./moraine sort -d ~/Photos/sorted ~/Photos/2025
+./moraine clean -d ~/Photos/sorted ~/Photos/2025   # dry-run; --delete to commit
 ```
 
 ## Code Quality Standards
 
 **Linters configured** (do not duplicate rules):
-- golangci-lint: see `.golangci.yml` — v2, `default: all` (76 linters) with
-  opinionated/stylistic ones disabled (err113, wrapcheck, mnd, gosec, cyclop,
-  funlen, paralleltest, testpackage, …); `revive` `exported` off; errcheck/dupl
-  relaxed in `_test.go`; gofmt + goimports. Tree is lint-clean.
-- CI: `.github/workflows/ci.yml` runs the gofmt check, `go vet`,
-  `go test -race`, and golangci-lint.
+- golangci-lint: `.golangci.yml` — v2, `default: all` minus 28 opinionated or
+  style-only linters (incl. `errcheck`, `wrapcheck`, `err113`, `mnd`, `gosec`,
+  `cyclop`, `funlen`, `paralleltest`); formatters `gofmt` + `goimports`. There are
+  **no `exclude-rules`** — the same rules apply inside `_test.go`. Tree is lint-clean.
+- CI (GitHub Actions, mirrored in `.forgejo/`): `linter.yml` → `task lint`,
+  `test.yml` → `task test`, `snapshot.yml`/`release.yml` → GoReleaser. `pre-commit`
+  hooks shell out to `task test`/`lint`/`build`.
 
 **Key conventions:**
-- Black-box tests (`package foo_test`), table-driven with `t.Run` subtests;
-  HTTP deps faked via `net/http/httptest` (no mock framework).
-- Wrap errors with `fmt.Errorf("context: %w", err)`; use typed sentinels for
-  machine-testable conditions (`config.ErrHelp`,
-  `organize.ErrInvalidDestSubdir`).
-- Per-photo failures are non-fatal — recorded in the run summary, never abort.
+- Black-box tests (`package foo_test`); `export_test.go` is the only escape hatch to
+  internals. Table-driven with `t.Run`. Fakes, not mock frameworks: `httptest` for
+  Ollama, `internal/exiftooltest` (writes a fake `exiftool`) for the exec path.
+- Wrap errors with `fmt.Errorf("context: %w", err)`. Only two sentinels exist:
+  `rawpreview.ErrNoPreview`, `organize.ErrInvalidDestSubdir`.
+- Per-photo failures are non-fatal — recorded in the run `Summary`, never abort.
+- Destructive actions require an explicit flag (`clean` is dry-run until `--delete`).
 
 ## File Locations
 
-- **Source**: `internal/` (`app`, `config`, `scan`, `photo`, `exifmeta`,
-  `cluster`, `classify`, `organize`)
-- **Entrypoint**: `main.go`
+- **Entrypoint**: `main.go` → **Transport**: `internal/cli` → **Orchestration**:
+  `internal/app`
+- **Domain**: `internal/{config,scan,exifmeta,cluster,classify,organize,clean,photo,
+  contenthash,rawpreview}`; fake-exec test helper in `internal/exiftooltest`
 - **Tests**: co-located `internal/**/*_test.go`
-- **Specs / plans**: `specs/002-auto-photo-organizer/` (`plan.md`,
-  `research.md`, `data-model.md`, `contracts/`, `quickstart.md`)
-- **Constitution**: `.specify/memory/constitution.md`
-- **Config**: `.golangci.yml`
+- **Specs**: `specs/00N-*/` · **Constitution**: `.specify/memory/constitution.md`
+- **Config**: `.golangci.yml`, `Taskfile.yml`, `mise.toml`, `.goreleaser.yml`
 
 ## Documentation
 
