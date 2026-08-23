@@ -44,7 +44,12 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 - **`internal/cluster`** — groups photos into events by capture-time `-gap`.
 - **`internal/classify`** — assigns a theme to each cluster via the
   `Classifier` interface (optional Ollama → altitude heuristic → fallback; the
-  model decides first so it sees the actual scene).
+  model decides first so it sees the actual scene). A `Classifier` returns a
+  `Verdict` (theme plus a confidence from 0 to 1); `Options.MinConfidence` rejects a
+  verdict below a threshold, which routes the cluster on to the heuristic exactly as
+  an abstention does. `vote.go` classifies each sampled photo of a large group
+  separately and reduces the answers with `tallyVotes`, whose winning share becomes
+  the confidence — the one signal that catches a mixed event.
   For model input it reads JPEG/PNG directly and obtains RAW previews through
   the `RawExtractor` interface.
 - **`internal/rawpreview`** — the only package that talks to **exiftool**:

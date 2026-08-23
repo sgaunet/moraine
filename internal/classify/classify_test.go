@@ -34,14 +34,15 @@ func opts(c classify.Classifier) classify.Options {
 
 // fakeClassifier is an in-memory Classifier (no network, no mock framework).
 type fakeClassifier struct {
-	label string
-	err   error
-	calls int
+	label      string
+	confidence float64
+	err        error
+	calls      int
 }
 
-func (f *fakeClassifier) Classify(_ context.Context, _ photo.Cluster) (string, error) {
+func (f *fakeClassifier) Classify(_ context.Context, _ photo.Cluster) (classify.Verdict, error) {
 	f.calls++
-	return f.label, f.err
+	return classify.Verdict{Theme: f.label, Confidence: f.confidence}, f.err
 }
 
 func ptr(f float64) *float64 { return &f }
@@ -216,8 +217,8 @@ func TestOllamaClassifyMapsInSetTheme(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if got != "mountain" {
-		t.Fatalf("theme = %q; want normalised 'mountain'", got)
+	if got.Theme != "mountain" {
+		t.Fatalf("theme = %q; want normalised 'mountain'", got.Theme)
 	}
 }
 
@@ -232,8 +233,8 @@ func TestOllamaClassifyParsesStructuredJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if got != "mountain" {
-		t.Fatalf("theme = %q; want 'mountain' from structured answer", got)
+	if got.Theme != "mountain" {
+		t.Fatalf("theme = %q; want 'mountain' from structured answer", got.Theme)
 	}
 }
 
@@ -295,5 +296,76 @@ func TestOllamaClassifyHEICOnlyNoDecodableImage(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Errorf("server called %d times; want 0 (HEIC not sent)", calls)
+	}
+}
+
+// TestMinConfidenceGate pins the routing of a low-confidence verdict. A verdict the
+// model is unsure about is treated exactly like an abstention — the heuristic, then
+// the fallback — rather than being filed under a theme nobody vouched for.
+func TestMinConfidenceGate(t *testing.T) {
+	tests := []struct {
+		name       string
+		confidence float64
+		minimum    float64
+		wantTheme  string
+		wantMethod classify.Method
+	}{
+		{"threshold off accepts a weak verdict", 0.1, 0, "nature", classify.MethodModelAll},
+		{"above the threshold", 0.9, 0.7, "nature", classify.MethodModelAll},
+		{"exactly at the threshold", 0.7, 0.7, "nature", classify.MethodModelAll},
+		{"below the threshold falls back", 0.5, 0.7, "other", classify.MethodFallback},
+		// A model that never reports confidence must not send a whole run to the
+		// fallback: silence is not evidence of doubt.
+		{"no confidence reported is accepted", 0, 0.7, "nature", classify.MethodModelAll},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &fakeClassifier{label: "nature", confidence: tc.confidence}
+			o := opts(fc)
+			o.MinConfidence = tc.minimum
+			c := photo.Cluster{Photos: []photo.Photo{{}}}
+			theme, method := classify.Label(context.Background(), c, o)
+			if theme != tc.wantTheme || method != tc.wantMethod {
+				t.Errorf("got (%q,%q); want (%q,%q)", theme, method, tc.wantTheme, tc.wantMethod)
+			}
+		})
+	}
+}
+
+// TestMinConfidenceStillReachesHeuristic pins the order: a rejected verdict does not
+// jump straight to the fallback, it lets the altitude heuristic have its say.
+func TestMinConfidenceStillReachesHeuristic(t *testing.T) {
+	fc := &fakeClassifier{label: "family", confidence: 0.2}
+	o := opts(fc)
+	o.MinConfidence = 0.8
+	c := photo.Cluster{Photos: []photo.Photo{{Altitude: ptr(2400)}}}
+	theme, method := classify.Label(context.Background(), c, o)
+	if theme != "mountain" || method != classify.MethodHeuristic {
+		t.Fatalf("got (%q,%q); want (mountain,heuristic)", theme, method)
+	}
+}
+
+func TestVerdictMeetsThreshold(t *testing.T) {
+	tests := []struct {
+		name       string
+		confidence float64
+		minimum    float64
+		want       bool
+	}{
+		{"no threshold", 0.1, 0, true},
+		{"negative threshold", 0.1, -1, true},
+		{"unreported confidence", 0, 0.9, true},
+		{"equal", 0.5, 0.5, true},
+		{"above", 0.6, 0.5, true},
+		{"below", 0.4, 0.5, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := classify.Verdict{Theme: "nature", Confidence: tc.confidence}
+			if got := v.MeetsThreshold(tc.minimum); got != tc.want {
+				t.Errorf("MeetsThreshold(%g) with confidence %g = %v; want %v",
+					tc.minimum, tc.confidence, got, tc.want)
+			}
+		})
 	}
 }

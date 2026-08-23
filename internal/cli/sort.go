@@ -51,6 +51,12 @@ Classification (a theme is always assigned):
      group with an EXIF altitude >= --mountain-altitude (default 1500 m) as
      "mountain", when "mountain" is one of the themes;
   3. otherwise: the fallback theme (--fallback-theme).
+The model also reports how confident it is. --min-confidence rejects a verdict below
+a threshold, sending that group to the heuristic and then the fallback; it defaults
+to 0, which accepts every verdict. --vote classifies each sampled photo of a large
+group separately and lets them vote, which costs one model call per sampled photo
+but detects a mixed event: the share of votes the winning theme takes becomes its
+confidence, and a tie abstains.
 RAW photos (.dng/.nef/.cr2/...) are classified from the embedded preview exiftool
 extracts (exiftool is required, see --exiftool). HEIC embeds no such preview, so it
 is decoded by the first of sips, heif-convert, ffmpeg or magick found on PATH; that
@@ -84,6 +90,9 @@ Exit codes:
 
   # photos only — do not copy companion/sidecar files
   moraine sort --sidecars=false -d ~/Photos/sorted ~/Photos/2025
+
+  # per-photo majority vote, and only trust a group the model is sure about
+  moraine sort --vote --min-confidence 0.7 -d ~/Photos/sorted ~/Photos/2025
 
   # custom vocabulary + verbose logs
   moraine sort --themes "friends,hiking,party,nature" --fallback-theme misc \
@@ -146,6 +155,11 @@ Exit codes:
 	f.IntVarP(&opts.Jobs, "jobs", "j", 0, "EXIF reader workers (0 = one per CPU); lower it to throttle a network drive")
 	f.Float64Var(&opts.MountainAltitude, "mountain-altitude", config.DefaultMountainAltitude,
 		"metres at/above which the altitude heuristic labels a group \"mountain\" (must be > 0)")
+	f.Float64Var(&opts.MinConfidence, "min-confidence", 0,
+		"reject a model verdict below this confidence, 0..1 (0 = accept every verdict)")
+	f.BoolVar(&opts.Vote, "vote", false,
+		"classify each sampled photo of a large group separately and take the majority "+
+			"(one model call per sampled photo; the vote margin becomes the confidence)")
 
 	registerVerbosityFlags(cmd, &opts.Quiet, &opts.Verbose)
 	registerSharedCompletions(cmd)
@@ -154,6 +168,7 @@ Exit codes:
 	_ = cmd.RegisterFlagCompletionFunc("fallback-theme", completeFixed(append(defaultThemes(), config.DefaultFallback)...))
 	_ = cmd.RegisterFlagCompletionFunc("gap", completeFixed(gapDurations...))
 	_ = cmd.RegisterFlagCompletionFunc("mountain-altitude", completeFixed(altitudeMetres...))
+	_ = cmd.RegisterFlagCompletionFunc("min-confidence", completeFixed(confidenceThresholds...))
 	// Scalar flags with no knowable value set: suppress the filename fallback.
 	_ = cmd.RegisterFlagCompletionFunc("sample", completeFixed())
 	_ = cmd.RegisterFlagCompletionFunc("model", completeFixed(config.DefaultModel))

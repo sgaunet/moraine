@@ -33,6 +33,17 @@ This repo uses a Spec-Kit driven flow (`specs/<feature>/`):
 - **Command**: `CGO_ENABLED=1 go test ./... -race -count=1`. CGo is enabled
   *only* for the race detector; production builds keep `CGO_ENABLED=0`.
 
+## Measuring Classification Accuracy
+
+`task eval` is a measurement, not a gate: it runs the real Ollama model over a
+labeled corpus of photos you supply (`MORAINE_EVAL_CORPUS=<dir>`, laid out
+`<corpus>/<theme>/<event>/*.jpg`) and reports accuracy, a per-theme confusion
+breakdown, and the confidence behind right versus wrong answers. It lives in
+`internal/classify/eval_test.go` and skips when the variable is unset, so it never
+runs in CI — a real corpus cannot be committed and a vision model cannot run there.
+Run it before and after any change to the prompt, the sampling rules, or the
+confidence threshold.
+
 ## Verification Suite (run before every push)
 
 ```bash

@@ -171,6 +171,69 @@ has a recognised extension is read and copied like any other photo. The destinat
 is excluded by directory *identity*, so naming it through a symlink or with different
 letter case still keeps already-sorted photos out of the scan.
 
+### Confidence and voting
+
+The model reports how sure it is of each answer, and `--min-confidence` rejects a
+verdict below a threshold — such a group falls through to the altitude heuristic and
+then the fallback theme, exactly as an outright abstention does. It defaults to `0`,
+which accepts every verdict: pick a threshold from the eval harness below rather than
+from a guess, and note that a model reporting no confidence at all is never rejected
+(silence is not evidence of doubt).
+
+`--vote` classifies each sampled photo of a large group **separately** and lets the
+answers vote; the share of votes the winning theme takes becomes its confidence, and
+a tie abstains. It costs one model call per sampled photo instead of one per group,
+which is why it is opt-in. What it buys is mixed events — the lunch stop inside a
+hiking day, the party that starts at a dinner table — which a single call cannot see:
+
+```console
+# one folder holding 3 mountain photos and 3 meal photos
+$ moraine sort -n -l debug -d /tmp/dest /tmp/mixed 2>&1 | grep 'msg=group'
+... msg=group size=6 method=model-sample theme=mountain      # all 3 images in one call
+
+$ moraine sort -n --vote -l debug -d /tmp/dest /tmp/mixed 2>&1 | grep -E 'vote result|msg=group'
+... msg="vote result" theme="" confidence=0 votes=3 of=3     # 1 mountain, 2 abstentions
+... msg=group size=6 method=fallback theme=other
+```
+
+In that run the single call answered `mountain` at a self-reported confidence of
+**0.9** — the model was confidently wrong, and only the disagreement between photos
+caught it. That is the difference between the two signals worth remembering.
+
+### Measuring accuracy
+
+Prompt, threshold and sampling changes are otherwise judged by eye. `task eval`
+measures them against a corpus of **your own** labeled photos (none are committed
+here — size, licensing, privacy), laid out one directory per theme and one
+sub-directory per event:
+
+```
+~/eval/mountain/col-du-galibier/*.jpg
+~/eval/cook/refuge-lunch/*.jpg
+~/eval/family/sunday-lunch/*.jpg
+```
+
+```console
+$ MORAINE_EVAL_CORPUS=~/eval task eval
+  corpus /home/me/eval: 20 events, themes [cook family mountain special-events]
+  accuracy 17/20 (85.0%)
+    mountain          7/7 100.0%
+    cook              5/6  83.3%  (1 -> family)
+    special-events    5/7  71.4%  (2 -> family)
+    wrong: /home/me/eval/cook/refuge-lunch -> family (method model-all, confidence 0.55)
+  confidence: right 0.91 (n=17), wrong 0.62 (n=3) (20 of 20 answers reported one)
+    method model-all      12
+    method model-sample    8
+```
+
+The theme set is read from the corpus, so adding a theme means adding a directory.
+The last confidence line is the one to choose `--min-confidence` from: if wrong
+answers are as confident as right ones, no threshold will help. `MORAINE_EVAL_MODEL`,
+`MORAINE_EVAL_SAMPLE`, `MORAINE_EVAL_VOTE`, `MORAINE_EVAL_MIN_CONFIDENCE` and
+`MORAINE_EVAL_MIN_ACCURACY` (a floor that fails the run) tune it; see
+`internal/classify/eval_test.go`. Without `MORAINE_EVAL_CORPUS` it skips, so it costs
+`task test` and CI nothing.
+
 ### Output: data on stdout, logs on stderr
 
 **stdout carries the run result and nothing else**, so `moraine` is safe on either
@@ -265,6 +328,8 @@ run did not finish what was asked.
 | `--sidecars`       |       | bool     | `true`                    | also copy each photo's companion/sidecar files (`--sidecars=false` to disable) |
 | `--incremental`    |       | bool     | `false`                   | skip sources the run manifest already records as copied, and reuse each known event's theme |
 | `--mountain-altitude` |    | float    | `1500`                    | metres at/above which the altitude heuristic labels a group `mountain` (must be `> 0`) |
+| `--min-confidence` |       | float    | `0`                       | reject a model verdict below this confidence, `0`..`1` (`0` = accept every verdict) |
+| `--vote`           |       | bool     | `false`                   | classify each sampled photo of a large group separately and take the majority (one model call per sampled photo) |
 | `--help`           | `-h`  | bool     | —                         | print the detailed help and exit                           |
 
 ### `clean` flags

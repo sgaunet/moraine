@@ -193,7 +193,24 @@ task check-before-commit   # lint + test + snapshot
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #14** — dating & scanning correctness (issue-driven, no
+Latest change: **issue #8** — classification accuracy work (issue-driven, no
+`specs/` dir). `Classifier` now returns a **`Verdict{Theme, Confidence}`**: the
+structured answer carries a `confidence` (0..1, required in the schema; anything out
+of range counts as unreported), and `Options.MinConfidence` — `--min-confidence`,
+default 0 = off — routes a weak verdict to the heuristic then the fallback, exactly as
+an abstention goes. Opt-in **`--vote`** (`internal/classify/vote.go`) classifies each
+sampled photo of a group larger than `SmallGroupMax` in its own call and reduces the
+answers with `tallyVotes`: abstentions vote too, an exact tie abstains, and the
+winner's vote share becomes the confidence. An **eval harness**
+(`internal/classify/eval_test.go`, `task eval`, `MORAINE_EVAL_CORPUS=<dir>` with
+`<corpus>/<theme>/<event>/*.jpg`) measures accuracy, per-theme confusion, and the
+confidence of right vs wrong answers; it skips without the env var, so CI is
+untouched. **Measured on the real `qwen3-vl:8b`**: a folder of 3 mountain + 3 meal
+photos was labeled `mountain` at self-reported confidence **0.9** by a single call,
+while `--vote` split it 1–2 and abstained — self-reported confidence does not catch a
+mixed event, the vote margin does. Pick a threshold from `task eval`, not by guessing.
+
+Previous change: **issue #14** — dating & scanning correctness (issue-driven, no
 `specs/` dir). Capture dates now resolve in three tiers — EXIF → **a date in the file
 name** (`internal/exifmeta/filename.go`) → mtime — so a folder of downloads sharing
 one mtime no longer collapses into one event dated by download day (verified: three
@@ -209,7 +226,7 @@ extension is read like any other photo). `app.Summary` and the stdout contract g
 *directories* stay a stderr warning, a deliberate scope call. Adds the repo's first
 `testdata/`: a 719-byte EXIF-dated JPEG pinning that EXIF still beats the filename.
 
-Previous change: **issue #7** — classification coverage and cost (no `specs/` dir;
+Earlier change: **issue #7** — classification coverage and cost (no `specs/` dir;
 issue-driven like #5/#10/#11/#13). HEIC now reaches the vision model via a new
 `internal/heicpreview` converter, so HEIC events that used to land on the fallback
 theme are classified (verified on real iPhone files: `method=fallback` → `model-all`);
@@ -220,7 +237,7 @@ The issue's cache item is deliberately unticked — `--incremental` already cove
 re-run case. **The issue's premise for HEIC was wrong**: exiftool cannot extract a
 preview from an iPhone HEIC (all three tags return 0 bytes), hence the converter.
 
-Earlier change: **issue #11** — run manifest + `undo` + `sort --incremental`.
+Earlier still: **issue #11** — run manifest + `undo` + `sort --incremental`.
 The destination gains a `.moraine/` bookkeeping directory by default (additive,
 hidden, never read as photos since the dest is excluded from the scan);
 `--dry-run` still writes nothing at all.
