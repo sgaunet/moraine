@@ -103,6 +103,8 @@ func TestSortInvalidValuesAreUsage(t *testing.T) {
 		{"bad gap", []string{"sort", "--gap", "nope", tmp}},
 		{"bad themes slug", []string{"sort", "--themes", "Bad Theme", tmp}},
 		{"negative sample", []string{"sort", "--sample", "-1", tmp}},
+		{"zero mountain altitude", []string{"sort", "--mountain-altitude", "0", tmp}},
+		{"negative mountain altitude", []string{"sort", "--mountain-altitude", "-100", tmp}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

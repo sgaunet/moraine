@@ -31,6 +31,22 @@ func writeJPEG(t *testing.T, path string, mtime time.Time) {
 	}
 }
 
+// wallClock is the layout used to compare two times by their wall-clock reading
+// alone, ignoring the zone they carry.
+const wallClock = "2006-01-02 15:04:05"
+
+// mtimeWallClock returns the wall-clock reading the filesystem reports for path.
+// os.Chtimes stores an instant; what a photo organizer cares about — and what
+// exifmeta returns, stamped UTC — is the wall clock that instant reads as.
+func mtimeWallClock(t *testing.T, path string) string {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.ModTime().Format(wallClock)
+}
+
 func TestReadFallsBackToMtimeWhenNoEXIF(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "noexif.jpg")
@@ -47,9 +63,9 @@ func TestReadFallsBackToMtimeWhenNoEXIF(t *testing.T) {
 	if p.Format != photo.JPEG {
 		t.Errorf("Format = %v; want JPEG", p.Format)
 	}
-	// No EXIF date → must use mtime (within filesystem resolution).
-	if diff := p.Taken.Sub(want); diff > time.Second || diff < -time.Second {
-		t.Errorf("Taken = %v; want ~mtime %v", p.Taken, want)
+	// No EXIF date → must use the mtime's wall clock, in the UTC-naive frame.
+	if got, w := p.Taken.Format(wallClock), mtimeWallClock(t, path); got != w {
+		t.Errorf("Taken wall clock = %s; want mtime wall clock %s", got, w)
 	}
 	if p.GPS != nil {
 		t.Errorf("GPS = %v; want nil when absent", p.GPS)
@@ -74,8 +90,43 @@ func TestReadUnreadableDataStillFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read should not fail on undecodable EXIF: %v", err)
 	}
-	if diff := p.Taken.Sub(want); diff > time.Second || diff < -time.Second {
-		t.Errorf("Taken = %v; want ~mtime %v", p.Taken, want)
+	if got, w := p.Taken.Format(wallClock), mtimeWallClock(t, path); got != w {
+		t.Errorf("Taken wall clock = %s; want mtime wall clock %s", got, w)
+	}
+}
+
+// TestReadTakenIsUTCNaiveWallClock pins the package's frame invariant: whatever
+// the source of the date, Taken carries no zone offset. cluster subtracts these
+// values from each other, so a single frame is what keeps the gap arithmetic
+// meaningful (mixing a UTC-naive EXIF date with a zoned mtime skews it by the
+// local offset).
+func TestReadTakenIsUTCNaiveWallClock(t *testing.T) {
+	dir := t.TempDir()
+	mtime := time.Date(2022, 7, 8, 9, 10, 11, 0, time.UTC)
+
+	valid := filepath.Join(dir, "valid.jpg")
+	writeJPEG(t, valid, mtime)
+	garbage := filepath.Join(dir, "garbage.jpg")
+	if err := os.WriteFile(garbage, []byte("not a real jpeg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(garbage, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{valid, garbage} {
+		p, err := exifmeta.Read(path, photo.JPEG)
+		if err != nil {
+			t.Fatalf("Read(%s): %v", filepath.Base(path), err)
+		}
+		if p.Taken.Location() != time.UTC {
+			t.Errorf("%s: Taken location = %v; want UTC", filepath.Base(path), p.Taken.Location())
+		}
+		// The wall clock must match the reading the filesystem reports, so the
+		// destination folder stays the day the photo reads as locally.
+		if got, w := p.Taken.Format(wallClock), mtimeWallClock(t, path); got != w {
+			t.Errorf("%s: Taken wall clock = %s; want %s", filepath.Base(path), got, w)
+		}
 	}
 }
 

@@ -1,14 +1,21 @@
 package scan_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/sgaunet/moraine/internal/photo"
 	"github.com/sgaunet/moraine/internal/scan"
 )
+
+// discard is a logger for the tests that do not assert on log output.
+func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 func write(t *testing.T, path string) {
 	t.Helper()
@@ -34,7 +41,7 @@ func TestScanRecursiveAndFilters(t *testing.T) {
 
 	dest := filepath.Join(src, "_sorted")
 
-	found, err := scan.Scan(src, dest)
+	found, err := scan.Scan(src, dest, discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +61,7 @@ func TestScanExcludesDestRootUnderSource(t *testing.T) {
 	write(t, filepath.Join(dest, "trip", "old1.jpg"))
 	write(t, filepath.Join(dest, "old2.png"))
 
-	found, err := scan.Scan(src, dest)
+	found, err := scan.Scan(src, dest, discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +74,58 @@ func TestScanExcludesDestRootUnderSource(t *testing.T) {
 func TestScanFormatsClassified(t *testing.T) {
 	src := t.TempDir()
 	write(t, filepath.Join(src, "p.heic"))
-	found, err := scan.Scan(src, filepath.Join(src, "_sorted"))
+	found, err := scan.Scan(src, filepath.Join(src, "_sorted"), discard())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(found) != 1 || found[0].Format != photo.HEIC {
 		t.Fatalf("found %+v; want one HEIC", found)
+	}
+}
+
+func TestScanSkipsUnreadableSubdirWithoutAborting(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("permission bits do not deny this user")
+	}
+	src := t.TempDir()
+	write(t, filepath.Join(src, "before.jpg"))
+	write(t, filepath.Join(src, "sub", "after.jpg"))
+	locked := filepath.Join(src, "locked")
+	write(t, filepath.Join(locked, "hidden.jpg"))
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) }) // let t.TempDir clean up
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	found, err := scan.Scan(src, filepath.Join(src, "_sorted"), logger)
+	if err != nil {
+		t.Fatalf("one unreadable directory must not abort the scan: %v", err)
+	}
+	// The readable photos on both sides of the unreadable directory survive.
+	if names := relNames(t, src, found); !equal(names, []string{"before.jpg", "sub/after.jpg"}) {
+		t.Fatalf("found %v; want the readable photos only", names)
+	}
+	if !strings.Contains(logs.String(), "path skipped") {
+		t.Errorf("the skip must be logged; got:\n%s", logs.String())
+	}
+}
+
+func TestScanUnreadableSourceRootIsFatal(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("permission bits do not deny this user")
+	}
+	src := filepath.Join(t.TempDir(), "root")
+	write(t, filepath.Join(src, "a.jpg"))
+	if err := os.Chmod(src, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(src, 0o755) })
+
+	if _, err := scan.Scan(src, filepath.Join(src, "_sorted"), discard()); err == nil {
+		t.Fatal("an unreadable source root must still be an error")
 	}
 }
 

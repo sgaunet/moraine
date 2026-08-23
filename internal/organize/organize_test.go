@@ -182,6 +182,80 @@ func TestPlaceSkipsIdenticalAndRenamesDifferent(t *testing.T) {
 	}
 }
 
+// TestPlaceIsIdempotentAfterCollisionRename is the regression test for the
+// duplication bug: dedup used to compare content only against the exact target
+// name, so once a photo had been placed as "IMG_1 (1).jpg" every later run
+// re-collided on "IMG_1.jpg", saw (1) taken, and copied the same bytes again as
+// (2), (3), … Re-runs must be no-ops instead.
+func TestPlaceIsIdempotentAfterCollisionRename(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	c := clusterOf(t, src, "IMG_1.jpg")
+	org := organize.New(dest)
+	dir := filepath.Join(dest, "family", "2025", "2025-08-12")
+
+	// Occupy the base name with different content, so the photo lands on " (1)".
+	org.Place(context.Background(), c, "family")
+	writeFile(t, filepath.Join(src, "IMG_1.jpg"), "second-generation-bytes")
+	renamed := org.Place(context.Background(), c, "family")
+	if renamed[0].Action != organize.ActionRenamed {
+		t.Fatalf("setup: want renamed, got %s", renamed[0].Action)
+	}
+	if filepath.Base(renamed[0].Dest) != "IMG_1 (1).jpg" {
+		t.Fatalf("setup: want 'IMG_1 (1).jpg', got %q", filepath.Base(renamed[0].Dest))
+	}
+
+	// Every further run must recognise the content it already placed under the
+	// suffixed name and write nothing.
+	for run := 3; run <= 5; run++ {
+		again := org.Place(context.Background(), c, "family")
+		if again[0].Err != nil {
+			t.Fatalf("run %d: %v", run, again[0].Err)
+		}
+		if again[0].Action != organize.ActionSkippedIdentical {
+			t.Fatalf("run %d: want skipped-identical, got %s", run, again[0].Action)
+		}
+		if got := filepath.Base(again[0].Dest); got != "IMG_1 (1).jpg" {
+			t.Fatalf("run %d: Dest = %q; want the already-placed 'IMG_1 (1).jpg'", run, got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "IMG_1 (2).jpg")); err == nil {
+		t.Fatal("re-runs duplicated the photo as 'IMG_1 (2).jpg'")
+	}
+
+	// A third distinct content still gets the next free suffix.
+	writeFile(t, filepath.Join(src, "IMG_1.jpg"), "third-generation-bytes")
+	third := org.Place(context.Background(), c, "family")
+	if third[0].Action != organize.ActionRenamed {
+		t.Fatalf("new content: want renamed, got %s", third[0].Action)
+	}
+	if got := filepath.Base(third[0].Dest); got != "IMG_1 (2).jpg" {
+		t.Fatalf("new content: want 'IMG_1 (2).jpg', got %q", got)
+	}
+
+	// …and is then itself deduplicated, including past an earlier variant.
+	fourth := org.Place(context.Background(), c, "family")
+	if fourth[0].Action != organize.ActionSkippedIdentical {
+		t.Fatalf("re-run of the third content: want skipped-identical, got %s", fourth[0].Action)
+	}
+	if got := filepath.Base(fourth[0].Dest); got != "IMG_1 (2).jpg" {
+		t.Fatalf("re-run of the third content: Dest = %q; want 'IMG_1 (2).jpg'", got)
+	}
+
+	// Exactly three files: the original and two generations, no duplicates.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("want 3 placed files, got %d: %v", len(entries), names)
+	}
+}
+
 func TestPlaceCancelledContext(t *testing.T) {
 	src := t.TempDir()
 	dest := t.TempDir()

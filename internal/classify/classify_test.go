@@ -20,8 +20,16 @@ import (
 
 var themes = []string{"family", "mountain", "special-events", "nature"}
 
+// testAltitude is the threshold the CLI default supplies (config.DefaultMountainAltitude).
+const testAltitude = 1500.0
+
 func opts(c classify.Classifier) classify.Options {
-	return classify.Options{Themes: themes, Fallback: "other", Classifier: c}
+	return classify.Options{
+		Themes:            themes,
+		Fallback:          "other",
+		Classifier:        c,
+		MountainAltitudeM: testAltitude,
+	}
 }
 
 // fakeClassifier is an in-memory Classifier (no network, no mock framework).
@@ -48,7 +56,11 @@ func TestHeuristicMountainInSet(t *testing.T) {
 
 func TestHeuristicMountainNotInSetFallsThrough(t *testing.T) {
 	c := photo.Cluster{Start: time.Now(), Photos: []photo.Photo{{Altitude: ptr(2400)}}}
-	o := classify.Options{Themes: []string{"family", "nature"}, Fallback: "other"}
+	o := classify.Options{
+		Themes:            []string{"family", "nature"},
+		Fallback:          "other",
+		MountainAltitudeM: testAltitude,
+	}
 	theme, method := classify.Label(context.Background(), c, o)
 	if theme != "other" || method != classify.MethodFallback {
 		t.Fatalf("got (%q,%q); want (other,fallback)", theme, method)
@@ -121,6 +133,49 @@ func TestAltitudeFallbackWhenModelFails(t *testing.T) {
 	theme, method := classify.Label(context.Background(), c, opts(fc))
 	if theme != "mountain" || method != classify.MethodHeuristic {
 		t.Fatalf("got (%q,%q); want (mountain,heuristic)", theme, method)
+	}
+}
+
+func TestHeuristicAltitudeThreshold(t *testing.T) {
+	tests := []struct {
+		name      string
+		altitude  float64
+		wantTheme string
+	}{
+		{"below threshold", 1499, "other"},
+		{"exactly at threshold", 1500, "mountain"},
+		{"above threshold", 2400, "mountain"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := photo.Cluster{Photos: []photo.Photo{{Altitude: ptr(tc.altitude)}}}
+			theme, _ := classify.Label(context.Background(), c, opts(nil))
+			if theme != tc.wantTheme {
+				t.Fatalf("altitude %g: theme = %q; want %q", tc.altitude, theme, tc.wantTheme)
+			}
+		})
+	}
+}
+
+func TestHeuristicRespectsConfiguredThreshold(t *testing.T) {
+	// A caller-supplied threshold, not the default, decides.
+	o := opts(nil)
+	o.MountainAltitudeM = 1000
+	c := photo.Cluster{Photos: []photo.Photo{{Altitude: ptr(1200)}}}
+	theme, method := classify.Label(context.Background(), c, o)
+	if theme != "mountain" || method != classify.MethodHeuristic {
+		t.Fatalf("got (%q,%q); want (mountain,heuristic) at a 1000 m threshold", theme, method)
+	}
+}
+
+func TestHeuristicDisabledByNonPositiveThreshold(t *testing.T) {
+	// A zero-value threshold must disable the check, never match every photo.
+	o := opts(nil)
+	o.MountainAltitudeM = 0
+	c := photo.Cluster{Photos: []photo.Photo{{Altitude: ptr(8848)}}}
+	theme, method := classify.Label(context.Background(), c, o)
+	if theme != "other" || method != classify.MethodFallback {
+		t.Fatalf("got (%q,%q); want (other,fallback) when the threshold is unset", theme, method)
 	}
 }
 

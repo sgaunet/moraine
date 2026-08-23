@@ -6,6 +6,7 @@ package scan
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/sgaunet/moraine/internal/photo"
@@ -20,13 +21,25 @@ type Found struct {
 // Scan recursively walks source and returns the recognised image files
 // (JPEG/PNG/HEIC, case-insensitive). The destRoot directory — even when nested
 // under source (e.g. "_sorted") — is skipped entirely.
-func Scan(source, destRoot string) ([]Found, error) {
+//
+// An unreadable subdirectory, or a file that vanishes mid-walk, is logged and
+// skipped rather than aborting the walk: a single bad entry must not cost the
+// whole run (FR-012). Only an unreadable source root is fatal.
+func Scan(source, destRoot string, logger *slog.Logger) ([]Found, error) {
 	cleanDest := filepath.Clean(destRoot)
+	cleanSource := filepath.Clean(source)
 	var found []Found
 
 	err := filepath.WalkDir(source, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if filepath.Clean(path) == cleanSource {
+				return err // the source root itself is unreadable: fatal
+			}
+			logger.Warn("path skipped", "path", path, "err", err)
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			if filepath.Clean(path) == cleanDest {

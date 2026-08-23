@@ -35,14 +35,15 @@ const (
 // SmallGroupMax is the largest group size still classified using all photos.
 const SmallGroupMax = 3
 
-// mountainAltitudeM tunes the heuristic threshold.
-const mountainAltitudeM = 1000.0
-
 // Options configures the labelling pipeline.
 type Options struct {
 	Themes     []string   // configured theme slugs
 	Fallback   string     // theme used when none is determined
 	Classifier Classifier // optional; nil skips the model stage
+	// MountainAltitudeM is the altitude in metres at or above which the
+	// heuristic labels a group "mountain". A non-positive value disables the
+	// altitude heuristic (see heuristic) rather than matching every photo.
+	MountainAltitudeM float64
 }
 
 // Label returns a configured theme for the cluster and the Method used. The
@@ -57,7 +58,7 @@ func Label(ctx context.Context, c photo.Cluster, opts Options) (string, Method) 
 			}
 		}
 	}
-	if l := heuristic(c, opts.Themes); l != "" {
+	if l := heuristic(c, opts); l != "" {
 		return l, MethodHeuristic
 	}
 	return opts.Fallback, MethodFallback
@@ -71,16 +72,21 @@ func modelMethod(c photo.Cluster) Method {
 	return MethodModelSample
 }
 
-// heuristic returns "mountain" when a photo is high enough AND "mountain" is a
-// configured theme, otherwise "". It runs only as a fallback after the model
-// (see Label), so it no longer pre-empts the model — chiefly it keeps the
-// offline run (no Ollama) useful for clearly high-altitude clusters.
-func heuristic(c photo.Cluster, themes []string) string {
-	if !inSet("mountain", themes) {
+// heuristic returns "mountain" when a photo is at or above
+// opts.MountainAltitudeM AND "mountain" is a configured theme, otherwise "". It
+// runs only as a fallback after the model (see Label), so it no longer pre-empts
+// the model — chiefly it keeps the offline run (no Ollama) useful for clearly
+// high-altitude clusters.
+//
+// A non-positive threshold disables the check: callers that leave it unset must
+// not silently get "every photo is a mountain". config.New guarantees a positive
+// value for a real run.
+func heuristic(c photo.Cluster, opts Options) string {
+	if opts.MountainAltitudeM <= 0 || !inSet("mountain", opts.Themes) {
 		return ""
 	}
 	for _, p := range c.Photos {
-		if p.Altitude != nil && *p.Altitude >= mountainAltitudeM {
+		if p.Altitude != nil && *p.Altitude >= opts.MountainAltitudeM {
 			return "mountain"
 		}
 	}

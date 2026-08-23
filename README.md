@@ -14,9 +14,10 @@ or deleted. Every step is explained in the logs.
 - **RAW support** (`.dng/.nef/.cr2/.cr3/.arw/.raf/.rw2/.orf/.pef/.srw`): RAW pixels can't
   be decoded in pure Go, so the camera-embedded JPEG preview is extracted with **exiftool**
   (in memory, never written to disk) and sent to the model.
-- **Theme classification** in three stages: heuristic (altitude → `mountain`)
-  → **Ollama** vision model constrained to the theme set (optional) → guaranteed
-  **fallback** (`other`). A theme is **always** assigned, even without Ollama.
+- **Theme classification** in three stages: **Ollama** vision model constrained to
+  the theme set (optional) → altitude heuristic (`≥ --mountain-altitude`, default
+  1500 m → `mountain`) → guaranteed **fallback** (`other`). A theme is **always**
+  assigned, even without Ollama.
 - **Ollama diagnostics**: a *preflight* logs whether the model is ready, whether Ollama
   is **unreachable** (`ollama serve`), or whether the **model is missing**
   (`ollama pull <model>`). An out-of-list answer from the model is logged (no more silent
@@ -133,6 +134,7 @@ Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 | `--log-level`      | `-l`  | string   | `info`                    | `debug` \| `info` \| `warn` \| `error`                     |
 | `--exiftool`       |       | string   | `exiftool`                | exiftool executable (name on `PATH` or absolute path); **required** for RAW |
 | `--sidecars`       |       | bool     | `true`                    | also copy each photo's companion/sidecar files (`--sidecars=false` to disable) |
+| `--mountain-altitude` |    | float    | `1500`                    | metres at/above which the altitude heuristic labels a group `mountain` (must be `> 0`) |
 | `--help`           | `-h`  | bool     | —                         | print the detailed help and exit                           |
 
 ### `clean` flags
@@ -169,6 +171,7 @@ Beyond command and flag names, completion knows the values:
 | `--themes` | the built-in themes, comma-appending and skipping ones already listed |
 | `--fallback-theme` | the built-in themes plus `other` |
 | `--gap` | common durations (`30m`, `1h`, `6h`, `12h`, `24h`) |
+| `--mountain-altitude` | common altitudes (`800`, `1000`, `1500`, `2000`, `2500`) |
 
 The candidate lists are derived from the same constants the parser uses
 (`config.DefaultThemes`, `photo.Extensions`), so they cannot drift from what

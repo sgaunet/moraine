@@ -41,14 +41,44 @@ func uniqueName(dir, name string) string {
 	if !exists(filepath.Join(dir, name)) {
 		return name
 	}
-	ext := filepath.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
 	for i := 1; ; i++ {
-		candidate := fmt.Sprintf("%s (%d)%s", stem, i, ext)
+		candidate := variantName(name, i)
 		if !exists(filepath.Join(dir, candidate)) {
 			return candidate
 		}
 	}
+}
+
+// existingIdentical returns the name of a file already in dir that is a collision
+// variant of name (" (1)", " (2)", …) and byte-identical to src, or "" when there
+// is none. It lets a re-run recognise content it already placed under a suffixed
+// name instead of copying it again under the next free suffix.
+//
+// Because uniqueName always fills the first free index, the occupied indices are
+// contiguous, so the scan stops at the first gap — no directory listing needed.
+func existingIdentical(dir, name, src string) (string, error) {
+	for i := 1; ; i++ {
+		candidate := variantName(name, i)
+		target := filepath.Join(dir, candidate)
+		if !exists(target) {
+			return "", nil
+		}
+		same, err := sameContent(src, target)
+		if err != nil {
+			return "", err
+		}
+		if same {
+			return candidate, nil
+		}
+	}
+}
+
+// variantName builds the i-th collision variant of name ("stem (i)ext"). It is the
+// single naming rule shared by uniqueName and existingIdentical, so the name a
+// collision allocates and the name a re-run looks for can never drift apart.
+func variantName(name string, i int) string {
+	ext := filepath.Ext(name)
+	return fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(name, ext), i, ext)
 }
 
 func exists(path string) bool {

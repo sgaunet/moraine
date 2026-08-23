@@ -84,12 +84,13 @@ func TestCompleteLogLevelOffersEveryAcceptedValue(t *testing.T) {
 					t.Errorf("--log-level completion missing %q; got:\n%s", level, out)
 				}
 				opts := config.Options{
-					Source:   ".",
-					Gap:      config.DefaultGap,
-					Sample:   config.DefaultSample,
-					Themes:   config.DefaultThemes,
-					Fallback: config.DefaultFallback,
-					LogLevel: level,
+					Source:           ".",
+					Gap:              config.DefaultGap,
+					Sample:           config.DefaultSample,
+					Themes:           config.DefaultThemes,
+					Fallback:         config.DefaultFallback,
+					LogLevel:         level,
+					MountainAltitude: config.DefaultMountainAltitude,
 				}
 				if _, err := config.New(opts); err != nil {
 					t.Errorf("completion offers %q but config.New rejects it: %v", level, err)

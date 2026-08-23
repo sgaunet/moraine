@@ -29,10 +29,12 @@ capture time, assign a theme to each group, then COPY each photo to
 destination/<theme>/<year>/<year-month-day>/<name>. Originals are never modified.
 
 Classification (a theme is always assigned):
-  1. heuristic: EXIF altitude >= 1500 m -> "mountain" (no model call);
-  2. otherwise, if --sample > 0: the Ollama vision model picks among the themes
-     (a group of <= 3 photos is sent whole, otherwise a sample of --sample photos);
-  3. otherwise, or on failure/out-of-list answer: the fallback theme (--fallback-theme).
+  1. if --sample > 0: the Ollama vision model picks among the themes (a group of
+     <= 3 photos is sent whole, otherwise a sample of --sample photos);
+  2. otherwise, or on failure/out-of-list answer: the altitude heuristic labels a
+     group with an EXIF altitude >= --mountain-altitude (default 1500 m) as
+     "mountain", when "mountain" is one of the themes;
+  3. otherwise: the fallback theme (--fallback-theme).
 HEIC photos are dated and organized but not sent to the model. RAW photos
 (.dng/.nef/.cr2/...) are organized too; their embedded preview is extracted with
 exiftool (required, see --exiftool) and sent to the model.`,
@@ -90,11 +92,14 @@ exiftool (required, see --exiftool) and sent to the model.`,
 	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
 	f.StringVar(&opts.ExifTool, "exiftool", config.DefaultExifTool, "exiftool executable (name on PATH or absolute path); required to read RAW files")
 	f.BoolVar(&opts.Sidecars, "sidecars", true, "also copy companion/sidecar files next to each photo (e.g. IMG.jpg.xmp, IMG.xmp); --sidecars=false to disable")
+	f.Float64Var(&opts.MountainAltitude, "mountain-altitude", config.DefaultMountainAltitude,
+		"metres at/above which the altitude heuristic labels a group \"mountain\" (must be > 0)")
 
 	registerSharedCompletions(cmd)
 	_ = cmd.RegisterFlagCompletionFunc("themes", completeThemeList)
 	_ = cmd.RegisterFlagCompletionFunc("fallback-theme", completeFixed(append(defaultThemes(), config.DefaultFallback)...))
 	_ = cmd.RegisterFlagCompletionFunc("gap", completeFixed(gapDurations...))
+	_ = cmd.RegisterFlagCompletionFunc("mountain-altitude", completeFixed(altitudeMetres...))
 	// Scalar flags with no knowable value set: suppress the filename fallback.
 	_ = cmd.RegisterFlagCompletionFunc("sample", completeFixed())
 	_ = cmd.RegisterFlagCompletionFunc("model", completeFixed(config.DefaultModel))

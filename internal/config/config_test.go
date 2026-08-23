@@ -15,15 +15,16 @@ import (
 // supplies these via flag defaults), so a test only tweaks the field under test.
 func defOpts(src string) config.Options {
 	return config.Options{
-		Source:    src,
-		Model:     config.DefaultModel,
-		Gap:       config.DefaultGap,
-		Sample:    config.DefaultSample,
-		OllamaURL: config.DefaultOllamaURL,
-		Themes:    config.DefaultThemes,
-		Fallback:  config.DefaultFallback,
-		LogLevel:  config.DefaultLogLevel,
-		ExifTool:  config.DefaultExifTool,
+		Source:           src,
+		Model:            config.DefaultModel,
+		Gap:              config.DefaultGap,
+		Sample:           config.DefaultSample,
+		OllamaURL:        config.DefaultOllamaURL,
+		Themes:           config.DefaultThemes,
+		Fallback:         config.DefaultFallback,
+		LogLevel:         config.DefaultLogLevel,
+		ExifTool:         config.DefaultExifTool,
+		MountainAltitude: config.DefaultMountainAltitude,
 	}
 }
 
@@ -53,6 +54,29 @@ func TestNewDefaults(t *testing.T) {
 	want := []string{"mountain", "special-events", "cook", "family"}
 	if !reflect.DeepEqual(cfg.Themes, want) {
 		t.Errorf("Themes: want %v, got %v", want, cfg.Themes)
+	}
+}
+
+func TestNewMountainAltitude(t *testing.T) {
+	cfg, err := config.New(defOpts("/some/src"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MountainAltitude != config.DefaultMountainAltitude {
+		t.Errorf("MountainAltitude: want %g, got %g", config.DefaultMountainAltitude, cfg.MountainAltitude)
+	}
+	if config.DefaultMountainAltitude != 1500 {
+		t.Errorf("the documented heuristic threshold is 1500 m, got %g", config.DefaultMountainAltitude)
+	}
+
+	o := defOpts("/some/src")
+	o.MountainAltitude = 900
+	cfg, err = config.New(o)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MountainAltitude != 900 {
+		t.Errorf("custom MountainAltitude: want 900, got %g", cfg.MountainAltitude)
 	}
 }
 
@@ -116,6 +140,8 @@ func TestNewErrors(t *testing.T) {
 	}{
 		{"non-positive gap", func(o *config.Options) { o.Gap = 0 }},
 		{"negative sample", func(o *config.Options) { o.Sample = -1 }},
+		{"zero mountain altitude", func(o *config.Options) { o.MountainAltitude = 0 }},
+		{"negative mountain altitude", func(o *config.Options) { o.MountainAltitude = -1 }},
 		{"invalid theme slug", func(o *config.Options) { o.Themes = "Bad Slug" }},
 		{"empty themes", func(o *config.Options) { o.Themes = " , " }},
 		{"duplicate theme", func(o *config.Options) { o.Themes = "a,a" }},
