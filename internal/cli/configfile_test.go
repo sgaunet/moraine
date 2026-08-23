@@ -106,6 +106,7 @@ func TestConfigFileCannotSetAModeFlag(t *testing.T) {
 		"clean:\n  delete: true\n",
 		"undo:\n  delete: true\n",
 		"sort:\n  quiet: true\n",
+		"sort:\n  move: true\n",
 	} {
 		cfgPath := writeConfig(t, contents)
 		args, _ := sortFixture(t, "--config", cfgPath)

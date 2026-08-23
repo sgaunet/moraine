@@ -77,6 +77,7 @@ func record(res organize.Result) manifest.Record {
 		Theme:     res.Theme,
 		Action:    string(res.Action),
 		Companion: res.IsCompanion,
+		Moved:     res.Moved,
 		Of:        res.Of,
 	}
 	if !res.Date.IsZero() {

@@ -50,3 +50,10 @@ func kindFromString(s string) companionKind {
 		return notCompanion
 	}
 }
+
+// SetAfterPublish installs a hook that runs between publishing a copy and verifying
+// it, so a black-box test can corrupt the destination inside that window and prove
+// --move refuses to remove the source.
+func SetAfterPublish(o *Organizer, fn func(dst string)) {
+	o.afterPublish = fn
+}

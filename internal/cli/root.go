@@ -29,7 +29,8 @@ func newRootCmd(version string, stdout, stderr io.Writer) *cobra.Command {
 Analyzes the photos in a directory (or a single photo), groups them into events by
 capture time, assigns a theme to each group, then COPIES each photo to
 destination/<theme>/<year>/<year-month-day>/<name> (see sort --path-template to
-change that layout). Originals are never modified or deleted.
+change that layout). Originals are never modified or deleted, unless you ask for
+sort --move — which removes a source only after verifying its copy.
 
 Commands:
   sort      organize photos into dated, themed folders

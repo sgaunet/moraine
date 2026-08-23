@@ -95,7 +95,7 @@ func TestSortTextSummaryIsOneLine(t *testing.T) {
 	for _, want := range []string{
 		"scanned=1", "unreadable=0",
 		"groups=1", "copied=1", "skipped=0", "renamed=0", "errors=0",
-		"bytes_skipped=0", "companions_bytes_skipped=0",
+		"moved=0", "bytes_skipped=0", "companions_bytes_skipped=0",
 		"companions_copied=1", "dry_run=false", "interrupted=false",
 	} {
 		if !strings.Contains(lines[0], want) {

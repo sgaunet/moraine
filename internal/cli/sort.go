@@ -28,7 +28,8 @@ func newSortCmd(stdout, stderr io.Writer, output, configPath *string) *cobra.Com
 		Short: "Organize photos into dated, themed folders",
 		Long: `Organize photos: scan a directory (or a single file), group photos into events by
 capture time, assign a theme to each group, then COPY each photo to
-destination/<theme>/<year>/<year-month-day>/<name>. Originals are never modified.
+destination/<theme>/<year>/<year-month-day>/<name>. Originals are never modified,
+unless you ask for --move.
 
 The layout below the destination root is set by --path-template, built from the
 placeholders {theme} {year} {month} {day} {date} separated by "/" — the default
@@ -76,6 +77,16 @@ copied, only their group falls back to the heuristic or the fallback theme.
 Images are downscaled before being sent, and a RAW or HEIC shot alongside its own
 JPEG is sent only once.
 
+Moving instead of copying (--move):
+  --move removes each source file, but only after reading its copy back and
+  confirming byte for byte that it landed intact. Nothing else removes a source: not
+  a skipped file (a photo already in the library is left alone -- use "moraine clean"
+  for those), not a failed copy, not an interrupted run, and not a --dry-run, which
+  still writes and deletes nothing. Preview a move with --move --dry-run.
+
+  A moved run CANNOT be undone: "moraine undo" will not remove those copies, because
+  with the original gone the copy is the only remaining file.
+
 Output:
   stdout carries the run summary only (--output=text, the default) or the full
   result with one record per file plus an "events" array describing each event
@@ -103,6 +114,10 @@ Exit codes:
 
   # photos only — do not copy companion/sidecar files
   moraine sort --sidecars=false -d ~/Photos/sorted ~/Photos/2025
+
+  # move instead of copying: preview first, then commit
+  moraine sort --move --dry-run -d ~/Photos/sorted ~/Photos/2025
+  moraine sort --move -d ~/Photos/sorted ~/Photos/2025
 
   # per-photo majority vote, and only trust a group the model is sure about
   moraine sort --vote --min-confidence 0.7 -d ~/Photos/sorted ~/Photos/2025
@@ -175,6 +190,10 @@ Exit codes:
 	f.BoolVar(&opts.Incremental, "incremental", false,
 		"skip photos the run manifest already records as copied (matches on size and modification time "+
 			"instead of comparing bytes, and reuses each known event's theme)")
+	f.BoolVar(&opts.Move, "move", false,
+		"remove each source file once its copy has been read back and verified; "+
+			"never on a skip or an error, and a moved run cannot be undone "+
+			"(preview it with --move --dry-run)")
 	f.BoolVarP(&opts.DryRun, "dry-run", "n", false, "report what would be copied, skipped or renamed without writing anything")
 	f.IntVarP(&opts.Jobs, "jobs", "j", 0, "EXIF reader workers (0 = one per CPU); lower it to throttle a network drive")
 	f.Float64Var(&opts.MountainAltitude, "mountain-altitude", config.DefaultMountainAltitude,

@@ -4,8 +4,9 @@
 directory **with no UI and no interaction**. It analyzes the photos, groups them into
 **events** (by capture time), assigns a **theme** to each group, then **copies** each
 photo to `destination/<theme>/<year>/<year-month-day>/` — a layout you can change with
-`--path-template`. Originals are **never** modified or deleted. Every step is explained
-in the logs.
+`--path-template`. Originals are **never** modified or deleted unless you explicitly ask
+for `--move`, and then only after the copy has been verified. Every step is explained in
+the logs.
 
 ## Features
 
@@ -30,6 +31,17 @@ in the logs.
   the machine dies mid-run, and never overwrites. Copies keep the original's
   **modification time**. An identical file already present is **skipped** (safe re-runs);
   a same-named file with different content is **suffixed** ` (1)`.
+- **Customizable layout**: `--path-template "{year}/{month}"` and friends, from
+  `{theme}` `{year}` `{month}` `{day}` `{date}`; the default reproduces
+  `<theme>/<year>/<year-month-day>`.
+- **Per-event and volume reporting**: the summary reports `bytes_copied` /
+  `bytes_skipped` (how much a re-run *saved*), and `--output=json` adds an `events`
+  array with each event's theme, how that theme was decided, span, and cost.
+- **Optional `--move`**: removes each source, but only after re-reading the published
+  copy and matching it byte for byte. Never on a skip, an error, an interrupt or a
+  dry run — and a moved run is deliberately **not** undoable.
+- **Configuration file**: `~/.config/moraine.yaml` (or `--config`) supplies flag
+  defaults; a flag always wins, and mode flags are never configurable.
 - **Companion (sidecar) files** (on by default): files other software leaves next to a
   photo are copied into the same folder — both appended sidecars (`IMG.jpg.xmp`,
   `IMG.jpg.json`) and same-base-name sidecars (`IMG.xmp`). They follow the photo's final
@@ -186,6 +198,34 @@ have, and the run warns on stderr naming both templates. A full (non-incremental
 re-run copies them into the new layout, leaving the old copies where they are —
 `moraine undo` or `moraine clean` cleans up.
 
+### Moving instead of copying: `--move`
+
+By default moraine only ever copies. `--move` removes each source file — but **only
+after reading its copy back and confirming byte for byte that it landed intact**:
+
+```console
+./moraine sort --move --dry-run -d ~/Photos/sorted ~/Photos/2025   # preview first
+./moraine sort --move           -d ~/Photos/sorted ~/Photos/2025
+```
+
+The verification is not decoration. moraine hashes the bytes as it writes them (free —
+they are already streaming past), then re-reads the published file and compares. If the
+two disagree the **destination** is removed and the source is kept, because a provably
+wrong file sitting on a canonical name is the one outcome the atomic copy exists to
+prevent.
+
+**Nothing else removes a source.** Not a skipped photo — one already in your library is
+left alone, since a skip verifies nothing during that run (and with `--incremental` it
+never even reads the bytes). Not a failed copy, not an interrupted run, and not
+`--dry-run`, which still writes and deletes nothing. The summary reports `moved=N`, and
+each JSON record carries `"moved": true`.
+
+> **A move run cannot be undone.** `moraine undo` will not remove those copies: with the
+> original gone, the copy is the only remaining file, so deleting it would destroy your
+> photo. `undo` reports them as `kept` and says why. If you want a reversible tidy-up,
+> use the default copy and then `moraine clean --delete` — which hashes the destination
+> before deleting anything and leaves the copies undoable.
+
 ### Dating: EXIF, then the file name, then mtime
 
 A date is always assigned, from the first tier that has one:
@@ -282,7 +322,7 @@ side of a pipe. Logs, progress and errors always go to **stderr**.
 ```console
 $ ./moraine sort -d ~/Photos/sorted ~/Photos/2025 2>/dev/null
 scanned=423 unreadable=2 groups=3 copied=412 skipped=8 renamed=1 errors=0 \
-bytes_copied=1983472104 bytes_skipped=41203998 \
+moved=0 bytes_copied=1983472104 bytes_skipped=41203998 \
 companions_copied=37 companions_skipped=0 companions_renamed=0 companions_errors=0 \
 companions_bytes_copied=284419 companions_bytes_skipped=0 \
 dry_run=false interrupted=false
@@ -361,8 +401,8 @@ run did not finish what was asked.
 > one used to be dated by their modification time, and are now dated from the name.
 > A non-incremental re-run over an existing library therefore places them under their
 > correct date folder, leaving the old mtime-dated copy where it was. Nothing is lost
-> (moraine only ever copies); `moraine undo` unwinds the run that made the new copies,
-> and `moraine clean` removes sources already archived.
+> (moraine copies unless you pass `--move`); `moraine undo` unwinds the run that made the
+> new copies, and `moraine clean` removes sources already archived.
 
 > **Migrating from the pre-1.0 flag CLI**: the interface moved to subcommands with
 > GNU-style flags. `moraine <dir>` → `moraine sort <dir>`; `-dest` → `--dest` (or `-d`);
@@ -445,6 +485,7 @@ would be worse. `--quiet`/`--verbose` are shorthands over `log_level`, so set
 | `--verbose`        | `-v`  | bool     | `false`                   | log every file (excludes `--quiet` / `--log-level`)        |
 | `--output`         |       | string   | `text`                    | stdout format: `text` \| `json`                            |
 | `--dry-run`        | `-n`  | bool     | `false`                   | report the plan; writes **nothing**, not even a folder     |
+| `--move`           |       | bool     | `false`                   | remove each source after **verifying** its copy; never on a skip or error; **not undoable** |
 | `--jobs`           | `-j`  | int      | `0`                       | EXIF reader workers (`0` = one per CPU)                    |
 | `--exiftool`       |       | string   | `exiftool`                | exiftool executable (name on `PATH` or absolute path); **required** for RAW |
 | `--sidecars`       |       | bool     | `true`                    | also copy each photo's companion/sidecar files (`--sidecars=false` to disable) |
@@ -562,7 +603,8 @@ internal/
   exifmeta/ EXIF extraction (date, GPS, altitude); date falls back to the file name, then mtime
   cluster/  temporal grouping (configurable gap)
   classify/ heuristic → Ollama (constrained themes) → fallback; Ollama HTTP client
-  organize/ builds the destination path from --path-template, hash-based identity, durable copy
+  organize/ builds the destination path from --path-template, hash-based identity,
+            durable copy, and the verified source removal behind --move
   manifest/ per-run JSON Lines record of every placement (undo + incremental read it)
   undo/     removes the copies one recorded run made, and nothing else
 ```

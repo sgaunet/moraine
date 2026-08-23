@@ -76,10 +76,14 @@ type Record struct {
 	Date      string `json:"date,omitempty"`
 	Action    string `json:"action,omitempty"`
 	Companion bool   `json:"companion,omitempty"`
-	Of        string `json:"of,omitempty"`
-	Size      int64  `json:"size,omitempty"`
-	MTime     int64  `json:"mtime,omitempty"`
-	Error     string `json:"error,omitempty"`
+	// Moved records that --move removed this file's source after verifying the copy.
+	// `undo` refuses to remove such a copy: the original is gone, so this is the only
+	// remaining file. A run predating --move has no such records.
+	Moved bool   `json:"moved,omitempty"`
+	Of    string `json:"of,omitempty"`
+	Size  int64  `json:"size,omitempty"`
+	MTime int64  `json:"mtime,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // Writer appends the records of one run to its own manifest file. The file is

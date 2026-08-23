@@ -48,6 +48,10 @@ type Summary struct {
 	Skipped    int
 	Renamed    int
 	Errors     int
+	// Moved counts the source files --move removed after verifying their copies. It
+	// is a subset of Copied+Renamed, never of Skipped: a skip verifies nothing this
+	// run, so it never removes an original.
+	Moved int
 	// Companion (sidecar) outcomes, kept separate from photo outcomes (FR-010).
 	CompanionsCopied  int
 	CompanionsSkipped int
@@ -118,6 +122,7 @@ func Organize(
 	org := organize.New(cfg.DestRoot)
 	org.Template = cfg.PathTemplate
 	org.Sidecars = cfg.Sidecars
+	org.Move = cfg.Move
 	org.DryRun = cfg.DryRun
 	placed := placedIndex(cfg, logger)
 	org.Placed = placedHook(placed)
@@ -164,7 +169,8 @@ func Organize(
 		"renamed", sum.Renamed, "errors", sum.Errors,
 		"companions_copied", sum.CompanionsCopied, "companions_skipped", sum.CompanionsSkipped,
 		"companions_renamed", sum.CompanionsRenamed, "companions_errors", sum.CompanionsErrors,
-		"bytes_copied", sum.BytesCopied, "bytes_skipped", sum.BytesSkipped)
+		"bytes_copied", sum.BytesCopied, "bytes_skipped", sum.BytesSkipped,
+		"moved", sum.Moved)
 
 	// Report the cancellation even when it arrived inside the last (or only) cluster.
 	// The loop above only checks between clusters, so a single-event import — one
@@ -256,7 +262,11 @@ func tally(sum *Summary, r organize.Result, logger *slog.Logger) {
 		sum.Renamed++
 		sum.BytesCopied += r.Size
 	}
-	logger.Debug("photo", "action", string(r.Action), "source", r.Source, "dest", r.Dest, "bytes", r.Size)
+	if r.Moved {
+		sum.Moved++
+	}
+	logger.Debug("photo", "action", string(r.Action), "source", r.Source, "dest", r.Dest,
+		"bytes", r.Size, "moved", r.Moved)
 }
 
 // tallyCompanion records one companion Result and logs it. A per-companion
@@ -281,6 +291,9 @@ func tallyCompanion(sum *Summary, r organize.Result, logger *slog.Logger) {
 	case organize.ActionRenamed:
 		sum.CompanionsRenamed++
 		sum.CompanionsBytesCopied += r.Size
+	}
+	if r.Moved {
+		sum.Moved++
 	}
 	logger.Debug("companion", "action", string(r.Action), "source", r.Source, "dest", r.Dest,
 		"of", r.Of, "bytes", r.Size)
