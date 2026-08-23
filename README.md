@@ -34,6 +34,18 @@ or deleted. Every step is explained in the logs.
   `IMG.jpg.json`) and same-base-name sidecars (`IMG.xmp`). They follow the photo's final
   name on a collision rename, obey the same no-overwrite rules, and are removed by `clean`
   too. Disable with `--sidecars=false`.
+- **Run manifest**: every run records what it placed (photos *and* companions, with
+  where each file went and the fingerprint it was left with) as one JSON Lines file
+  under `<destination>/.moraine/runs/`. It is the audit trail of a run, and what
+  `undo` and `--incremental` read.
+- **Undo**: `moraine undo <destination>` gives back what the last run copied — and
+  only that. A file the run merely recognised, one edited since, and anything outside
+  the destination are all kept. Dry-run by default, `--delete` commits, emptied
+  folders are pruned.
+- **Incremental runs**: `sort --incremental` skips photos the manifest already records
+  as copied (matching size and modification time instead of re-reading both files) and
+  reuses each known event's theme, so a re-import over a large library asks the model
+  nothing and re-reads nothing.
 - **Dry run**: `--dry-run` reports exactly what would be copied, skipped or renamed —
   including the ` (1)` renames — and writes nothing at all, not even a folder.
 - **Pipe-safe output**: the run result goes to **stdout** (`--output=text|json`), logs
@@ -86,8 +98,8 @@ CGO_ENABLED=0 go build -ldflags "-X main.version=$(git describe --tags --always)
 ## Usage
 
 `moraine` is organized into subcommands: **`sort`** (organize photos), **`clean`**
-(delete originals already copied), **`completion`** (shell completion scripts) and
-**`version`**. Run `moraine --help` to list them
+(delete originals already copied), **`undo`** (remove the copies of the last run),
+**`completion`** (shell completion scripts) and **`version`**. Run `moraine --help` to list them
 and `moraine <command> --help` for command-specific options and examples.
 
 ```bash
@@ -116,9 +128,16 @@ and `moraine <command> --help` for command-specific options and examples.
 ./moraine sort --themes "friends,hiking,party,nature" --fallback-theme "misc" \
   --verbose -d ~/Photos/sorted ~/Photos/2025
 
+# Re-import a card into an already-organized library: skip what is already there
+./moraine sort --incremental -d ~/Photos/sorted ~/Photos/2025
+
 # Delete originals already safely copied — dry-run by default, then commit
 ./moraine clean -d ~/Photos/sorted ~/Photos/2025            # preview (deletes nothing)
 ./moraine clean --delete -d ~/Photos/sorted ~/Photos/2025   # actually delete
+
+# Take back what the last sort copied — dry-run by default, then commit
+./moraine undo ~/Photos/sorted                              # preview (removes nothing)
+./moraine undo --delete ~/Photos/sorted                     # actually remove
 
 # Help and version
 ./moraine --help
@@ -163,8 +182,15 @@ $ ./moraine clean -d ~/Photos/sorted ~/Photos/2025 --output=json 2>/dev/null | j
 ```
 
 Per-file *narration* is a log, not data: `sort` keeps it at `--verbose`, since a real
-library produces thousands of lines, while `clean` reports each decision at the
-default level — previewing that plan is the reason you run it.
+library produces thousands of lines, while `clean` and `undo` report each decision at
+the default level — previewing that plan is the reason you run them.
+
+`undo` renders the same two ways, over the records of the run it is unwinding:
+
+```console
+$ ./moraine undo ~/Photos/sorted 2>/dev/null
+removed=0 would_remove=412 kept=8 errors=0 dirs_pruned=0 delete=false interrupted=false
+```
 
 **Interrupting** a run (Ctrl-C) is graceful: everything already copied is complete and
 durable, the summary still prints on stdout with `interrupted=true`, and stderr says
@@ -202,6 +228,7 @@ run did not finish what was asked.
 | `--jobs`           | `-j`  | int      | `0`                       | EXIF reader workers (`0` = one per CPU)                    |
 | `--exiftool`       |       | string   | `exiftool`                | exiftool executable (name on `PATH` or absolute path); **required** for RAW |
 | `--sidecars`       |       | bool     | `true`                    | also copy each photo's companion/sidecar files (`--sidecars=false` to disable) |
+| `--incremental`    |       | bool     | `false`                   | skip sources the run manifest already records as copied, and reuse each known event's theme |
 | `--mountain-altitude` |    | float    | `1500`                    | metres at/above which the altitude heuristic labels a group `mountain` (must be `> 0`) |
 | `--help`           | `-h`  | bool     | —                         | print the detailed help and exit                           |
 
@@ -216,6 +243,22 @@ run did not finish what was asked.
 | `--quiet`     | `-q`  | bool     | `false`            | log errors only (excludes `--verbose` / `--log-level`)        |
 | `--verbose`   | `-v`  | bool     | `false`            | log every file (excludes `--quiet` / `--log-level`)          |
 | `--output`    |       | string   | `text`             | stdout format: `text` \| `json`                              |
+
+### `undo` flags
+
+| Flag          | Short | Type     | Default | Role                                                       |
+|---------------|-------|----------|---------|------------------------------------------------------------|
+| `<dest>`      |       | argument | *(required)* | destination **root** to unwind (holds `.moraine/runs/`) |
+| `--delete`    |       | bool     | `false` | actually remove the recorded copies (default: dry-run)     |
+| `--log-level` | `-l`  | string   | `info`  | `debug` \| `info` \| `warn` \| `error`                     |
+| `--quiet`     | `-q`  | bool     | `false` | log errors only (excludes `--verbose` / `--log-level`)      |
+| `--verbose`   | `-v`  | bool     | `false` | log every file (excludes `--quiet` / `--log-level`)         |
+| `--output`    |       | string   | `text`  | stdout format: `text` \| `json`                             |
+
+`undo` acts on the **most recent** run recorded under the destination. After a
+successful `--delete` pass that run's manifest is kept as an audit trail and marked
+`.undone`, so running `undo` again steps back to the run before it. A run that copied
+nothing (an unchanged re-run) has nothing to give back and says so.
 
 `moraine version` reports the build's identity — version, commit, build time, Go
 version and platform — and honours `--output=json`; `moraine --version` prints just
@@ -276,7 +319,7 @@ Business logic in pure Go packages, decoupled from transport (Constitution, Prin
 ```
 main.go                 inject build version → cli.Execute → exit codes
 internal/
-  cli/      Cobra command tree (sort/clean/version), flag binding, exit-code mapping
+  cli/      Cobra command tree (sort/clean/undo/version), flag binding, exit-code mapping
   config/   centralized typed configuration + validation (slugs, file/directory source)
   app/      testable orchestration: scan → exif → cluster → classify → organize + logs
   photo/    domain types (Photo, Cluster, Format)
@@ -285,6 +328,8 @@ internal/
   cluster/  temporal grouping (configurable gap)
   classify/ heuristic → Ollama (constrained themes) → fallback; Ollama HTTP client
   organize/ builds the <theme>/<year>/<date> path, hash-based identity, durable copy
+  manifest/ per-run JSON Lines record of every placement (undo + incremental read it)
+  undo/     removes the copies one recorded run made, and nothing else
 ```
 
 Detailed contracts: [`specs/002-auto-photo-organizer/contracts/`](specs/002-auto-photo-organizer/contracts/).

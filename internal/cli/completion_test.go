@@ -73,7 +73,7 @@ func TestTopLevelHelpMentionsCompletion(t *testing.T) {
 // the parser: every offered value must be accepted by config.New, so the two
 // cannot drift.
 func TestCompleteLogLevelOffersEveryAcceptedValue(t *testing.T) {
-	for _, cmd := range []string{"sort", "clean"} {
+	for _, cmd := range []string{"sort", "clean", "undo"} {
 		t.Run(cmd, func(t *testing.T) {
 			code, out := completeOut(t, cmd, "--log-level", "")
 			if code != 0 {
@@ -164,5 +164,21 @@ func TestCompleteExhaustedArityOffersNothing(t *testing.T) {
 				t.Errorf("want ShellCompDirectiveNoFileComp (:4); got:\n%s", out)
 			}
 		})
+	}
+}
+
+// TestCompleteUndoArgumentOffersDirectoriesOnly: undo's single argument is a
+// destination root, so the shell browses directories rather than photo files, and
+// offers nothing once the argument is given.
+func TestCompleteUndoArgumentOffersDirectoriesOnly(t *testing.T) {
+	code, out := completeOut(t, "undo", "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(out, ":16") {
+		t.Errorf("want ShellCompDirectiveFilterDirs (:16); got:\n%s", out)
+	}
+	if _, out := completeOut(t, "undo", t.TempDir(), ""); !strings.Contains(out, ":4") {
+		t.Errorf("want ShellCompDirectiveNoFileComp (:4) for a second argument; got:\n%s", out)
 	}
 }

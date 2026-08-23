@@ -30,6 +30,9 @@ const (
 	MethodModelSample Method = "model-sample"
 	// MethodFallback — no theme was determined; the fallback theme was used.
 	MethodFallback Method = "fallback"
+	// MethodManifest — the theme an earlier run already filed this event under was
+	// reused (an incremental run), so no classifier ran at all.
+	MethodManifest Method = "manifest"
 )
 
 // SmallGroupMax is the largest group size still classified using all photos.

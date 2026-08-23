@@ -56,6 +56,20 @@ func TestStdoutCarriesDataOnly(t *testing.T) {
 			t.Errorf("the plan must still be reported on stderr; got:\n%s", errb.String())
 		}
 	})
+
+	t.Run("undo", func(t *testing.T) {
+		_, dest := sortedFixture(t)
+
+		var out, errb bytes.Buffer
+		code := cli.Execute("dev", []string{"undo", dest}, &out, &errb)
+		if code != 0 {
+			t.Fatalf("exit = %d; stderr=%s", code, errb.String())
+		}
+		assertNoLogs(t, out.String())
+		if !strings.Contains(errb.String(), "decision=would-remove") {
+			t.Errorf("the plan must still be reported on stderr; got:\n%s", errb.String())
+		}
+	})
 }
 
 // assertNoLogs fails if s carries anything that looks like a slog line.
@@ -188,6 +202,49 @@ func TestCleanJSONOutput(t *testing.T) {
 	}
 }
 
+func TestUndoJSONOutput(t *testing.T) {
+	_, dest := sortedFixture(t)
+
+	var out bytes.Buffer
+	code := cli.Execute("dev", []string{"undo", "--output=json", dest}, &out, io.Discard)
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+
+	var doc struct {
+		Command string `json:"command"`
+		Dest    string `json:"dest"`
+		Delete  bool   `json:"delete"`
+		Results []struct {
+			Path     string `json:"path"`
+			Decision string `json:"decision"`
+			Reason   string `json:"reason"`
+		} `json:"results"`
+		Summary struct {
+			Removed     int `json:"removed"`
+			WouldRemove int `json:"would_remove"`
+			DirsPruned  int `json:"dirs_pruned"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, out.String())
+	}
+	if doc.Command != "undo" || doc.Delete || doc.Dest != dest {
+		t.Errorf("document header = %+v", doc)
+	}
+	if doc.Summary.WouldRemove != 2 || doc.Summary.Removed != 0 || doc.Summary.DirsPruned != 0 {
+		t.Errorf("summary = %+v (a dry run must remove nothing)", doc.Summary)
+	}
+	if len(doc.Results) != 2 {
+		t.Fatalf("results = %+v; want the photo and its companion", doc.Results)
+	}
+	for _, rec := range doc.Results {
+		if rec.Decision != "would-remove" || rec.Reason == "" || rec.Path == "" {
+			t.Errorf("record = %+v; want a would-remove decision with a path and a reason", rec)
+		}
+	}
+}
+
 // TestJSONOutputIsAlwaysAnArray guards a consumer that iterates .results: an empty
 // run must render [] rather than null.
 func TestJSONOutputIsAlwaysAnArray(t *testing.T) {
@@ -252,6 +309,7 @@ func TestInvalidOutputFormatIsUsageError(t *testing.T) {
 	for _, sub := range [][]string{
 		{"sort", "--output", "yaml", "--sample", "0", t.TempDir()},
 		{"clean", "--output", "yaml", t.TempDir()},
+		{"undo", "--output", "yaml", t.TempDir()},
 		{"version", "--output", "yaml"},
 	} {
 		t.Run(sub[0], func(t *testing.T) {

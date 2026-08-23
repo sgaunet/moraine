@@ -236,7 +236,7 @@ func TestOrganizeOllamaUnreachableWarnsAndFallsBack(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sample = 3
-	cfg.Model = "qwen3-vl:8b"
+	cfg.Model = stubModel
 	cfg.OllamaURL = url
 
 	buf := &safeBuffer{}
@@ -265,7 +265,7 @@ func TestOrganizeOllamaModelMissingTellsToPull(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sample = 3
-	cfg.Model = "qwen3-vl:8b"
+	cfg.Model = stubModel
 	cfg.OllamaURL = srv.URL
 
 	buf := &safeBuffer{}
@@ -310,13 +310,17 @@ func makeRAW(t *testing.T, path string) {
 	}
 }
 
-// ollamaStub serves /api/tags (advertising model) and /api/chat (always
+// stubModel is the vision model every Ollama stub advertises; tests point
+// cfg.Model at it so the preflight finds what it looks for.
+const stubModel = "qwen3-vl:8b"
+
+// ollamaStub serves /api/tags (advertising stubModel) and /api/chat (always
 // answering "mountain"), invoking onChat with the number of images received.
-func ollamaStub(t *testing.T, model string, onChat func(images int)) *httptest.Server {
+func ollamaStub(t *testing.T, onChat func(images int)) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tags" {
-			_, _ = w.Write([]byte(`{"models":[{"name":"` + model + `"}]}`))
+			_, _ = w.Write([]byte(`{"models":[{"name":"` + stubModel + `"}]}`))
 			return
 		}
 		var body struct {
@@ -389,12 +393,12 @@ func TestOrganizeRAWClassifiedViaPreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotImages int
-	srv := ollamaStub(t, "qwen3-vl:8b", func(n int) { gotImages = n })
+	srv := ollamaStub(t, func(n int) { gotImages = n })
 	defer srv.Close()
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sample = 3
-	cfg.Model = "qwen3-vl:8b"
+	cfg.Model = stubModel
 	cfg.OllamaURL = srv.URL
 	cfg.ExifToolPath = exifPath
 
@@ -433,12 +437,12 @@ func TestOrganizeRAWPreservesOriginalAndLeavesNoTemp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := ollamaStub(t, "qwen3-vl:8b", nil)
+	srv := ollamaStub(t, nil)
 	defer srv.Close()
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sample = 3
-	cfg.Model = "qwen3-vl:8b"
+	cfg.Model = stubModel
 	cfg.OllamaURL = srv.URL
 	cfg.ExifToolPath = exifPath
 

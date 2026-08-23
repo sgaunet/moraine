@@ -82,9 +82,9 @@ deleted. Repo: `github.com/sgaunet/moraine` (MIT).
 ## Architecture
 
 - **Three layers**: `main.go` (injects the build version, nothing else) →
-  `internal/cli` (Cobra transport: `sort`/`clean`/`version` + built-in
+  `internal/cli` (Cobra transport: `sort`/`clean`/`undo`/`version` + built-in
   `completion`, flags, exit codes, and `output.go` — the stdout contract) →
-  `internal/app` (single testable orchestrator; `Organize`/`Clean` take an
+  `internal/app` (single testable orchestrator; `Organize`/`Clean`/`Undo` take an
   `onResult func(Result)` so the transport, not the domain, renders output) →
   domain packages. No domain package imports Cobra.
 - **Stdout is data, stderr is logs** (Principle V): stdout carries the run result
@@ -107,6 +107,20 @@ deleted. Repo: `github.com/sgaunet/moraine` (MIT).
   (SHA-256 index) for `clean`, `Equal` (byte compare) for `organize`'s skip-identical;
   collisions get a deterministic ` (N)` suffix; `safeJoin`/`ErrInvalidDestSubdir`
   block traversal.
+- **Run manifest, undo, incremental** (`internal/manifest`, `internal/undo`): every
+  non-dry `sort` appends one JSON Lines record per placed file (photo *or* companion,
+  with its dest and the size/mtime it was left with) to
+  `<dest>/.moraine/runs/<UTC-stamp>.jsonl`, created lazily by the first record and
+  ordered by run id (a same-second run takes a `-N` suffix, so `Files` sorts by stem,
+  never by file name). `moraine undo <dest>` unwinds the newest run: it removes only
+  records whose action is `copied`/`renamed` and whose file still matches the recorded
+  fingerprint, prunes emptied dirs, never leaves the dest root, and — after a clean
+  `--delete` pass — renames the manifest `.undone` so the next `undo` steps back a run.
+  `sort --incremental` (opt-in) loads every manifest into a source → record index,
+  feeding `organize.Organizer.Placed`, which short-circuits `placeOne` when *both*
+  source and copy still match; a cluster whose placed photos agree on one configured
+  theme reuses it (`method=manifest`, no model call). A missing or unreadable manifest
+  always degrades to a warning + full run. `clean` is untouched.
 - **Injected extension points**: `classify.Classifier` (nil = skip the model stage),
   `organize.Organizer.IsPrimary func(string) bool` (keeps `organize` decoupled from
   `scan`), `rawpreview.Extractor`. A failed Ollama preflight degrades to the
@@ -124,7 +138,9 @@ task lint    # golangci-lint run
 task check-before-commit   # lint + test + snapshot
 
 ./moraine sort -d ~/Photos/sorted ~/Photos/2025
+./moraine sort --incremental -d ~/Photos/sorted ~/Photos/2025   # skip what the manifest knows
 ./moraine clean -d ~/Photos/sorted ~/Photos/2025   # dry-run; --delete to commit
+./moraine undo ~/Photos/sorted                     # dry-run; --delete to commit
 ```
 
 ## Code Quality Standards
@@ -151,8 +167,8 @@ task check-before-commit   # lint + test + snapshot
 
 - **Entrypoint**: `main.go` → **Transport**: `internal/cli` → **Orchestration**:
   `internal/app`
-- **Domain**: `internal/{config,scan,exifmeta,cluster,classify,organize,clean,photo,
-  contenthash,rawpreview}`; fake-exec test helper in `internal/exiftooltest`
+- **Domain**: `internal/{config,scan,exifmeta,cluster,classify,organize,clean,undo,
+  manifest,photo,contenthash,rawpreview}`; fake-exec test helper in `internal/exiftooltest`
 - **Tests**: co-located `internal/**/*_test.go`
 - **Specs**: `specs/00N-*/` · **Constitution**: `.specify/memory/constitution.md`
 - **Config**: `.golangci.yml`, `Taskfile.yml`, `mise.toml`, `.goreleaser.yml`
@@ -165,7 +181,12 @@ task check-before-commit   # lint + test + snapshot
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Active feature: **006-sidecar-files** (companion/sidecar file copying & cleaning). Read the
+Latest change: **issue #11** — run manifest + `undo` + `sort --incremental` (no
+`specs/` dir; issue-driven like #5/#10/#13). The destination now gains a `.moraine/`
+bookkeeping directory by default (additive, hidden, never read as photos since the
+dest is excluded from the scan); `--dry-run` still writes nothing at all.
+
+Previous feature: **006-sidecar-files** (companion/sidecar file copying & cleaning). Read the
 current plan: `specs/006-sidecar-files/plan.md` (see also its `research.md`, `data-model.md`,
 `contracts/cli.md`, `contracts/companion-matching.md`, `quickstart.md`). `sort` now, **by
 default**, copies each photo's **companion (sidecar)** files from the photo's source directory

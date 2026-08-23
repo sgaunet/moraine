@@ -35,6 +35,7 @@ type Config struct {
 	Output           OutputFormat  // stdout rendering of the run result (text | json)
 	Sidecars         bool          // copy each photo's companion (sidecar) files alongside it
 	DryRun           bool          // report the planned placements without writing anything
+	Incremental      bool          // trust the run manifest to skip sources already placed
 	Jobs             int           // EXIF worker count (0 ⇒ one per GOMAXPROCS)
 	MountainAltitude float64       // metres at/above which the heuristic labels a group "mountain" (always > 0)
 }
@@ -91,6 +92,7 @@ type Options struct {
 	ExifTool         string        // --exiftool
 	Sidecars         bool          // --sidecars (copy companion files; default true at the flag)
 	DryRun           bool          // --dry-run (report the plan, write nothing)
+	Incremental      bool          // --incremental (skip sources the manifest already records as placed)
 	Jobs             int           // --jobs (EXIF workers; 0 ⇒ one per GOMAXPROCS)
 	MountainAltitude float64       // --mountain-altitude (metres; must be > 0)
 }
@@ -162,6 +164,7 @@ func New(o Options) (Config, error) {
 		Output:           output,
 		Sidecars:         o.Sidecars,
 		DryRun:           o.DryRun,
+		Incremental:      o.Incremental,
 		Jobs:             o.Jobs,
 		MountainAltitude: o.MountainAltitude,
 	}, nil

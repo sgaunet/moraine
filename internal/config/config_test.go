@@ -95,6 +95,20 @@ func TestNewSidecarsPassthrough(t *testing.T) {
 	}
 }
 
+func TestNewIncrementalPassthrough(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		o := defOpts("/some/src")
+		o.Incremental = want
+		cfg, err := config.New(o)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Incremental != want {
+			t.Errorf("Incremental: want %v, got %v", want, cfg.Incremental)
+		}
+	}
+}
+
 func TestNewCustomThemes(t *testing.T) {
 	o := defOpts("/src")
 	o.Themes = "friends, hiking ,party"

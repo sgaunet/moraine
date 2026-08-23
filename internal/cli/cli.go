@@ -1,5 +1,5 @@
 // Package cli is moraine's transport layer: it builds the Cobra command tree
-// (root + the sort/clean/version subcommands), wires each command to the typed
+// (root + the sort/clean/undo/version subcommands), wires each command to the typed
 // config and the app orchestrators, and maps command execution to the process
 // exit code. No domain package imports Cobra — the dependency stays contained here.
 package cli

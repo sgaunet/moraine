@@ -2,23 +2,25 @@
 
 ## System Overview
 
-`moraine` is a layered, single-binary CLI with three subcommands (`sort`, `clean`,
-`version`). The `sort` pipeline (`scan → exifmeta → cluster → classify → organize`)
+`moraine` is a layered, single-binary CLI with four subcommands (`sort`, `clean`,
+`undo`, `version`). The `sort` pipeline (`scan → exifmeta → cluster → classify → organize`)
 is wired exclusively behind the exported `internal/app.Organize()` function
 (Constitution Principle III). The `clean` subcommand (delete originals already copied)
 is wired behind `internal/app.Clean()`, backed by the pure-logic `internal/clean`
-package. The CLI transport lives in `internal/cli` (a **Cobra** command tree): it binds
-flags, builds the typed config, runs the matching `app` function, and maps the outcome to
-the exit code. `main.go` is a shim that injects the build version and calls
-`cli.Execute`, holding no domain logic itself. Each stage is a distinct package with a
-single, narrow responsibility, so business logic stays decoupled from the CLI transport
-and from disk I/O — no domain package imports Cobra.
+package, and the `undo` subcommand (remove the copies the last run made) behind
+`internal/app.Undo()`, backed by `internal/undo` and the run manifest
+(`internal/manifest`). The CLI transport lives in `internal/cli` (a **Cobra** command
+tree): it binds flags, builds the typed config, runs the matching `app` function, and
+maps the outcome to the exit code. `main.go` is a shim that injects the build version
+and calls `cli.Execute`, holding no domain logic itself. Each stage is a distinct
+package with a single, narrow responsibility, so business logic stays decoupled from
+the CLI transport and from disk I/O — no domain package imports Cobra.
 
 ## Components
 
 - **`internal/cli`** — the CLI transport: a Cobra command tree (root + `sort`/
-  `clean`/`version`, plus Cobra's built-in `completion`) that binds flags into
-  `config.Options`/`CleanOptions`, calls the config constructors and `app`
+  `clean`/`undo`/`version`, plus Cobra's built-in `completion`) that binds flags into
+  `config.Options`/`CleanOptions`/`UndoOptions`, calls the config constructors and `app`
   orchestrators, and maps execution to exit codes 0/1/2 via a `runtimeError`
   marker. The only package that imports Cobra. `completion.go` holds the shell
   completion candidates; it derives them from `config.DefaultThemes` and
@@ -26,9 +28,10 @@ and from disk I/O — no domain package imports Cobra.
   accept. `output.go` owns the **stdout contract** (see decision 7): the JSON
   document types, the one-line text summary, and the `reporter` that collects
   per-file records through the `app` orchestrators' `onResult` callback.
-- **`internal/config`** — single immutable `Config`/`CleanConfig` struct holding every
-  runtime parameter; `New`/`NewClean` (syntax/cross-field checks, no I/O) is split from
-  `Validate` (filesystem checks, default-destination resolution).
+- **`internal/config`** — single immutable `Config`/`CleanConfig`/`UndoConfig` struct
+  holding every runtime parameter; `New`/`NewClean`/`NewUndo` (syntax/cross-field
+  checks, no I/O) is split from `Validate` (filesystem checks, default-destination
+  resolution).
 - **`internal/scan`** — walks the source tree, produces `[]Found`.
 - **`internal/exifmeta`** — reads EXIF, turns `Found` into `[]photo.Photo`.
 - **`internal/photo`** — core domain types (`Photo`, `Cluster`).
@@ -42,7 +45,10 @@ and from disk I/O — no domain package imports Cobra.
   `EnsureAvailable` (mandatory startup probe) and `Extract` (largest embedded
   preview, captured in memory — never written to disk).
 - **`internal/organize`** — copies files to
-  `dest/<theme>/<year>/<year-month-day>/`, enforcing copy-only/no-overwrite. Also
+  `dest/<theme>/<year>/<year-month-day>/`, enforcing copy-only/no-overwrite. An
+  injected `Placed` hook lets an incremental run skip a source whose recorded copy is
+  still in place, expressed in sizes and times so the package needs no manifest
+  dependency. Also
   copies each photo's **companion (sidecar)** files (`sidecar.go`) into the same
   folder, naming them to track the photo's final name; a caller-injected
   `IsPrimary` predicate keeps a scanned photo from being copied as a companion, so
@@ -52,12 +58,25 @@ and from disk I/O — no domain package imports Cobra.
   SHA-256) for indexing many files, used by `clean` to match originals to copies, and
   `Equal(a, b) → bool` (streaming byte compare, short-circuiting on the first
   difference) for the one-pair question `organize` asks when deduping a copy.
+- **`internal/manifest`** — the record of what a run placed: one JSON Lines file per
+  run under `<dest>/.moraine/runs/`, a header line plus one record per placed file
+  (photo or companion) carrying its destination and the size/mtime it was left with.
+  The file is created by the first record, so a dry run or an empty run writes nothing.
+  It also reads manifests back — `Latest`/`ReadRun` for `undo`, `Load` into a
+  source → record `Index` for an incremental `sort`.
+- **`internal/undo`** — reverses one recorded run: it removes only files a record says
+  that run *created* (`copied`/`renamed`, never `skipped-identical`) and only while
+  they still match the recorded size and mtime, prunes the folders it empties, and
+  never touches anything outside the destination root. Dry-run until `Delete`.
 - **`internal/clean`** — the `clean` subcommand's filesystem logic: deletes source
   originals whose byte-identical copy exists under the destination, matching by
   content (never filename) and never touching the destination tree. Depends only on
   the filesystem and `contenthash` (no classifier/Ollama/exiftool).
-- **`internal/app`** — orchestrates the sort pipeline (`Organize`) and the clean run
-  (`Clean`), tallying each run's summary.
+- **`internal/app`** — orchestrates the sort pipeline (`Organize`), the clean run
+  (`Clean`) and the undo run (`Undo`), tallying each run's summary. `manifest.go` is
+  the seam between the pipeline and the manifest in both directions: it records every
+  placement, and on an incremental run turns the index into the organizer's `Placed`
+  hook and reuses a known event's theme.
 
 ## Design Decisions
 
@@ -131,6 +150,21 @@ and from disk I/O — no domain package imports Cobra.
    (nothing failed — nothing was attempted), and the transport prints the partial summary
    before returning `interrupted: copied N, …` with exit 1.
 
+10. **The manifest is a shortcut, never an authority** — an incremental run trusts a
+    record only while *both* ends still match it: the source must have the recorded
+    size and mtime, and so must the copy. Any mismatch — an edited photo, a copy
+    removed by hand, a partly undone run — falls through to the full byte comparison,
+    so a stale manifest can only ever cost the skip, never correctness. `undo` applies
+    the same rule before deleting anything, which is what makes "only removes what this
+    run created" true rather than merely intended. Mtimes survive the round trip
+    because a copy is stamped with its source's (see decision 6), so one recorded pair
+    fingerprints both files.
+11. **Theme reuse over re-classification** — on an incremental run a cluster whose
+    already-placed photos agree on one still-configured theme keeps it
+    (`method=manifest`), instead of asking the model again. That is not only cheaper:
+    it keeps a photo added to an old event filed *with* that event, which classifying
+    the newcomer on its own would not guarantee.
+
 ## Integration Points
 
 - **External APIs**: optional local **Ollama** vision model
@@ -147,6 +181,11 @@ Source files → `scan.Found` → `photo.Photo` (with EXIF) →
 `[]photo.Cluster` (temporal) → theme label per cluster → copied to
 `dest/<theme>/<year>/<year-month-day>/`. Per-photo errors are collected into
 the run `Summary` rather than aborting the pipeline.
+
+For `undo`: read the most recent manifest under the destination → walk its records
+newest first → remove each file the run created that still matches its record → prune
+the folders that emptied → mark the manifest `.undone` so the next `undo` steps back a
+run. Nothing outside the destination root is touched, and sources are never read.
 
 For `clean`: index destination files by size → walk the source (skipping the
 destination subtree) → for each regular file, hash only on a size collision and

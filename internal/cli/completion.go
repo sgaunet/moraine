@@ -96,6 +96,15 @@ func completeSource(_ *cobra.Command, args []string, _ string) ([]string, cobra.
 	return out, cobra.ShellCompDirectiveFilterFileExt
 }
 
+// completeDestRoot completes undo's single positional argument, which is a
+// destination root: directories only, and only while none has been given.
+func completeDestRoot(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp // takes exactly one argument
+	}
+	return nil, cobra.ShellCompDirectiveFilterDirs
+}
+
 // registerSharedCompletions wires the completions common to sort and clean: the
 // positional source argument, --dest (directories only) and --log-level.
 func registerSharedCompletions(cmd *cobra.Command) {

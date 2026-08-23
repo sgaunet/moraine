@@ -34,6 +34,15 @@ type Result struct {
 	Of          string    // owning photo's source path, when IsCompanion
 }
 
+// Placement is what an earlier run recorded about a file it placed: where the copy
+// went and the size and modification time it was left with. Because a copy carries
+// the source's modification time, the same pair also fingerprints the source.
+type Placement struct {
+	Dest    string
+	Size    int64
+	ModTime time.Time
+}
+
 // Organizer copies photos (and, when Sidecars is set, their companion files)
 // under a destination root using the <theme>/<year>/<year-month-day>/ layout.
 type Organizer struct {
@@ -45,6 +54,13 @@ type Organizer struct {
 	// not even a destination directory. Every Result still carries the Action the
 	// real run would take, so a preview and the run it previews agree.
 	DryRun bool
+	// Placed, when set, reports what an earlier run recorded for a source path.
+	// A hit whose fingerprints still match on both ends lets an incremental run
+	// skip a file without reading either copy — the byte comparison a normal run
+	// does is precisely what it replaces. Injected by the caller (from the run
+	// manifest) to keep this package free of any manifest dependency; nil ⇒ every
+	// file is compared as usual.
+	Placed func(src string) (Placement, bool)
 	// IsPrimary reports whether an absolute source path is itself a scanned
 	// primary photo, so it is never also copied as another photo's companion
 	// (FR-006). Injected by the caller to keep this package decoupled from the
@@ -148,6 +164,9 @@ func (o *Organizer) claim(path string) {
 // identical existing file is skipped, a same-named different file is suffixed. In
 // a dry run it resolves the same Action but writes nothing.
 func (o *Organizer) placeOne(dir, src, name string) (string, Action, error) {
+	if dest, ok := o.alreadyPlaced(src); ok {
+		return dest, ActionSkippedIdentical, nil
+	}
 	target := filepath.Join(dir, name)
 	if o.taken(target) {
 		// Only a real file has content to compare; a dry run's own planned target
@@ -192,4 +211,33 @@ func (o *Organizer) copy(src, dst string) error {
 		return nil
 	}
 	return copyFile(src, dst)
+}
+
+// alreadyPlaced reports the destination an earlier run recorded for src, when that
+// record can still be trusted: the source must be unchanged since it was placed
+// and its copy must still be on disk unchanged. Either end failing the check falls
+// through to the normal path, so a stale or partly-undone manifest can only ever
+// cost the skip — never correctness.
+func (o *Organizer) alreadyPlaced(src string) (string, bool) {
+	if o.Placed == nil {
+		return "", false
+	}
+	rec, ok := o.Placed(src)
+	if !ok || rec.Dest == "" {
+		return "", false
+	}
+	if !fingerprintMatches(src, rec) || !fingerprintMatches(rec.Dest, rec) {
+		return "", false
+	}
+	return rec.Dest, true
+}
+
+// fingerprintMatches reports whether the regular file at path still has the size
+// and modification time the placement recorded.
+func fingerprintMatches(path string, rec Placement) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	return info.Size() == rec.Size && info.ModTime().Equal(rec.ModTime)
 }
