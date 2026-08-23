@@ -19,7 +19,8 @@ const (
 	JPEG
 	// PNG covers .png.
 	PNG
-	// HEIC covers .heic and .heif (metadata only — pixels not decoded).
+	// HEIC covers .heic and .heif. Pixels are not decoded in pure Go; a
+	// model-viewable preview is extracted via exiftool, like RAW.
 	HEIC
 	// RAW covers camera raw formats (.dng/.nef/.cr2/…). Metadata is read by
 	// imagemeta; pixels are not decoded in pure Go — a model-viewable preview is
@@ -55,6 +56,14 @@ func (f Format) Decodable() bool {
 // decoded in pure Go; a model-viewable preview is extracted via exiftool.
 func (f Format) IsRAW() bool {
 	return f == RAW
+}
+
+// NeedsPreview reports whether the format's pixels cannot be decoded in pure Go,
+// so a model-viewable image has to be extracted with exiftool rather than read
+// from the file itself. That is exactly the complement of Decodable among the
+// recognised formats: RAW and HEIC.
+func (f Format) NeedsPreview() bool {
+	return f == RAW || f == HEIC
 }
 
 // extFormats maps a lower-cased, dot-prefixed file extension to its Format. It

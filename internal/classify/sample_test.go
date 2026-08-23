@@ -111,19 +111,20 @@ func TestSampleImagesSmallSendsAllLargeSamples(t *testing.T) {
 	}
 }
 
-// fakeRaw is a non-nil RawExtractor so RAW photos become model-eligible; the
-// returned bytes are irrelevant to choosePhotos (which only selects).
+// fakeRaw is a non-nil PreviewExtractor, used for both the RAW and the HEIC seam
+// so those photos become model-eligible; the returned bytes are irrelevant to
+// choosePhotos (which only selects).
 type fakeRaw struct{}
 
 func (fakeRaw) Extract(context.Context, string) ([]byte, error) { return []byte("PREVIEW"), nil }
 
-func countFormats(ps []photo.Photo) (jpegs, raws int) {
+func countFormats(ps []photo.Photo) (jpegs, previews int) {
 	for _, p := range ps {
 		switch {
 		case p.Format.Decodable():
 			jpegs++
-		case p.Format.IsRAW():
-			raws++
+		case p.Format.NeedsPreview():
+			previews++
 		}
 	}
 	return
@@ -142,7 +143,7 @@ func TestChoosePhotosRAWEligibilityAndPreference(t *testing.T) {
 	}
 
 	t.Run("small mixed group uses every eligible incl RAW", func(t *testing.T) {
-		o := &classify.OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		o := &classify.OllamaClassifier{Sample: 3, RawPreview: fakeRaw{}, HEICPreview: fakeRaw{}}
 		got := o.ChoosePhotos(photo.Cluster{Photos: []photo.Photo{jpg, raw}}) // 2 ≤ 3
 		j, r := countFormats(got)
 		if j != 1 || r != 1 {
@@ -151,7 +152,7 @@ func TestChoosePhotosRAWEligibilityAndPreference(t *testing.T) {
 	})
 
 	t.Run("large group prefers JPEG, no RAW extracted when enough JPEG", func(t *testing.T) {
-		o := &classify.OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		o := &classify.OllamaClassifier{Sample: 3, RawPreview: fakeRaw{}, HEICPreview: fakeRaw{}}
 		photos := append(rep(jpg, 4), rep(raw, 2)...) // 6 photos > 3
 		j, r := countFormats(o.ChoosePhotos(photo.Cluster{Photos: photos}))
 		if j != 3 || r != 0 {
@@ -160,7 +161,7 @@ func TestChoosePhotosRAWEligibilityAndPreference(t *testing.T) {
 	})
 
 	t.Run("large group fills sample with RAW when JPEG scarce", func(t *testing.T) {
-		o := &classify.OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+		o := &classify.OllamaClassifier{Sample: 3, RawPreview: fakeRaw{}, HEICPreview: fakeRaw{}}
 		photos := append(rep(jpg, 1), rep(raw, 5)...) // 6 photos > 3
 		j, r := countFormats(o.ChoosePhotos(photo.Cluster{Photos: photos}))
 		if j != 1 || r != 2 {
@@ -169,16 +170,85 @@ func TestChoosePhotosRAWEligibilityAndPreference(t *testing.T) {
 	})
 
 	t.Run("RAW ineligible without an extractor", func(t *testing.T) {
-		o := &classify.OllamaClassifier{Sample: 3} // Raw nil
+		o := &classify.OllamaClassifier{Sample: 3} // no extractors at all
 		if got := o.ChoosePhotos(photo.Cluster{Photos: []photo.Photo{raw}}); got != nil {
 			t.Errorf("RAW without extractor must be skipped; got %v", got)
 		}
 	})
 
-	t.Run("HEIC excluded", func(t *testing.T) {
-		o := &classify.OllamaClassifier{Sample: 3, Raw: fakeRaw{}}
+	t.Run("HEIC eligible via the converter", func(t *testing.T) {
+		o := &classify.OllamaClassifier{Sample: 3, RawPreview: fakeRaw{}, HEICPreview: fakeRaw{}}
+		got := o.ChoosePhotos(photo.Cluster{Photos: []photo.Photo{heic}})
+		if _, previews := countFormats(got); previews != 1 {
+			t.Errorf("HEIC must be sent via its extracted preview; got %v", got)
+		}
+	})
+
+	t.Run("HEIC ineligible without a converter", func(t *testing.T) {
+		// A RAW extractor says nothing about HEIC: the two formats need different
+		// programs, so having exiftool must not make a HEIC look classifiable.
+		o := &classify.OllamaClassifier{Sample: 3, RawPreview: fakeRaw{}}
 		if got := o.ChoosePhotos(photo.Cluster{Photos: []photo.Photo{heic}}); got != nil {
-			t.Errorf("HEIC must be excluded; got %v", got)
+			t.Errorf("HEIC without a converter must be skipped; got %v", got)
+		}
+	})
+
+	t.Run("RAW ineligible when only a HEIC converter is configured", func(t *testing.T) {
+		o := &classify.OllamaClassifier{Sample: 3, HEICPreview: fakeRaw{}}
+		if got := o.ChoosePhotos(photo.Cluster{Photos: []photo.Photo{raw}}); got != nil {
+			t.Errorf("RAW without an exiftool extractor must be skipped; got %v", got)
+		}
+	})
+}
+
+// TestChoosePhotosDropsPreviewTwins covers the RAW+JPEG (and HEIC+JPEG) shooter:
+// the pair is one scene, and sending both would spend two sample slots on it.
+func TestChoosePhotosDropsPreviewTwins(t *testing.T) {
+	o := func() *classify.OllamaClassifier {
+		return &classify.OllamaClassifier{Sample: 3, RawPreview: fakeRaw{}, HEICPreview: fakeRaw{}}
+	}
+
+	t.Run("RAW twin of a JPEG in the same directory is dropped", func(t *testing.T) {
+		c := photo.Cluster{Photos: []photo.Photo{
+			{Path: "/src/IMG_1234.jpg", Format: photo.JPEG},
+			{Path: "/src/IMG_1234.dng", Format: photo.RAW},
+		}}
+		j, previews := countFormats(o().ChoosePhotos(c))
+		if j != 1 || previews != 0 {
+			t.Errorf("chose jpeg=%d previews=%d; want 1 and 0 (the RAW twin is redundant)", j, previews)
+		}
+	})
+
+	t.Run("HEIC twin is matched case-insensitively", func(t *testing.T) {
+		c := photo.Cluster{Photos: []photo.Photo{
+			{Path: "/src/IMG_1234.JPG", Format: photo.JPEG},
+			{Path: "/src/img_1234.heic", Format: photo.HEIC},
+		}}
+		j, previews := countFormats(o().ChoosePhotos(c))
+		if j != 1 || previews != 0 {
+			t.Errorf("chose jpeg=%d previews=%d; want 1 and 0 (Apple pairs differ only in case)", j, previews)
+		}
+	})
+
+	t.Run("same name in another directory is not a twin", func(t *testing.T) {
+		c := photo.Cluster{Photos: []photo.Photo{
+			{Path: "/src/a/IMG_1234.jpg", Format: photo.JPEG},
+			{Path: "/src/b/IMG_1234.dng", Format: photo.RAW},
+		}}
+		j, previews := countFormats(o().ChoosePhotos(c))
+		if j != 1 || previews != 1 {
+			t.Errorf("chose jpeg=%d previews=%d; want 1 and 1 (different directories, different shots)", j, previews)
+		}
+	})
+
+	t.Run("a RAW with no JPEG twin is still sent", func(t *testing.T) {
+		c := photo.Cluster{Photos: []photo.Photo{
+			{Path: "/src/IMG_0001.jpg", Format: photo.JPEG},
+			{Path: "/src/IMG_9999.dng", Format: photo.RAW},
+		}}
+		j, previews := countFormats(o().ChoosePhotos(c))
+		if j != 1 || previews != 1 {
+			t.Errorf("chose jpeg=%d previews=%d; want 1 and 1 (unpaired RAW is not redundant)", j, previews)
 		}
 	})
 }

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/sgaunet/moraine/internal/cluster"
 	"github.com/sgaunet/moraine/internal/config"
 	"github.com/sgaunet/moraine/internal/exifmeta"
+	"github.com/sgaunet/moraine/internal/heicpreview"
 	"github.com/sgaunet/moraine/internal/organize"
 	"github.com/sgaunet/moraine/internal/photo"
 	"github.com/sgaunet/moraine/internal/rawpreview"
@@ -26,6 +28,11 @@ import (
 
 // rawPreviewTimeout bounds each exiftool preview extraction.
 const rawPreviewTimeout = 30 * time.Second
+
+// heicConvertTimeout bounds each HEIC conversion. It is more generous than the
+// exiftool bound because a converter decodes the whole image rather than copying
+// bytes out of it.
+const heicConvertTimeout = 60 * time.Second
 
 // Summary tallies what a run did, for the final log line and for tests.
 type Summary struct {
@@ -129,7 +136,8 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 	oc.Logger = logger
 	ex := rawpreview.NewExtractor(cfg.ExifToolPath, rawPreviewTimeout)
 	ex.Logger = logger
-	oc.Raw = ex // RAW photos are classified via their exiftool-extracted preview
+	oc.RawPreview = ex // a RAW is classified via its embedded JPEG preview
+	attachHEICConverter(oc, logger)
 
 	switch oc.Preflight(ctx) {
 	case classify.StatusUnreachable:
@@ -146,6 +154,25 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 	}
 	// Unreachable: Preflight returns only the three Status values handled above.
 	return nil
+}
+
+// attachHEICConverter gives the classifier a way to see HEIC photos, when the
+// system has one. Unlike RAW, a HEIC embeds no JPEG for exiftool to copy out —
+// its derived images are HEVC — so decoding it needs a real converter. None is
+// required: without one, HEIC photos are still scanned, dated and copied, and only
+// their classification falls back, so this is a log line rather than an error.
+func attachHEICConverter(oc *classify.OllamaClassifier, logger *slog.Logger) {
+	conv := heicpreview.Detect(heicConvertTimeout)
+	if conv == nil {
+		logger.Info("no HEIC converter found: HEIC groups fall back to the heuristic or fallback theme",
+			"install_one_of", strings.Join(heicpreview.Installable(), ", "))
+		return
+	}
+	conv.Logger = logger
+	// Assigned only when non-nil: a nil *Converter in the interface would read as
+	// "configured" everywhere downstream.
+	oc.HEICPreview = conv
+	logger.Info("HEIC converter", "tool", conv.Name())
 }
 
 // tally records one placement Result into the summary and logs it, routing

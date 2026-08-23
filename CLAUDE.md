@@ -123,8 +123,20 @@ deleted. Repo: `github.com/sgaunet/moraine` (MIT).
   always degrades to a warning + full run. `clean` is untouched.
 - **Injected extension points**: `classify.Classifier` (nil = skip the model stage),
   `organize.Organizer.IsPrimary func(string) bool` (keeps `organize` decoupled from
-  `scan`), `rawpreview.Extractor`. A failed Ollama preflight degrades to the
-  altitude heuristic, then the fallback theme.
+  `scan`), and two `classify.PreviewExtractor` seams: `rawpreview.Extractor`
+  (`RawPreview`, exiftool, **mandatory**) and `heicpreview.Converter` (`HEICPreview`,
+  the first of sips/heif-convert/ffmpeg/magick on PATH, **optional** — `Detect`
+  returns nil when none is installed, and a nil must never be assigned into the
+  interface). A HEIC embeds no JPEG preview for exiftool to copy out (its derived
+  images are HEVC), which is why the two are separate. A failed Ollama preflight
+  degrades to the altitude heuristic, then the fallback theme.
+- **Model-call economy** (`internal/classify`): images are downscaled to 1024 px on
+  the long side (`downscale.go`, `golang.org/x/image/draw`) before base64; a RAW or
+  HEIC twin of a JPEG in the same directory is sent once; the cluster's capture
+  span, max altitude and GPS ride along as prompt text; the model is warmed up once
+  per run (empty-message `/api/chat`, outside any classification's timeout, only
+  when something is actually classified) and held with `keep_alive`; only transient
+  failures (transport, 5xx, 408, 429) are retried, with exponential backoff.
 - See `docs/architecture.md` for detailed design decisions.
 
 ## Development Commands
@@ -181,10 +193,21 @@ task check-before-commit   # lint + test + snapshot
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #11** — run manifest + `undo` + `sort --incremental` (no
-`specs/` dir; issue-driven like #5/#10/#13). The destination now gains a `.moraine/`
-bookkeeping directory by default (additive, hidden, never read as photos since the
-dest is excluded from the scan); `--dry-run` still writes nothing at all.
+Latest change: **issue #7** — classification coverage and cost (no `specs/` dir;
+issue-driven like #5/#10/#11/#13). HEIC now reaches the vision model via a new
+`internal/heicpreview` converter, so HEIC events that used to land on the fallback
+theme are classified (verified on real iPhone files: `method=fallback` → `model-all`);
+model calls carry downscaled images (16.8× smaller on real 16 MP photos) plus EXIF
+context, the model is warmed once per run and kept alive, and only transient failures
+are retried. Adds one dependency, `golang.org/x/image` (BSD-3, author-approved).
+The issue's cache item is deliberately unticked — `--incremental` already covers the
+re-run case. **The issue's premise for HEIC was wrong**: exiftool cannot extract a
+preview from an iPhone HEIC (all three tags return 0 bytes), hence the converter.
+
+Previous change: **issue #11** — run manifest + `undo` + `sort --incremental`.
+The destination gains a `.moraine/` bookkeeping directory by default (additive,
+hidden, never read as photos since the dest is excluded from the scan);
+`--dry-run` still writes nothing at all.
 
 Previous feature: **006-sidecar-files** (companion/sidecar file copying & cleaning). Read the
 current plan: `specs/006-sidecar-files/plan.md` (see also its `research.md`, `data-model.md`,

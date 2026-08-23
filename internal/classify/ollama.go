@@ -11,18 +11,22 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sgaunet/moraine/internal/photo"
 )
 
-// RawExtractor turns a RAW file into model-viewable image bytes (its embedded
-// JPEG preview). It is implemented by *rawpreview.Extractor. A nil RawExtractor
-// disables RAW input: RAW photos are then skipped for the model (like HEIC).
-type RawExtractor interface {
-	Extract(ctx context.Context, rawPath string) ([]byte, error)
+// PreviewExtractor turns a file whose pixels Go cannot decode — RAW or HEIC —
+// into model-viewable JPEG bytes. It is implemented by *rawpreview.Extractor
+// (which copies out a RAW's embedded preview) and by *heicpreview.Converter
+// (which decodes a HEIC with an external program). A nil extractor disables that
+// input entirely: such photos are then skipped for the model.
+type PreviewExtractor interface {
+	Extract(ctx context.Context, path string) ([]byte, error)
 }
 
 // OllamaClassifier asks a local Ollama vision model to pick one theme from the
@@ -36,19 +40,32 @@ type OllamaClassifier struct {
 	Timeout time.Duration
 	HTTP    *http.Client
 	Logger  *slog.Logger
-	Raw     RawExtractor // optional; extracts previews for RAW photos
+	// KeepAlive is how long Ollama should keep the model resident after a call
+	// (an Ollama duration string, e.g. "10m"). Empty leaves Ollama's own default.
+	KeepAlive string
+	// RawPreview extracts a camera RAW's embedded JPEG (exiftool). Optional: a nil
+	// value skips RAW photos for the model.
+	RawPreview PreviewExtractor
+	// HEICPreview decodes a HEIC into JPEG (an external converter). Optional and
+	// separate from RawPreview because the two formats need different programs:
+	// a HEIC written by an iPhone embeds no JPEG for exiftool to copy out.
+	HEICPreview PreviewExtractor
+
+	// warmOnce loads the model before the first classification and never again.
+	warmOnce sync.Once
 }
 
 // NewOllama builds an OllamaClassifier with sane defaults for the given themes.
 func NewOllama(baseURL, model string, sample int, themes []string) *OllamaClassifier {
 	return &OllamaClassifier{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		Model:   model,
-		Sample:  sample,
-		Themes:  themes,
-		Timeout: 60 * time.Second,
-		HTTP:    &http.Client{},
-		Logger:  slog.Default(),
+		BaseURL:   strings.TrimRight(baseURL, "/"),
+		Model:     model,
+		Sample:    sample,
+		Themes:    themes,
+		Timeout:   60 * time.Second,
+		HTTP:      &http.Client{},
+		Logger:    slog.Default(),
+		KeepAlive: DefaultKeepAlive,
 	}
 }
 
@@ -96,7 +113,7 @@ func (o *OllamaClassifier) Preflight(ctx context.Context) Status {
 	}
 
 	var tags tagsResponse
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return StatusUnreachable
 	}
@@ -136,6 +153,9 @@ type chatRequest struct {
 	Stream   bool          `json:"stream"`
 	Format   any           `json:"format,omitempty"`
 	Options  chatOptions   `json:"options"`
+	// KeepAlive asks Ollama to hold the model in memory for this long after the
+	// call, so the clusters that follow do not each pay the load again.
+	KeepAlive string `json:"keep_alive,omitempty"`
 }
 
 // chatOptions pins Ollama's decoding so the same cluster classifies to the same
@@ -149,6 +169,20 @@ type chatOptions struct {
 
 // ollamaSeed is the fixed RNG seed sent with every request for reproducibility.
 const ollamaSeed = 42
+
+// DefaultKeepAlive is how long NewOllama asks Ollama to keep the model resident
+// after a call. A run classifies one cluster after another, so unloading between
+// them would re-pay the multi-second load of a vision model every time.
+const DefaultKeepAlive = "10m"
+
+// warmupTimeout bounds Warmup. It is deliberately independent of (and longer
+// than) the classification Timeout: loading an 8B vision model is slow, and the
+// whole point of warming up is to keep that cost out of a classification budget.
+const warmupTimeout = 2 * time.Minute
+
+// maxResponseBytes caps what is read from an Ollama response, so a runaway or
+// hostile endpoint cannot make the process allocate without bound.
+const maxResponseBytes = 4 << 20
 
 type chatResponse struct {
 	Message chatMessage `json:"message"`
@@ -195,26 +229,30 @@ var themeHints = map[string]string{
 // Classify returns one configured theme slug for the cluster, or an error on
 // failure (transport, timeout, or an answer outside the configured set).
 func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (string, error) {
+	// callCtx bounds this classification; ctx stays the run's own deadline, so the
+	// one-off model load below is not charged to a single cluster's budget.
+	callCtx := ctx
 	if o.Timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
+		callCtx, cancel = context.WithTimeout(ctx, o.Timeout)
 		defer cancel()
 	}
 
-	images := o.sampleImages(ctx, c)
+	images := o.sampleImages(callCtx, c)
 	if len(images) == 0 {
-		o.log().Warn("classification skipped: no usable image (HEIC, or RAW without a preview, is not sent to the model)",
+		o.log().Warn("classification skipped: no usable image (a RAW or HEIC with no extractable preview is not sent to the model)",
 			"group_size", len(c.Photos))
 		return "", errors.New("no usable image to classify")
 	}
 	reqBody := chatRequest{
-		Model:   o.Model,
-		Stream:  false,
-		Format:  o.schema(),
-		Options: chatOptions{Temperature: 0, Seed: ollamaSeed},
+		Model:     o.Model,
+		Stream:    false,
+		Format:    o.schema(),
+		Options:   chatOptions{Temperature: 0, Seed: ollamaSeed},
+		KeepAlive: o.KeepAlive,
 		Messages: []chatMessage{
 			{Role: "system", Content: o.systemPrompt()},
-			{Role: "user", Content: o.userPrompt(), Images: images},
+			{Role: "user", Content: o.userPrompt(c), Images: images},
 		},
 	}
 	payload, err := json.Marshal(reqBody)
@@ -222,23 +260,82 @@ func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (strin
 		return "", fmt.Errorf("encoding ollama request: %w", err)
 	}
 
+	// Load the model before the timed request rather than inside it. Done here,
+	// after the sampling, so a run that never finds a usable image — or never
+	// classifies at all, as an --incremental pass over an unchanged library — does
+	// not pull gigabytes into memory for nothing.
+	o.ensureLoaded(ctx)
+
 	o.log().Debug("contacting model", "url", o.BaseURL, "model", o.Model, "images", len(images))
 
-	const attempts = 2
 	var lastErr error
-	for attempt := 1; attempt <= attempts; attempt++ {
-		theme, err := o.doChat(ctx, payload)
+	attempt := 0
+	for attempt < chatAttempts {
+		attempt++
+		theme, err := o.doChat(callCtx, payload)
 		if err == nil {
 			return theme, nil
 		}
 		lastErr = err
-		if ctx.Err() != nil {
+		if !errors.Is(err, errTransient) {
+			break // deterministic answer (rejected category, bad request): asking again cannot help
+		}
+		if attempt == chatAttempts {
+			break
+		}
+		if !sleepCtx(callCtx, chatBackoff<<(attempt-1)) {
 			break // timeout/cancel: do not keep retrying
 		}
 	}
 	o.log().Warn("model unavailable or answer rejected — fallback",
-		"url", o.BaseURL, "model", o.Model, "err", lastErr)
-	return "", fmt.Errorf("ollama unavailable after %d attempts: %w", attempts, lastErr)
+		"url", o.BaseURL, "model", o.Model, "attempts", attempt, "err", lastErr)
+	return "", fmt.Errorf("ollama unavailable after %d attempt(s): %w", attempt, lastErr)
+}
+
+// chatAttempts and chatBackoff bound the retry of a transient failure. The delay
+// doubles per attempt (200ms, then 400ms) and is charged to the same o.Timeout
+// budget as the calls themselves, so retrying can never extend a run's deadline.
+const (
+	chatAttempts = 3
+	chatBackoff  = 200 * time.Millisecond
+)
+
+// sleepCtx waits for d and reports whether it elapsed. It returns false as soon
+// as ctx is done, so a backoff never outlives an interrupt or the call timeout.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// Warmup asks Ollama to load the model into memory now. Ollama loads (and, with
+// keep_alive, holds) a model when /api/chat is called with an empty message list.
+// Doing it here moves the multi-second cold load of a vision model out of the
+// first classification's timeout budget, which is where it would otherwise land.
+// Any failure is the caller's cue to log and carry on: a cold model still
+// classifies, just slower.
+func (o *OllamaClassifier) Warmup(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, warmupTimeout)
+	defer cancel()
+
+	payload, err := json.Marshal(chatRequest{
+		Model:     o.Model,
+		Messages:  []chatMessage{}, // empty: load the model, answer nothing
+		Options:   chatOptions{Temperature: 0, Seed: ollamaSeed},
+		KeepAlive: o.KeepAlive,
+	})
+	if err != nil {
+		return fmt.Errorf("encoding ollama warm-up request: %w", err)
+	}
+	if _, err := o.postChat(ctx, payload); err != nil {
+		return fmt.Errorf("warming up model %q: %w", o.Model, err)
+	}
+	return nil
 }
 
 // log returns the configured logger or the default, never nil.
@@ -259,8 +356,9 @@ func (o *OllamaClassifier) systemPrompt() string {
 }
 
 // userPrompt carries the per-request data: the allowed categories (each with a
-// short description) and the task, including the option to abstain with "none".
-func (o *OllamaClassifier) userPrompt() string {
+// short description), what the cluster's EXIF already knows about the photos, and
+// the task, including the option to abstain with "none".
+func (o *OllamaClassifier) userPrompt(c photo.Cluster) string {
 	var b strings.Builder
 	b.WriteString("Allowed categories:\n")
 	for _, t := range o.Themes {
@@ -271,9 +369,91 @@ func (o *OllamaClassifier) userPrompt() string {
 		}
 	}
 	fmt.Fprintf(&b, "- %s: the photos do not clearly fit any category above\n", abstainCategory)
+	b.WriteString(metadataBlock(c))
 	b.WriteString("Pick the single category that best describes these photos. ")
 	fmt.Fprintf(&b, "If none of them clearly fits, answer %q.", abstainCategory)
 	return b.String()
+}
+
+// metadataBlock renders what the cluster's EXIF already knows — when, how high,
+// and where — as a few lines of text, or "" when it knows nothing. It is a cheap
+// multimodal boost: the model otherwise sees pixels only, and altitude in
+// particular separates an alpine scene from a garden one no crop can settle.
+//
+// The wording keeps the metadata subordinate on purpose. A meal photographed in a
+// refuge at 2400 m is still "cook", and a model told to weigh altitude above what
+// it can see would get that wrong.
+func metadataBlock(c photo.Cluster) string {
+	lines := metadataLines(c)
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\nWhat the photo metadata says (context only — the images decide):\n")
+	for _, l := range lines {
+		fmt.Fprintf(&b, "- %s\n", l)
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// metadataLines returns one line per fact the cluster actually carries, in a
+// fixed order. A fact that is missing produces no line rather than an "unknown",
+// which would only spend tokens telling the model nothing.
+func metadataLines(c photo.Cluster) []string {
+	var lines []string
+	if l := takenLine(c); l != "" {
+		lines = append(lines, l)
+	}
+	if alt, ok := maxAltitude(c); ok {
+		lines = append(lines, fmt.Sprintf("highest altitude: %.0f m above sea level", alt))
+	}
+	if gps, ok := firstGPS(c); ok {
+		lines = append(lines, fmt.Sprintf("location: %.2f, %.2f", gps.Lat, gps.Lng))
+	}
+	return lines
+}
+
+// takenLine describes when the photos were taken, as an instant or a span. It is
+// empty for a cluster with no usable capture time (nothing dates a hand-built one).
+func takenLine(c photo.Cluster) string {
+	if c.Start.IsZero() || c.End.IsZero() {
+		return ""
+	}
+	const layout = "2006-01-02 15:04"
+	// Compare the rendered values, not the instants: a burst spanning a few seconds
+	// formats to one minute, and "11:13 to 11:13" would be noise.
+	start, end := c.Start.Format(layout), c.End.Format(layout)
+	if start == end {
+		return "taken: " + start + " (local time)"
+	}
+	return "taken: " + start + " to " + end + " (local time)"
+}
+
+// maxAltitude returns the highest altitude recorded across the cluster.
+func maxAltitude(c photo.Cluster) (float64, bool) {
+	var best float64
+	found := false
+	for _, p := range c.Photos {
+		if p.Altitude == nil {
+			continue
+		}
+		if !found || *p.Altitude > best {
+			best, found = *p.Altitude, true
+		}
+	}
+	return best, found
+}
+
+// firstGPS returns the first coordinate recorded in the cluster. One is enough:
+// the photos of an event are, by construction, close together in time and place.
+func firstGPS(c photo.Cluster) (photo.LatLng, bool) {
+	for _, p := range c.Photos {
+		if p.GPS != nil {
+			return *p.GPS, true
+		}
+	}
+	return photo.LatLng{}, false
 }
 
 // schema constrains the model to answer with exactly one configured theme, or
@@ -291,25 +471,73 @@ func (o *OllamaClassifier) schema() responseSchema {
 	}
 }
 
-func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, error) {
+// errTransient marks a failure that a later identical request might survive — a
+// dropped connection, a busy or restarting server. Decoding is pinned (temperature
+// 0, fixed seed), so a failure *not* wrapped in it is deterministic and retrying
+// it would only re-ask a question already answered.
+var errTransient = errors.New("transient failure")
+
+// transient wraps err so the retry loop recognises it as worth another attempt.
+func transient(err error) error {
+	return fmt.Errorf("%w: %w", errTransient, err)
+}
+
+// retryableStatus reports whether an HTTP status says "try again later" rather
+// than "this request is wrong". Ollama returns 503 while a model loads and 500 on
+// an internal hiccup; a 4xx (bad model name, malformed body) never will.
+func retryableStatus(code int) bool {
+	return code >= http.StatusInternalServerError ||
+		code == http.StatusRequestTimeout ||
+		code == http.StatusTooManyRequests
+}
+
+// postChat sends payload to /api/chat and returns the raw response body, tagging
+// the failures that deserve a retry. It is shared by Classify and Warmup.
+func (o *OllamaClassifier) postChat(ctx context.Context, payload []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/api/chat", bytes.NewReader(payload))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := o.HTTP.Do(req)
 	if err != nil {
-		return "", err
+		return nil, transient(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return "", err
+		return nil, transient(err) // a truncated read is a broken connection, not a verdict
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		statusErr := fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		if retryableStatus(resp.StatusCode) {
+			return nil, transient(statusErr)
+		}
+		return nil, statusErr
+	}
+	return body, nil
+}
+
+// ensureLoaded warms the model up once per classifier, reporting the outcome. A
+// failure is worth no more than a warning: the classification that follows will
+// simply pay the load itself, or fail and fall back like any other model problem.
+func (o *OllamaClassifier) ensureLoaded(ctx context.Context) {
+	o.warmOnce.Do(func() {
+		start := time.Now()
+		if err := o.Warmup(ctx); err != nil {
+			o.log().Warn("model warm-up failed: this classification may be slow", "err", err)
+			return
+		}
+		o.log().Info("model loaded", "model", o.Model, "took", time.Since(start).Round(time.Millisecond))
+	})
+}
+
+func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, error) {
+	body, err := o.postChat(ctx, payload)
+	if err != nil {
+		return "", err
 	}
 
 	var parsed chatResponse
@@ -339,9 +567,9 @@ func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, 
 }
 
 // sampleImages selects the photos to send and returns their base64 content.
-// Eligible photos are JPEG/PNG (read directly) or RAW (preview via the extractor);
-// HEIC and unknown formats are excluded. A photo whose bytes cannot be obtained
-// (read error, or RAW with no usable preview) is skipped, never fatal (FR-007).
+// Eligible photos are JPEG/PNG (read directly) or RAW/HEIC (preview via the
+// extractor); unknown formats are excluded. A photo whose bytes cannot be obtained
+// (read error, or no usable preview) is skipped, never fatal (FR-007).
 func (o *OllamaClassifier) sampleImages(ctx context.Context, c photo.Cluster) []string {
 	chosen := o.choosePhotos(c)
 	if len(chosen) == 0 {
@@ -354,54 +582,106 @@ func (o *OllamaClassifier) sampleImages(ctx context.Context, c photo.Cluster) []
 			o.log().Warn("skipping photo for model input", "file", p.Path, "err", err)
 			continue
 		}
-		images = append(images, base64.StdEncoding.EncodeToString(data))
+		sent := shrink(data)
+		o.log().Debug("model input", "file", p.Path,
+			"bytes_before", len(data), "bytes_sent", len(sent))
+		images = append(images, base64.StdEncoding.EncodeToString(sent))
 	}
 	return images
 }
 
 // choosePhotos applies the eligibility and sampling rules. Small groups
-// (≤ SmallGroupMax) use every eligible photo, RAW included; large groups prefer
-// already-viewable JPEG/PNG and only extract RAW previews to fill the sample
-// size (FR-012).
+// (≤ SmallGroupMax) use every eligible photo, extracted previews included; large
+// groups prefer already-viewable JPEG/PNG and only extract previews to fill the
+// sample size (FR-012), since extraction costs an exiftool process per photo.
 func (o *OllamaClassifier) choosePhotos(c photo.Cluster) []photo.Photo {
-	var direct, raw []photo.Photo
+	twins := decodableTwins(c)
+	var direct, extracted []photo.Photo
 	for _, p := range c.Photos {
 		switch {
 		case p.Format.Decodable():
 			direct = append(direct, p)
-		case p.Format.IsRAW() && o.Raw != nil:
-			raw = append(raw, p)
+		case p.Format.NeedsPreview() && o.extractorFor(p.Format) != nil:
+			// A RAW or HEIC shot alongside its JPEG shows the model the same scene
+			// twice and burns a sample slot doing it. The JPEG is already viewable,
+			// so the twin is the one to drop.
+			if _, twin := twins[twinKey(p.Path)]; twin {
+				o.log().Debug("skipping preview of a photo already sent as JPEG/PNG", "file", p.Path)
+				continue
+			}
+			extracted = append(extracted, p)
 		}
 	}
-	eligible := len(direct) + len(raw)
+	eligible := len(direct) + len(extracted)
 	if o.Sample <= 0 || eligible == 0 {
 		return nil
 	}
-	// Small group, or few eligible: use every eligible photo (RAW included).
+	// Small group, or few eligible: use every eligible photo, previews included.
 	if len(c.Photos) <= SmallGroupMax || eligible <= o.Sample {
 		out := make([]photo.Photo, 0, eligible)
 		out = append(out, direct...)
-		return append(out, raw...)
+		return append(out, extracted...)
 	}
-	// Large group: prefer JPEG/PNG; extract RAW only to fill the sample size.
+	// Large group: prefer JPEG/PNG; extract previews only to fill the sample size.
 	if len(direct) >= o.Sample {
 		return evenlySpaced(direct, o.Sample)
 	}
 	out := make([]photo.Photo, 0, o.Sample)
 	out = append(out, direct...)
-	return append(out, evenlySpaced(raw, o.Sample-len(direct))...)
+	return append(out, evenlySpaced(extracted, o.Sample-len(direct))...)
 }
 
-// imageBytes returns base64-able bytes for a model-eligible photo: the file
-// itself for JPEG/PNG, or the exiftool-extracted preview (in memory) for RAW.
-func (o *OllamaClassifier) imageBytes(ctx context.Context, p photo.Photo) ([]byte, error) {
-	if p.Format.IsRAW() {
-		if o.Raw == nil {
-			return nil, fmt.Errorf("no RAW extractor configured for %q", p.Path)
+// decodableTwins indexes the cluster's directly-viewable photos by twinKey, so a
+// RAW or HEIC sibling of one can be recognised and skipped.
+func decodableTwins(c photo.Cluster) map[string]struct{} {
+	twins := make(map[string]struct{})
+	for _, p := range c.Photos {
+		if p.Format.Decodable() {
+			twins[twinKey(p.Path)] = struct{}{}
 		}
-		return o.Raw.Extract(ctx, p.Path)
 	}
-	return os.ReadFile(p.Path)
+	return twins
+}
+
+// twinKey identifies "the same shot" as a directory plus a base name without its
+// extension, case-folded because the pair is often IMG_1234.HEIC + IMG_1234.JPG.
+// Two files in different directories are never twins, however alike their names.
+func twinKey(path string) string {
+	name := filepath.Base(path)
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	return strings.ToLower(filepath.Dir(path) + string(filepath.Separator) + stem)
+}
+
+// imageBytes returns the image bytes for a model-eligible photo: the file itself
+// for JPEG/PNG, or the exiftool-extracted preview (in memory) for a RAW or HEIC,
+// whose pixels no pure-Go decoder can reach.
+func (o *OllamaClassifier) imageBytes(ctx context.Context, p photo.Photo) ([]byte, error) {
+	if p.Format.NeedsPreview() {
+		ex := o.extractorFor(p.Format)
+		if ex == nil {
+			return nil, fmt.Errorf("no preview extractor configured for %q", p.Path)
+		}
+		return ex.Extract(ctx, p.Path)
+	}
+	data, err := os.ReadFile(p.Path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %q: %w", p.Path, err)
+	}
+	return data, nil
+}
+
+// extractorFor returns the extractor that can render this format, or nil when
+// none is configured for it. RAW and HEIC each need their own program, so having
+// one says nothing about having the other.
+func (o *OllamaClassifier) extractorFor(f photo.Format) PreviewExtractor {
+	switch {
+	case f == photo.HEIC:
+		return o.HEICPreview
+	case f.IsRAW():
+		return o.RawPreview
+	default:
+		return nil
+	}
 }
 
 // evenlySpaced picks n photos spread across the slice (first … last), so a long

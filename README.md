@@ -293,15 +293,25 @@ The candidate lists are derived from the same constants the parser uses
 (`config.DefaultThemes`, `photo.Extensions`), so they cannot drift from what
 `moraine` actually accepts.
 
-> **HEIC note**: HEIC photos are dated and organized, but **not** sent to the vision
-> model (no pure-Go HEIC decoding, due to the "no CGo" constraint). A HEIC-only group
-> falls back to the heuristic or to the fallback theme.
+> **RAW note**: RAW pixels can't be decoded in pure Go (the "no CGo" constraint), so RAW
+> photos are **classified** via their embedded JPEG preview, extracted with **exiftool**
+> (required). Small events (≤3 photos) send every eligible photo, previews included;
+> large events prefer JPEG/PNG and extract previews only to fill the sample.
 >
-> **RAW note**: RAW photos are dated, organized, and **classified** via their embedded
-> preview, extracted with **exiftool** (required). Small events (≤3 photos) send every
-> eligible photo including RAW; large events prefer JPEG/PNG and extract RAW previews only
-> to fill the sample. A RAW with no usable preview is still copied and dated, and falls
-> back to the heuristic or the fallback theme.
+> **HEIC note**: a HEIC embeds no JPEG preview — its derived images are HEVC, so exiftool
+> has nothing to copy out — and it is instead decoded by the first of **`sips`** (built
+> into macOS), **`heif-convert`**, **`ffmpeg`** or **`magick`** found on `PATH`. That
+> converter is **optional**: without one, HEIC photos are still scanned, dated, organized
+> and copied, and only their classification falls back. The run logs which converter it
+> picked, or names them all if it found none. **Behavior change (v0):** HEIC photos used
+> to be skipped by the model unconditionally, so HEIC events that previously landed on
+> the fallback theme are now themed by the model when a converter is present.
+>
+> **Model input note**: images are downscaled to 1024 px on their long side before being
+> sent (a vision model tiles its input, so full-resolution pixels only cost time and
+> bandwidth), a RAW or HEIC shot alongside its own JPEG is sent once rather than twice,
+> and each group's capture time, highest altitude and location are passed as text
+> alongside the pixels.
 >
 > **Companion (sidecar) note**: by default `sort` also copies, into a photo's destination
 > folder, any file in the photo's source directory whose name is either the photo's full
