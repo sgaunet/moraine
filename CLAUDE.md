@@ -193,7 +193,23 @@ task check-before-commit   # lint + test + snapshot
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #7** — classification coverage and cost (no `specs/` dir;
+Latest change: **issue #14** — dating & scanning correctness (issue-driven, no
+`specs/` dir). Capture dates now resolve in three tiers — EXIF → **a date in the file
+name** (`internal/exifmeta/filename.go`) → mtime — so a folder of downloads sharing
+one mtime no longer collapses into one event dated by download day (verified: three
+WhatsApp-named files went from one `2026-01-01/` folder to three correct 2023 ones).
+No usable date ⇒ `<theme>/unknown-date/`, not `0001/0001-01-01`. `cluster.Cluster`
+orders by **capture time then path** (and `readMeta` re-sorts by path after the worker
+pool), so which photo keeps the un-suffixed name is deterministic. `scan` excludes the
+destination by `os.SameFile` identity, not string equality — a dest named through a
+symlink used to be re-ingested — and its symlink rule is now documented and logged
+(a symlinked *directory* is never descended into; a symlinked *file* with a recognised
+extension is read like any other photo). `app.Summary` and the stdout contract gain
+`scanned`/`unreadable` (additive keys, first in the text line); unreadable
+*directories* stay a stderr warning, a deliberate scope call. Adds the repo's first
+`testdata/`: a 719-byte EXIF-dated JPEG pinning that EXIF still beats the filename.
+
+Previous change: **issue #7** — classification coverage and cost (no `specs/` dir;
 issue-driven like #5/#10/#11/#13). HEIC now reaches the vision model via a new
 `internal/heicpreview` converter, so HEIC events that used to land on the fallback
 theme are classified (verified on real iPhone files: `method=fallback` → `model-all`);
@@ -204,7 +220,7 @@ The issue's cache item is deliberately unticked — `--incremental` already cove
 re-run case. **The issue's premise for HEIC was wrong**: exiftool cannot extract a
 preview from an iPhone HEIC (all three tags return 0 bytes), hence the converter.
 
-Previous change: **issue #11** — run manifest + `undo` + `sort --incremental`.
+Earlier change: **issue #11** — run manifest + `undo` + `sort --incremental`.
 The destination gains a `.moraine/` bookkeeping directory by default (additive,
 hidden, never read as photos since the dest is excluded from the scan);
 `--dry-run` still writes nothing at all.

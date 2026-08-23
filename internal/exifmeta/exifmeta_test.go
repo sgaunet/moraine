@@ -136,3 +136,39 @@ func TestReadMissingFileErrors(t *testing.T) {
 		t.Fatal("expected error for a missing file")
 	}
 }
+
+// TestReadPrefersFilenameDateOverMtime pins the middle dating tier. A batch of
+// downloads shares one mtime, so dating them by mtime collapses them into a single
+// bogus event; their names still carry the day each was taken.
+func TestReadPrefersFilenameDateOverMtime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "IMG-20230815-WA0001.jpg")
+	// A download time months after the capture date in the name.
+	writeJPEG(t, path, time.Date(2026, 1, 1, 9, 30, 0, 0, time.UTC))
+
+	p, err := exifmeta.Read(path, photo.JPEG)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got, want := p.Taken.Format(wallClock), "2023-08-15 00:00:00"; got != want {
+		t.Errorf("Taken = %s; want the date in the file name, %s", got, want)
+	}
+}
+
+// TestReadPrefersEXIFDateOverFilenameDate pins the tier order at the top: the
+// filename heuristic is a fallback, never an override.
+//
+// The fixture is a 4x4 JPEG whose name says 2020-01-01 and whose EXIF says
+// 2023-08-15, generated once with:
+//
+//	exiftool -overwrite_original -DateTimeOriginal="2023:08:15 12:00:00" \
+//	  internal/exifmeta/testdata/IMG_20200101_000000.jpg
+func TestReadPrefersEXIFDateOverFilenameDate(t *testing.T) {
+	p, err := exifmeta.Read(filepath.Join("testdata", "IMG_20200101_000000.jpg"), photo.JPEG)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got, want := p.Taken.Format(wallClock), "2023-08-15 12:00:00"; got != want {
+		t.Errorf("Taken = %s; want the EXIF date %s, not the date in the file name", got, want)
+	}
+}

@@ -29,6 +29,21 @@ func newSortCmd(stdout, stderr io.Writer, output *string) *cobra.Command {
 capture time, assign a theme to each group, then COPY each photo to
 destination/<theme>/<year>/<year-month-day>/<name>. Originals are never modified.
 
+Dating (a date is always assigned):
+  1. the EXIF capture date;
+  2. otherwise a date encoded in the file name (IMG_20230815_120000.jpg,
+     IMG-20230815-WA0001.jpg, "Screenshot 2023-08-15 at 12.00.00.png") — this keeps
+     a batch of downloads, which share one modification time, from collapsing into a
+     single event dated by the day they were downloaded;
+  3. otherwise the file's modification time.
+A photo left with no usable date at all is filed under <theme>/unknown-date/.
+
+Scanning never follows a symlink as a directory: a symlinked folder under the source
+is not descended into (reported with --verbose), while a symlinked file whose name
+has a recognised extension is read and copied like any other photo. The destination
+is identified by the directory itself, so naming it through a symlink or a different
+letter case still excludes it from the scan.
+
 Classification (a theme is always assigned):
   1. if --sample > 0: the Ollama vision model picks among the themes (a group of
      <= 3 photos is sent whole, otherwise a sample of --sample photos);

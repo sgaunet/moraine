@@ -148,6 +148,29 @@ and `moraine <command> --help` for command-specific options and examples.
 Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 (e.g. `~/Photos/sorted/nature/2025/2025-08-12/IMG_1234.jpg`). Originals stay in place.
 
+### Dating: EXIF, then the file name, then mtime
+
+A date is always assigned, from the first tier that has one:
+
+1. the **EXIF** capture date;
+2. a date encoded in the **file name** — `IMG_20230815_120000.jpg`,
+   `IMG-20230815-WA0001.jpg`, `PXL_20230815_120000123.jpg`,
+   `Screenshot 2023-08-15 at 12.00.00.png`. A folder of downloads shares one
+   modification time, so without this tier a year of WhatsApp photos and screenshots
+   collapses into one giant "event" dated by the day they were downloaded. The
+   pattern is deliberately narrow — a 19xx/20xx year plus a month and a day — so a
+   frame counter (`IMG_1234.jpg`) is never mistaken for a date;
+3. the file's **modification time**.
+
+A photo left with no usable date at all goes to `<theme>/unknown-date/` rather than
+into a folder named after year 1.
+
+**Symlinks** are never followed as directories: a symlinked folder under the source
+is not descended into (reported at `--verbose`), while a symlinked file whose name
+has a recognised extension is read and copied like any other photo. The destination
+is excluded by directory *identity*, so naming it through a symlink or with different
+letter case still keeps already-sorted photos out of the scan.
+
 ### Output: data on stdout, logs on stderr
 
 **stdout carries the run result and nothing else**, so `moraine` is safe on either
@@ -157,9 +180,14 @@ side of a pipe. Logs, progress and errors always go to **stderr**.
 
 ```console
 $ ./moraine sort -d ~/Photos/sorted ~/Photos/2025 2>/dev/null
-groups=3 copied=412 skipped=8 renamed=1 errors=0 companions_copied=37 \
-companions_skipped=0 companions_renamed=0 companions_errors=0 dry_run=false interrupted=false
+scanned=423 unreadable=2 groups=3 copied=412 skipped=8 renamed=1 errors=0 \
+companions_copied=37 companions_skipped=0 companions_renamed=0 companions_errors=0 \
+dry_run=false interrupted=false
 ```
+
+`scanned` is how many images the scan found and `unreadable` how many of those the
+run could not read metadata from — a file counted there was never placed, so it
+appears in no other counter.
 
 `--output=json` prints one object with every per-file record plus the summary:
 
@@ -202,6 +230,13 @@ run did not finish what was asked.
 > run result described above. If you were capturing logs with `moraine sort … > log.txt`,
 > use `2> log.txt`. Per-photo lines also moved to `--verbose`. At v0 the stdout contract
 > may still change; it will be signalled here when it does.
+
+> **Migrating to filename dating** (v0): photos with no EXIF date whose name carries
+> one used to be dated by their modification time, and are now dated from the name.
+> A non-incremental re-run over an existing library therefore places them under their
+> correct date folder, leaving the old mtime-dated copy where it was. Nothing is lost
+> (moraine only ever copies); `moraine undo` unwinds the run that made the new copies,
+> and `moraine clean` removes sources already archived.
 
 > **Migrating from the pre-1.0 flag CLI**: the interface moved to subcommands with
 > GNU-style flags. `moraine <dir>` → `moraine sort <dir>`; `-dest` → `--dest` (or `-d`);
@@ -334,7 +369,7 @@ internal/
   app/      testable orchestration: scan → exif → cluster → classify → organize + logs
   photo/    domain types (Photo, Cluster, Format)
   scan/     recursive walk, format filter, EXCLUDES destRoot
-  exifmeta/ EXIF extraction (date, GPS, altitude) + mtime fallback
+  exifmeta/ EXIF extraction (date, GPS, altitude); date falls back to the file name, then mtime
   cluster/  temporal grouping (configurable gap)
   classify/ heuristic → Ollama (constrained themes) → fallback; Ollama HTTP client
   organize/ builds the <theme>/<year>/<date> path, hash-based identity, durable copy

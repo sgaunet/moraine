@@ -120,11 +120,20 @@ func (o *Organizer) Place(ctx context.Context, c photo.Cluster, theme string) []
 	return results
 }
 
+// unknownDateDir replaces the <year>/<year-month-day> pair for a cluster with no
+// usable capture time. Formatting a zero time would file those photos under
+// "0001/0001-01-01", a folder that looks like a real date and hides the fact that
+// the date is simply unknown. Four-digit years cannot collide with this name.
+const unknownDateDir = "unknown-date"
+
 // dir builds the destination directory for a theme and date, creating it unless
 // this is a dry run — a preview must not leave empty folders behind either. The
 // path is still resolved through safeJoin, so traversal is rejected in both modes.
 func (o *Organizer) dir(theme string, date time.Time) (string, error) {
 	sub := filepath.Join(theme, date.Format("2006"), date.Format("2006-01-02"))
+	if date.IsZero() {
+		sub = filepath.Join(theme, unknownDateDir)
+	}
 	dir, err := safeJoin(o.DestRoot, sub)
 	if err != nil {
 		return "", err

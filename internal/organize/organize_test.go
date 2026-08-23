@@ -500,3 +500,30 @@ func TestDryRunSkipsCompanions(t *testing.T) {
 		t.Errorf("dry run created %d entries; want none", n)
 	}
 }
+
+// TestPlaceUndatedClusterGoesToUnknownDate pins the bucket for photos whose capture
+// time could not be determined at all. Formatting a zero time would file them under
+// "0001/0001-01-01", which reads as a real date and hides that the date is unknown.
+func TestPlaceUndatedClusterGoesToUnknownDate(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	c := clusterOf(t, src, "IMG_1.jpg")
+	// A cluster whose photos carry no usable capture time.
+	c.Start, c.End = time.Time{}, time.Time{}
+	c.Photos[0].Taken = time.Time{}
+
+	results := organize.New(dest).Place(context.Background(), c, "nature")
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("results = %+v", results)
+	}
+	want := filepath.Join(dest, "nature", "unknown-date")
+	if got := filepath.Dir(results[0].Dest); got != want {
+		t.Fatalf("dir = %q; want %q", got, want)
+	}
+	if _, err := os.Stat(results[0].Dest); err != nil {
+		t.Fatalf("dest missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "nature", "0001")); err == nil {
+		t.Error("a zero date must not create a year-1 folder")
+	}
+}

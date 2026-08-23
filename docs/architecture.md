@@ -32,8 +32,14 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   holding every runtime parameter; `New`/`NewClean`/`NewUndo` (syntax/cross-field
   checks, no I/O) is split from `Validate` (filesystem checks, default-destination
   resolution).
-- **`internal/scan`** — walks the source tree, produces `[]Found`.
-- **`internal/exifmeta`** — reads EXIF, turns `Found` into `[]photo.Photo`.
+- **`internal/scan`** — walks the source tree, produces `[]Found`. The destination
+  root is excluded by directory identity (`os.SameFile`), not by string equality, so
+  a destination reached through a symlink or a case-variant is still skipped.
+  Symlinks are never traversed as directories; a symlinked file with a recognised
+  extension is listed like any other photo.
+- **`internal/exifmeta`** — reads EXIF, turns `Found` into `[]photo.Photo`. The
+  capture date resolves in three tiers: EXIF, then a date encoded in the file name
+  (`filename.go`), then the file mtime.
 - **`internal/photo`** — core domain types (`Photo`, `Cluster`).
 - **`internal/cluster`** — groups photos into events by capture-time `-gap`.
 - **`internal/classify`** — assigns a theme to each cluster via the
@@ -200,10 +206,13 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 
 ## Data Flow
 
-Source files → `scan.Found` → `photo.Photo` (with EXIF) →
-`[]photo.Cluster` (temporal) → theme label per cluster → copied to
-`dest/<theme>/<year>/<year-month-day>/`. Per-photo errors are collected into
-the run `Summary` rather than aborting the pipeline.
+Source files → `scan.Found` → `photo.Photo` (dated from EXIF, the file name, or
+mtime) → `[]photo.Cluster` (temporal, ordered by capture time then path so the result
+never depends on which EXIF worker finished first) → theme label per cluster → copied
+to `dest/<theme>/<year>/<year-month-day>/`, or `dest/<theme>/unknown-date/` when no
+date could be determined. Per-photo errors are collected into the run `Summary`
+rather than aborting the pipeline, as are the images the scan found but could not
+read (`Scanned`/`Unreadable`).
 
 For `undo`: read the most recent manifest under the destination → walk its records
 newest first → remove each file the run created that still matches its record → prune
