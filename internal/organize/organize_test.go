@@ -3,6 +3,7 @@ package organize_test
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -67,6 +68,18 @@ func TestUniqueName(t *testing.T) {
 	}
 }
 
+// tmpLeftovers lists the in-progress ".moraine-*.tmp" files left in dir. Every
+// copy must clean up after itself, so this is expected to be empty once a copy has
+// returned — whether it succeeded or failed.
+func tmpLeftovers(t *testing.T, dir string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, ".moraine-*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return matches
+}
+
 func TestCopyFile(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.bin")
@@ -83,9 +96,87 @@ func TestCopyFile(t *testing.T) {
 	if _, err := os.Stat(src); err != nil {
 		t.Fatalf("source must be preserved: %v", err)
 	}
-	// O_EXCL: refuse to overwrite an existing destination.
-	if err := organize.CopyFile(src, dst); err == nil {
+	if left := tmpLeftovers(t, dir); len(left) != 0 {
+		t.Fatalf("a successful copy left temporary files behind: %v", left)
+	}
+
+	// Refuse to overwrite an existing destination — and leave it untouched.
+	err := organize.CopyFile(src, dst)
+	if err == nil {
 		t.Fatal("expected error overwriting existing dst")
+	}
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("want an fs.ErrExist error, got %v", err)
+	}
+	if again, _ := os.ReadFile(dst); string(again) != "hello" {
+		t.Fatalf("existing destination was modified: %q", again)
+	}
+	if left := tmpLeftovers(t, dir); len(left) != 0 {
+		t.Fatalf("a refused copy left temporary files behind: %v", left)
+	}
+}
+
+// TestCopyFilePreservesModTime pins the mtime carry-over. It is load-bearing, not
+// cosmetic: exifmeta falls back to the file's modification time when a photo has no
+// readable EXIF date, so a copy stamped "now" would file such a photo under the day
+// it was copied instead of the day it was taken.
+func TestCopyFilePreservesModTime(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	dst := filepath.Join(dir, "dst.bin")
+	writeFile(t, src, "hello")
+
+	want := time.Date(2021, 8, 12, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(src, want, want); err != nil {
+		t.Fatal(err)
+	}
+	if err := organize.CopyFile(src, dst); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.ModTime(); !got.Equal(want) {
+		t.Fatalf("destination mtime = %s, want the source's %s", got, want)
+	}
+}
+
+// TestCopyFileFailureLeavesNothingBehind is the regression test for the durability
+// defect this replaced: a copy used to write straight to the destination, so an
+// interrupted one left a truncated file sitting on the canonical name. Every later run then read that
+// stub as "different content" and suffix-renamed the real photo, letting the stub
+// keep the good name forever. A failed copy must now leave the destination
+// directory exactly as it found it.
+func TestCopyFileFailureLeavesNothingBehind(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "dest")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A directory opens fine but fails to read, which fails the copy mid-flight.
+	src := filepath.Join(dir, "src-is-a-dir")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dest, "IMG_1.jpg")
+
+	if err := organize.CopyFile(src, dst); err == nil {
+		t.Fatal("expected the copy to fail")
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatalf("a failed copy must not create the destination (stat err = %v)", err)
+	}
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("a failed copy left files behind: %v", names)
 	}
 }
 

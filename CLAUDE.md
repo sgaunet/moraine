@@ -91,10 +91,14 @@ deleted. Repo: `github.com/sgaunet/moraine` (MIT).
 - **Typed config split** (`internal/config`): `New`/`NewClean` do pure syntax and
   cross-field checks, no I/O (usage errors → exit 2); the `Validate()` methods do
   filesystem checks and resolve the `<source>/_sorted` default (→ exit 1).
-- **Copy-only, no-clobber**: destinations opened `O_EXCL` then fsynced;
-  `internal/contenthash` (SHA-256) is the single content-identity source, shared by
-  `organize` (skip-identical) and `clean` (match originals); collisions get a
-  deterministic ` (N)` suffix; `safeJoin`/`ErrInvalidDestSubdir` block traversal.
+- **Copy-only, no-clobber, atomic**: `copyFile` stages a `.moraine-*.tmp` in the
+  destination dir, fsyncs it, copies the source mtime (`exifmeta` falls back to mtime),
+  publishes it with `os.Link` (`EEXIST` ⇒ never overwrites, never a truncated file on a
+  canonical name; `os.Rename` fallback for link-less filesystems), then fsyncs the
+  parent dir; `internal/contenthash` is the single content-identity source — `Hash`
+  (SHA-256 index) for `clean`, `Equal` (byte compare) for `organize`'s skip-identical;
+  collisions get a deterministic ` (N)` suffix; `safeJoin`/`ErrInvalidDestSubdir`
+  block traversal.
 - **Injected extension points**: `classify.Classifier` (nil = skip the model stage),
   `organize.Organizer.IsPrimary func(string) bool` (keeps `organize` decoupled from
   `scan`), `rawpreview.Extractor`. A failed Ollama preflight degrades to the
