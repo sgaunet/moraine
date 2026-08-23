@@ -32,7 +32,8 @@ and from disk I/O — no domain package imports Cobra.
 - **`internal/photo`** — core domain types (`Photo`, `Cluster`).
 - **`internal/cluster`** — groups photos into events by capture-time `-gap`.
 - **`internal/classify`** — assigns a theme to each cluster via the
-  `Classifier` interface (altitude heuristic → optional Ollama → fallback).
+  `Classifier` interface (optional Ollama → altitude heuristic → fallback; the
+  model decides first so it sees the actual scene).
   For model input it reads JPEG/PNG directly and obtains RAW previews through
   the `RawExtractor` interface.
 - **`internal/rawpreview`** — the only package that talks to **exiftool**:

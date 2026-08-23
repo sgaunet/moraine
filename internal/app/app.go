@@ -49,7 +49,11 @@ func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summ
 		return Summary{}, err
 	}
 
-	opts := classify.Options{Themes: cfg.Themes, Fallback: cfg.FallbackTheme}
+	opts := classify.Options{
+		Themes:            cfg.Themes,
+		Fallback:          cfg.FallbackTheme,
+		MountainAltitudeM: cfg.MountainAltitude,
+	}
 	opts.Classifier = buildClassifier(ctx, cfg, logger)
 	org := organize.New(cfg.DestRoot)
 	org.Sidecars = cfg.Sidecars
@@ -170,7 +174,7 @@ func buildClusters(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, map
 		return clusters, map[string]struct{}{filepath.Clean(cfg.Source): {}}, nil
 	}
 
-	found, err := scan.Scan(cfg.Source, cfg.DestRoot)
+	found, err := scan.Scan(cfg.Source, cfg.DestRoot, logger)
 	if err != nil {
 		return nil, nil, err
 	}

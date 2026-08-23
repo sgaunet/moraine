@@ -22,6 +22,10 @@ var logLevels = []string{"debug", "info", "warn", "error"}
 // are suggestions, so the list stays short rather than exhaustive.
 var gapDurations = []string{"30m", "1h", "6h", "12h", "24h"}
 
+// altitudeMetres are common --mountain-altitude values. The flag accepts any
+// positive number; these are suggestions, so the list stays short.
+var altitudeMetres = []string{"800", "1000", "1500", "2000", "2500"}
+
 // defaultThemes returns the built-in theme slugs, derived from
 // config.DefaultThemes so the completion candidates cannot drift from the flag
 // default.

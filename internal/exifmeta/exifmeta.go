@@ -2,6 +2,15 @@
 // files using the pure-Go imagemeta library. When EXIF is missing or
 // unreadable, the file's modification time is used as a fallback date so a
 // photo is never silently dropped (FR-002, Assumptions).
+//
+// Time frame invariant: every Photo.Taken this package returns is a UTC-naive
+// wall clock — the wall-clock fields the camera (or the filesystem) recorded,
+// stamped in time.UTC. Capture dates are wall clocks, not instants: EXIF
+// DateTimeOriginal is the camera's local reading, and the day a photo belongs to
+// is its wall-clock day. Normalising every source into one frame is what makes
+// the cluster gap arithmetic meaningful — mixing a UTC-naive EXIF date with a
+// zone-carrying mtime instant skews the difference by the UTC offset (up to
+// ±14h), which can split or merge events at the EXIF/mtime boundary.
 package exifmeta
 
 import (
@@ -16,7 +25,8 @@ import (
 
 // Read builds a photo.Photo for the file at path. A read error on the file
 // itself is fatal; a missing/unparsable EXIF block is not (date falls back to
-// mtime, GPS/altitude stay nil).
+// mtime, GPS/altitude stay nil). The returned Taken is always UTC-naive wall
+// clock (see the package doc).
 func Read(path string, format photo.Format) (photo.Photo, error) {
 	p := photo.Photo{
 		Path:   path,
@@ -38,7 +48,7 @@ func Read(path string, format photo.Format) (photo.Photo, error) {
 	ex, err := imagemeta.Decode(f)
 	if err != nil {
 		// No / unreadable EXIF — fall back to the file mtime.
-		p.Taken = mtime
+		p.Taken = wallClockUTC(mtime)
 		return p, nil
 	}
 
@@ -46,7 +56,7 @@ func Read(path string, format photo.Format) (photo.Photo, error) {
 	if taken.IsZero() {
 		taken = mtime
 	}
-	p.Taken = taken
+	p.Taken = wallClockUTC(taken)
 
 	if lat, lng := ex.GPS.Latitude(), ex.GPS.Longitude(); lat != 0 || lng != 0 {
 		p.GPS = &photo.LatLng{Lat: lat, Lng: lng}
@@ -54,4 +64,22 @@ func Read(path string, format photo.Format) (photo.Photo, error) {
 		p.Altitude = &alt
 	}
 	return p, nil
+}
+
+// wallClockUTC re-stamps t's own wall-clock fields in time.UTC, projecting every
+// source onto the single frame described in the package doc. A zero time stays
+// zero. It reads t in t's own location, so:
+//
+//   - an EXIF date without OffsetTimeOriginal is already UTC-naive: unchanged;
+//   - an EXIF date with an offset keeps the camera's local reading, so the photo
+//     lands on the day the shutter actually fired there;
+//   - an mtime (a real instant in time.Local) keeps the local reading it would
+//     have been formatted with anyway, so destination folders do not change.
+func wallClockUTC(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	y, mo, d := t.Date()
+	h, mi, s := t.Clock()
+	return time.Date(y, mo, d, h, mi, s, t.Nanosecond(), time.UTC)
 }

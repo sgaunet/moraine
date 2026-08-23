@@ -172,6 +172,38 @@ func TestPlaceCompanionsRenamesDifferentContent(t *testing.T) {
 	}
 }
 
+// TestPlaceCompanionsIdempotentAfterRename covers the duplication bug on the
+// companion path: companions route through placeOne, so a re-run must recognise
+// the sidecar bytes it already placed under a " (N)" name instead of copying
+// them again.
+func TestPlaceCompanionsIdempotentAfterRename(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	c := clusterOf(t, src, "IMG.jpg")
+	companion := filepath.Join(src, "IMG.xmp")
+	writeFile(t, companion, "version-A")
+
+	sidecarOrg(dest).Place(context.Background(), c, "nature") // IMG.xmp = version-A
+	writeFile(t, companion, "version-B-different")
+	sidecarOrg(dest).Place(context.Background(), c, "nature") // IMG (1).xmp = version-B
+
+	// version-B is already placed under the suffixed name: skip, never re-copy.
+	for run := 3; run <= 4; run++ {
+		_, comps := splitResults(sidecarOrg(dest).Place(context.Background(), c, "nature"))
+		if len(comps) != 1 || comps[0].Action != organize.ActionSkippedIdentical {
+			t.Fatalf("run %d: want one skipped-identical companion, got %+v", run, comps)
+		}
+		if got := filepath.Base(comps[0].Dest); got != "IMG (1).xmp" {
+			t.Fatalf("run %d: Dest = %q; want the already-placed 'IMG (1).xmp'", run, got)
+		}
+	}
+
+	destDir := filepath.Join(dest, "nature", "2025", "2025-08-12")
+	if _, err := os.Stat(filepath.Join(destDir, "IMG (2).xmp")); err == nil {
+		t.Fatal("re-runs duplicated the companion as 'IMG (2).xmp'")
+	}
+}
+
 func TestPlaceCompanionsLinkPreservingOnPhotoRename(t *testing.T) {
 	src := t.TempDir()
 	dest := t.TempDir()

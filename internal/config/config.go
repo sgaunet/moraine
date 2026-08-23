@@ -21,18 +21,19 @@ import (
 
 // Config holds all runtime parameters for a moraine organize run.
 type Config struct {
-	Source        string        // absolute path of the source (a directory → batch, a file → single photo)
-	SourceIsDir   bool          // resolved by Validate: directory (batch) vs regular file (single)
-	DestRoot      string        // absolute path of the copy destination root (excluded from scan)
-	Model         string        // Ollama vision model
-	Gap           time.Duration // max temporal gap within an event
-	Sample        int           // photos sampled per large group for the model (0 disables the model stage)
-	OllamaURL     string        // base URL of the local Ollama API
-	Themes        []string      // configured theme slugs (folder names)
-	FallbackTheme string        // theme slug used when none is confidently chosen
-	ExifToolPath  string        // exiftool executable (name on PATH or absolute path)
-	LogLevel      slog.Level    // logging verbosity
-	Sidecars      bool          // copy each photo's companion (sidecar) files alongside it
+	Source           string        // absolute path of the source (a directory → batch, a file → single photo)
+	SourceIsDir      bool          // resolved by Validate: directory (batch) vs regular file (single)
+	DestRoot         string        // absolute path of the copy destination root (excluded from scan)
+	Model            string        // Ollama vision model
+	Gap              time.Duration // max temporal gap within an event
+	Sample           int           // photos sampled per large group for the model (0 disables the model stage)
+	OllamaURL        string        // base URL of the local Ollama API
+	Themes           []string      // configured theme slugs (folder names)
+	FallbackTheme    string        // theme slug used when none is confidently chosen
+	ExifToolPath     string        // exiftool executable (name on PATH or absolute path)
+	LogLevel         slog.Level    // logging verbosity
+	Sidecars         bool          // copy each photo's companion (sidecar) files alongside it
+	MountainAltitude float64       // metres at/above which the heuristic labels a group "mountain" (always > 0)
 }
 
 // Default values surfaced in the CLI contract.
@@ -46,6 +47,9 @@ const (
 	DefaultLogLevel  = "info"
 	DefaultDestName  = "_sorted"
 	DefaultExifTool  = "exiftool"
+	// DefaultMountainAltitude matches the documented heuristic threshold
+	// (specs/002-auto-photo-organizer: altitude >= 1500m -> mountain).
+	DefaultMountainAltitude = 1500.0
 )
 
 // slugPattern constrains theme slugs to filesystem-safe lowercase tokens.
@@ -55,30 +59,34 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 // layer fills it from typed flags (Gap/Sample arrive typed; the rest as strings)
 // and a single positional Source, then calls New.
 type Options struct {
-	Source    string        // positional argument (directory or file)
-	Dest      string        // --dest (empty ⇒ resolved to <source>/_sorted in Validate)
-	Model     string        // --model
-	Gap       time.Duration // --gap
-	Sample    int           // --sample
-	OllamaURL string        // --ollama-url
-	Themes    string        // --themes (comma-separated slug list)
-	Fallback  string        // --fallback-theme
-	LogLevel  string        // --log-level (textual)
-	ExifTool  string        // --exiftool
-	Sidecars  bool          // --sidecars (copy companion files; default true at the flag)
+	Source           string        // positional argument (directory or file)
+	Dest             string        // --dest (empty ⇒ resolved to <source>/_sorted in Validate)
+	Model            string        // --model
+	Gap              time.Duration // --gap
+	Sample           int           // --sample
+	OllamaURL        string        // --ollama-url
+	Themes           string        // --themes (comma-separated slug list)
+	Fallback         string        // --fallback-theme
+	LogLevel         string        // --log-level (textual)
+	ExifTool         string        // --exiftool
+	Sidecars         bool          // --sidecars (copy companion files; default true at the flag)
+	MountainAltitude float64       // --mountain-altitude (metres; must be > 0)
 }
 
 // New builds a validated Config from already-parsed CLI Options. It performs
-// syntax / cross-field checks only (a non-positive gap, a negative sample, an
-// invalid theme/fallback/log-level, an unreadable path) — these map to a usage
-// error (exit 2) at the call site. Filesystem existence checks and the
-// destination-default resolution are deferred to Validate.
+// syntax / cross-field checks only (a non-positive gap or mountain altitude, a
+// negative sample, an invalid theme/fallback/log-level, an unreadable path) —
+// these map to a usage error (exit 2) at the call site. Filesystem existence
+// checks and the destination-default resolution are deferred to Validate.
 func New(o Options) (Config, error) {
 	if o.Gap <= 0 {
 		return Config{}, fmt.Errorf("--gap must be strictly positive (got %s)", o.Gap)
 	}
 	if o.Sample < 0 {
 		return Config{}, fmt.Errorf("--sample must be zero or positive (got %d)", o.Sample)
+	}
+	if o.MountainAltitude <= 0 {
+		return Config{}, fmt.Errorf("--mountain-altitude must be strictly positive (got %g)", o.MountainAltitude)
 	}
 
 	level, err := parseLevel(o.LogLevel)
@@ -110,17 +118,18 @@ func New(o Options) (Config, error) {
 	}
 
 	return Config{
-		Source:        source,
-		DestRoot:      destRoot,
-		Model:         o.Model,
-		Gap:           o.Gap,
-		Sample:        o.Sample,
-		OllamaURL:     o.OllamaURL,
-		Themes:        themeList,
-		FallbackTheme: strings.TrimSpace(o.Fallback),
-		ExifToolPath:  exiftool,
-		LogLevel:      level,
-		Sidecars:      o.Sidecars,
+		Source:           source,
+		DestRoot:         destRoot,
+		Model:            o.Model,
+		Gap:              o.Gap,
+		Sample:           o.Sample,
+		OllamaURL:        o.OllamaURL,
+		Themes:           themeList,
+		FallbackTheme:    strings.TrimSpace(o.Fallback),
+		ExifToolPath:     exiftool,
+		LogLevel:         level,
+		Sidecars:         o.Sidecars,
+		MountainAltitude: o.MountainAltitude,
 	}, nil
 }
 

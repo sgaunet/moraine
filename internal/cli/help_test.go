@@ -26,7 +26,10 @@ func TestSortHelpHasFlagsAndExample(t *testing.T) {
 	var out bytes.Buffer
 	cli.Execute("dev", []string{"sort", "--help"}, &out, io.Discard)
 	s := out.String()
-	for _, w := range []string{"Usage:", "Examples:", "moraine sort", "--dest", "--gap", "--sample", "--exiftool"} {
+	for _, w := range []string{
+		"Usage:", "Examples:", "moraine sort", "--dest", "--gap", "--sample", "--exiftool",
+		"--mountain-altitude", "1500",
+	} {
 		if !strings.Contains(s, w) {
 			t.Errorf("sort help missing %q; got:\n%s", w, s)
 		}

@@ -120,6 +120,15 @@ func (o *Organizer) placeOne(dir, src, name string) (string, Action, error) {
 		if identical {
 			return target, ActionSkippedIdentical, nil
 		}
+		// A previous run may already have placed this exact content under a
+		// " (N)" name. Without this check every re-run would re-collide on the
+		// original name and copy the same bytes again under the next free
+		// suffix, so re-runs would not be idempotent (SC-002/SC-008).
+		if placed, err := existingIdentical(dir, name, src); err != nil {
+			return target, "", fmt.Errorf("comparing collision variants of %q: %w", target, err)
+		} else if placed != "" {
+			return filepath.Join(dir, placed), ActionSkippedIdentical, nil
+		}
 		name = uniqueName(dir, name)
 		target = filepath.Join(dir, name)
 		if err := copyFile(src, target); err != nil {
