@@ -50,6 +50,10 @@ type OllamaClassifier struct {
 	// separate from RawPreview because the two formats need different programs:
 	// a HEIC written by an iPhone embeds no JPEG for exiftool to copy out.
 	HEICPreview PreviewExtractor
+	// Vote classifies a group larger than SmallGroupMax one photo at a time and
+	// lets the sampled photos vote (see vote.go). It costs one model call per
+	// sampled photo instead of one per group, so it is opt-in.
+	Vote bool
 
 	// warmOnce loads the model before the first classification and never again.
 	warmOnce sync.Once
@@ -188,7 +192,10 @@ type chatResponse struct {
 	Message chatMessage `json:"message"`
 }
 
-// schemaProperty is one property of a structured-output JSON Schema.
+// schemaProperty is one property of a structured-output JSON Schema. No numeric
+// bounds are sent: Ollama turns the schema into a decoding grammar, and support for
+// minimum/maximum there is uneven, so the range is stated in the prompt and enforced
+// in Go (see reportedConfidence).
 type schemaProperty struct {
 	Type string   `json:"type"`
 	Enum []string `json:"enum,omitempty"`
@@ -202,9 +209,12 @@ type responseSchema struct {
 	Required   []string                  `json:"required"`
 }
 
-// structuredAnswer is the shape the model is asked to return.
+// structuredAnswer is the shape the model is asked to return. Confidence is a
+// pointer so an answer that omits it is distinguishable from one that reports zero;
+// both end up as "not reported", but only the pointer says which happened.
 type structuredAnswer struct {
-	Category string `json:"category"`
+	Category   string   `json:"category"`
+	Confidence *float64 `json:"confidence"`
 }
 
 // slugNonWord matches runs of characters that are not slug-safe.
@@ -226,70 +236,39 @@ var themeHints = map[string]string{
 	"family":         "people, portraits, family gatherings, children, daily life",
 }
 
-// Classify returns one configured theme slug for the cluster, or an error on
-// failure (transport, timeout, or an answer outside the configured set).
-func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (string, error) {
-	// callCtx bounds this classification; ctx stays the run's own deadline, so the
-	// one-off model load below is not charged to a single cluster's budget.
-	callCtx := ctx
-	if o.Timeout > 0 {
-		var cancel context.CancelFunc
-		callCtx, cancel = context.WithTimeout(ctx, o.Timeout)
-		defer cancel()
-	}
+// Classify returns the model's verdict for the cluster, or an error on failure
+// (transport, timeout, or an answer outside the configured set). An abstention — the
+// model saying nothing fits — is a zero-Theme Verdict with a nil error.
+//
+// With Vote set, a group larger than SmallGroupMax is classified one photo at a time
+// and the sampled photos vote; see classifyByVote.
+func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (Verdict, error) {
+	// callCtx bounds the sampling and, without voting, the one model call; ctx stays
+	// the run's own deadline, so the one-off model load below is not charged to a
+	// single cluster's budget.
+	callCtx, cancel := o.bounded(ctx)
+	defer cancel()
 
 	images := o.sampleImages(callCtx, c)
 	if len(images) == 0 {
 		o.log().Warn("classification skipped: no usable image (a RAW or HEIC with no extractable preview is not sent to the model)",
 			"group_size", len(c.Photos))
-		return "", errors.New("no usable image to classify")
-	}
-	reqBody := chatRequest{
-		Model:     o.Model,
-		Stream:    false,
-		Format:    o.schema(),
-		Options:   chatOptions{Temperature: 0, Seed: ollamaSeed},
-		KeepAlive: o.KeepAlive,
-		Messages: []chatMessage{
-			{Role: "system", Content: o.systemPrompt()},
-			{Role: "user", Content: o.userPrompt(c), Images: images},
-		},
-	}
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("encoding ollama request: %w", err)
+		return Verdict{}, errors.New("no usable image to classify")
 	}
 
-	// Load the model before the timed request rather than inside it. Done here,
+	// Load the model before the timed requests rather than inside them. Done here,
 	// after the sampling, so a run that never finds a usable image — or never
 	// classifies at all, as an --incremental pass over an unchanged library — does
 	// not pull gigabytes into memory for nothing.
 	o.ensureLoaded(ctx)
 
-	o.log().Debug("contacting model", "url", o.BaseURL, "model", o.Model, "images", len(images))
-
-	var lastErr error
-	attempt := 0
-	for attempt < chatAttempts {
-		attempt++
-		theme, err := o.doChat(callCtx, payload)
-		if err == nil {
-			return theme, nil
-		}
-		lastErr = err
-		if !errors.Is(err, errTransient) {
-			break // deterministic answer (rejected category, bad request): asking again cannot help
-		}
-		if attempt == chatAttempts {
-			break
-		}
-		if !sleepCtx(callCtx, chatBackoff<<(attempt-1)) {
-			break // timeout/cancel: do not keep retrying
-		}
+	if o.Vote && len(c.Photos) > SmallGroupMax {
+		// Each vote is a model call of its own, so it gets its own Timeout budget
+		// rather than a share of this one: one slow photo must not spend the next
+		// photo's time. Hence ctx, not callCtx.
+		return o.classifyByVote(ctx, c, images)
 	}
-	o.log().Warn("model unavailable or answer rejected — fallback",
-		"url", o.BaseURL, "model", o.Model, "attempts", attempt, "err", lastErr)
-	return "", fmt.Errorf("ollama unavailable after %d attempt(s): %w", attempt, lastErr)
+	return o.ask(callCtx, c, images)
 }
 
 // chatAttempts and chatBackoff bound the retry of a transient failure. The delay
@@ -338,6 +317,68 @@ func (o *OllamaClassifier) Warmup(ctx context.Context) error {
 	return nil
 }
 
+// bounded derives a per-call context from ctx, applying Timeout when one is set.
+func (o *OllamaClassifier) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	if o.Timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, o.Timeout)
+}
+
+// ask sends one classification request for the given images and returns the model's
+// verdict, retrying only a transient failure. A deterministic failure (a rejected
+// category, a malformed request) is returned at once: decoding is pinned, so asking
+// the same question again cannot change the answer.
+func (o *OllamaClassifier) ask(ctx context.Context, c photo.Cluster, images []string) (Verdict, error) {
+	payload, err := o.payload(c, images)
+	if err != nil {
+		return Verdict{}, err
+	}
+	o.log().Debug("contacting model", "url", o.BaseURL, "model", o.Model, "images", len(images))
+
+	var lastErr error
+	attempt := 0
+	for attempt < chatAttempts {
+		attempt++
+		v, err := o.doChat(ctx, payload)
+		if err == nil {
+			return v, nil
+		}
+		lastErr = err
+		if !errors.Is(err, errTransient) {
+			break // deterministic answer (rejected category, bad request): asking again cannot help
+		}
+		if attempt == chatAttempts {
+			break
+		}
+		if !sleepCtx(ctx, chatBackoff<<(attempt-1)) {
+			break // timeout/cancel: do not keep retrying
+		}
+	}
+	o.log().Warn("model unavailable or answer rejected — fallback",
+		"url", o.BaseURL, "model", o.Model, "attempts", attempt, "err", lastErr)
+	return Verdict{}, fmt.Errorf("ollama unavailable after %d attempt(s): %w", attempt, lastErr)
+}
+
+// payload encodes one chat request carrying the given images.
+func (o *OllamaClassifier) payload(c photo.Cluster, images []string) ([]byte, error) {
+	payload, err := json.Marshal(chatRequest{
+		Model:     o.Model,
+		Stream:    false,
+		Format:    o.schema(),
+		Options:   chatOptions{Temperature: 0, Seed: ollamaSeed},
+		KeepAlive: o.KeepAlive,
+		Messages: []chatMessage{
+			{Role: "system", Content: o.systemPrompt()},
+			{Role: "user", Content: o.userPrompt(c), Images: images},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encoding ollama request: %w", err)
+	}
+	return payload, nil
+}
+
 // log returns the configured logger or the default, never nil.
 func (o *OllamaClassifier) log() *slog.Logger {
 	if o.Logger != nil {
@@ -351,8 +392,11 @@ func (o *OllamaClassifier) log() *slog.Logger {
 // in userPrompt. Naming JSON here is recommended alongside the Format schema.
 func (o *OllamaClassifier) systemPrompt() string {
 	return "You are an image classifier. You are shown several photos from the same event. " +
-		`Respond ONLY with a JSON object of the form {"category": "<one allowed category>"}. ` +
-		`The category MUST be exactly one value from the allowed list (or "none"), in lowercase, with no extra text.`
+		`Respond ONLY with a JSON object of the form ` +
+		`{"category": "<one allowed category>", "confidence": <number between 0 and 1>}. ` +
+		"The category MUST be exactly one value from the allowed list (or \"none\"), in lowercase, " +
+		"with no extra text. The confidence is how sure you are of that category: 1 means certain, " +
+		"0.5 means it is a guess between two categories."
 }
 
 // userPrompt carries the per-request data: the allowed categories (each with a
@@ -370,7 +414,8 @@ func (o *OllamaClassifier) userPrompt(c photo.Cluster) string {
 	}
 	fmt.Fprintf(&b, "- %s: the photos do not clearly fit any category above\n", abstainCategory)
 	b.WriteString(metadataBlock(c))
-	b.WriteString("Pick the single category that best describes these photos. ")
+	b.WriteString("Pick the single category that best describes these photos, ")
+	b.WriteString("and say how confident you are of it. ")
 	fmt.Fprintf(&b, "If none of them clearly fits, answer %q.", abstainCategory)
 	return b.String()
 }
@@ -465,9 +510,10 @@ func (o *OllamaClassifier) schema() responseSchema {
 	return responseSchema{
 		Type: "object",
 		Properties: map[string]schemaProperty{
-			"category": {Type: "string", Enum: enum},
+			"category":   {Type: "string", Enum: enum},
+			"confidence": {Type: "number"},
 		},
-		Required: []string{"category"},
+		Required: []string{"category", "confidence"},
 	}
 }
 
@@ -534,36 +580,50 @@ func (o *OllamaClassifier) ensureLoaded(ctx context.Context) {
 	})
 }
 
-func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (string, error) {
+func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (Verdict, error) {
 	body, err := o.postChat(ctx, payload)
 	if err != nil {
-		return "", err
+		return Verdict{}, err
 	}
 
 	var parsed chatResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("unreadable ollama response: %w", err)
+		return Verdict{}, fmt.Errorf("unreadable ollama response: %w", err)
 	}
-	// Prefer the structured {"category": "..."} answer; fall back to the raw
-	// content for models that ignore the Format schema. slugifyAnswer then
-	// reduces it to a slug we validate against the set (or the abstain sentinel).
-	answer := parsed.Message.Content
-	var structured structuredAnswer
-	if err := json.Unmarshal([]byte(answer), &structured); err == nil && structured.Category != "" {
-		answer = structured.Category
-	}
+	// Prefer the structured {"category": …, "confidence": …} answer; fall back to
+	// the raw content for models that ignore the Format schema (which then report no
+	// confidence at all). slugifyAnswer reduces the category to a slug we validate
+	// against the set (or the abstain sentinel).
 	raw := strings.TrimSpace(parsed.Message.Content)
+	answer, confidence := raw, 0.0
+	var structured structuredAnswer
+	if err := json.Unmarshal([]byte(raw), &structured); err == nil && structured.Category != "" {
+		answer = structured.Category
+		confidence = reportedConfidence(structured.Confidence)
+	}
 	slug := slugifyAnswer(answer)
-	o.log().Debug("model answer", "raw", raw, "slug", slug)
+	o.log().Debug("model answer", "raw", raw, "slug", slug, "confidence", confidence)
 	if slug == abstainCategory {
-		// Intentional abstention, not a failure: return "" with a nil error so
-		// the retry loop stops and Label uses the configured fallback theme.
-		return "", nil
+		// Intentional abstention, not a failure: return a zero Verdict with a nil
+		// error so the retry loop stops and Label uses the configured fallback.
+		return Verdict{}, nil
 	}
 	if !inSet(slug, o.Themes) {
-		return "", fmt.Errorf("category out of set: %q", raw)
+		return Verdict{}, fmt.Errorf("category out of set: %q", raw)
 	}
-	return slug, nil
+	return Verdict{Theme: slug, Confidence: confidence}, nil
+}
+
+// reportedConfidence normalises what the model said about its own certainty. A
+// missing value — and anything outside 0..1, such as a model that answers in
+// percent — counts as "not reported" rather than as a number to threshold on: the
+// schema carries no bounds Ollama can enforce, so this is the only guarantee there
+// is, and a silently rescaled guess would be worse than none.
+func reportedConfidence(c *float64) float64 {
+	if c == nil || *c <= 0 || *c > 1 {
+		return 0
+	}
+	return *c
 }
 
 // sampleImages selects the photos to send and returns their base64 content.

@@ -36,6 +36,13 @@ tasks:
     cmds:
       - go test -count=2 -race ./...
 
+  eval:
+    desc: "Measure classification accuracy against a labeled corpus (MORAINE_EVAL_CORPUS=<dir>)"
+    cmds:
+      # -count=1 so a measurement is never served from the test cache, and no -race:
+      # this talks to a real vision model and the run is dominated by its latency.
+      - go test -count=1 -timeout 60m -run TestClassifyAccuracy -v ./internal/classify/
+
   build:
     desc: "Build binary"
     cmds:

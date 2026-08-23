@@ -79,6 +79,7 @@ func Organize(
 		Themes:            cfg.Themes,
 		Fallback:          cfg.FallbackTheme,
 		MountainAltitudeM: cfg.MountainAltitude,
+		MinConfidence:     cfg.MinConfidence,
 	}
 	opts.Classifier = buildClassifier(ctx, cfg, logger)
 	org := organize.New(cfg.DestRoot)
@@ -143,6 +144,7 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 	}
 	oc := classify.NewOllama(cfg.OllamaURL, cfg.Model, cfg.Sample, cfg.Themes)
 	oc.Logger = logger
+	oc.Vote = cfg.Vote
 	ex := rawpreview.NewExtractor(cfg.ExifToolPath, rawPreviewTimeout)
 	ex.Logger = logger
 	oc.RawPreview = ex // a RAW is classified via its embedded JPEG preview

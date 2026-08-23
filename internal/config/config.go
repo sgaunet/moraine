@@ -38,6 +38,8 @@ type Config struct {
 	Incremental      bool          // trust the run manifest to skip sources already placed
 	Jobs             int           // EXIF worker count (0 ⇒ one per GOMAXPROCS)
 	MountainAltitude float64       // metres at/above which the heuristic labels a group "mountain" (always > 0)
+	MinConfidence    float64       // confidence a model verdict must reach to be used (0 ⇒ accept every verdict)
+	Vote             bool          // classify each sampled photo separately and let them vote
 }
 
 // Default values surfaced in the CLI contract.
@@ -95,12 +97,15 @@ type Options struct {
 	Incremental      bool          // --incremental (skip sources the manifest already records as placed)
 	Jobs             int           // --jobs (EXIF workers; 0 ⇒ one per GOMAXPROCS)
 	MountainAltitude float64       // --mountain-altitude (metres; must be > 0)
+	MinConfidence    float64       // --min-confidence (0..1; 0 disables the gate)
+	Vote             bool          // --vote (per-photo classification + majority vote)
 }
 
 // New builds a validated Config from already-parsed CLI Options. It performs
 // syntax / cross-field checks only (a non-positive gap or mountain altitude, a
-// negative sample or job count, an invalid theme/fallback/log-level/output, an
-// unreadable path) — these map to a usage error (exit 2) at the call site.
+// negative sample or job count, a confidence threshold outside 0..1, an invalid
+// theme/fallback/log-level/output, an unreadable path) — these map to a usage error
+// (exit 2) at the call site.
 // Filesystem existence checks and the destination-default resolution are deferred
 // to Validate.
 func New(o Options) (Config, error) {
@@ -115,6 +120,9 @@ func New(o Options) (Config, error) {
 	}
 	if o.Jobs < 0 {
 		return Config{}, fmt.Errorf("--jobs must be zero or positive (got %d)", o.Jobs)
+	}
+	if o.MinConfidence < 0 || o.MinConfidence > 1 {
+		return Config{}, fmt.Errorf("--min-confidence must be between 0 and 1 (got %g)", o.MinConfidence)
 	}
 
 	level, err := resolveLevel(o.LogLevel, o.Quiet, o.Verbose)
@@ -167,6 +175,8 @@ func New(o Options) (Config, error) {
 		Incremental:      o.Incremental,
 		Jobs:             o.Jobs,
 		MountainAltitude: o.MountainAltitude,
+		MinConfidence:    o.MinConfidence,
+		Vote:             o.Vote,
 	}, nil
 }
 

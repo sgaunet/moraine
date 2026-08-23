@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -86,8 +87,8 @@ func TestOllamaClassifyRAWUsesExtractor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if got != "mountain" {
-		t.Errorf("theme = %q; want mountain", got)
+	if got.Theme != "mountain" {
+		t.Errorf("theme = %q; want mountain", got.Theme)
 	}
 	if gotImages < 1 {
 		t.Errorf("model received %d images; want ≥1 (RAW preview must be sent)", gotImages)
@@ -302,8 +303,8 @@ func TestClassifyAbstainReturnsEmptyNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abstain must not error: %v", err)
 	}
-	if got != "" {
-		t.Errorf("theme = %q; want \"\" on abstain", got)
+	if got.Theme != "" {
+		t.Errorf("theme = %q; want \"\" on abstain", got.Theme)
 	}
 	if calls != 1 {
 		t.Errorf("server called %d times; want 1 (abstain is not retried)", calls)
@@ -544,8 +545,8 @@ func TestClassifyRetriesTransientThenSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if got != "mountain" {
-		t.Errorf("theme = %q; want mountain after one transient failure", got)
+	if got.Theme != "mountain" {
+		t.Errorf("theme = %q; want mountain after one transient failure", got.Theme)
 	}
 	if calls != 2 {
 		t.Errorf("server called %d times; want 2 (one failure, one retry)", calls)
@@ -678,4 +679,88 @@ func TestPromptOmitsAbsentMetadata(t *testing.T) {
 			t.Errorf("prompt mentions %q for a cluster with no such metadata\nprompt: %s", unwanted, prompt)
 		}
 	}
+}
+
+// TestOllamaSchemaRequestsConfidence pins that the structured-output schema asks for
+// a confidence alongside the category, and requires both. Without it in `required`
+// a model is free to omit the field, and the --min-confidence gate then has nothing
+// to act on.
+func TestOllamaSchemaRequestsConfidence(t *testing.T) {
+	srv := httptest.NewServer(chatOnly(t, func(w http.ResponseWriter, r *http.Request) {
+		var got struct {
+			Format struct {
+				Properties struct {
+					Confidence struct {
+						Type string `json:"type"`
+					} `json:"confidence"`
+				} `json:"properties"`
+				Required []string `json:"required"`
+			} `json:"format"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Format.Properties.Confidence.Type != "number" {
+			t.Errorf("confidence type = %q; want number", got.Format.Properties.Confidence.Type)
+		}
+		if !equalStrings(sortedCopy(got.Format.Required), []string{"category", "confidence"}) {
+			t.Errorf("required = %v; want both category and confidence", got.Format.Required)
+		}
+		_, _ = w.Write([]byte(`{"message":{"content":"{\"category\":\"nature\",\"confidence\":0.9}"}}`))
+	}))
+	defer srv.Close()
+
+	oc := classify.NewOllama(srv.URL, "m", 1, themes)
+	if _, err := oc.Classify(context.Background(), jpegCluster(t)); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+}
+
+// TestOllamaClassifyReadsConfidence pins how a reported confidence is normalised.
+// Anything outside 0..1 counts as "not reported" rather than being rescaled: the
+// schema carries no bounds Ollama can enforce, so guessing that 42 meant 0.42 would
+// silently mis-threshold a whole run.
+func TestOllamaClassifyReadsConfidence(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    float64
+	}{
+		{"reported", `{\"category\":\"mountain\",\"confidence\":0.83}`, 0.83},
+		{"certain", `{\"category\":\"mountain\",\"confidence\":1}`, 1},
+		{"absent", `{\"category\":\"mountain\"}`, 0},
+		{"zero is not reported", `{\"category\":\"mountain\",\"confidence\":0}`, 0},
+		{"above one is not reported", `{\"category\":\"mountain\",\"confidence\":1.5}`, 0},
+		{"percent is not rescaled", `{\"category\":\"mountain\",\"confidence\":83}`, 0},
+		{"negative is not reported", `{\"category\":\"mountain\",\"confidence\":-1}`, 0},
+		{"unstructured answer reports none", `mountain`, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(chatOnly(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"message":{"content":"` + tc.content + `"}}`))
+			}))
+			defer srv.Close()
+
+			oc := classify.NewOllama(srv.URL, "m", 1, themes)
+			got, err := oc.Classify(context.Background(), jpegCluster(t))
+			if err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			if got.Theme != "mountain" {
+				t.Fatalf("theme = %q; want mountain", got.Theme)
+			}
+			if got.Confidence != tc.want {
+				t.Errorf("confidence = %g; want %g", got.Confidence, tc.want)
+			}
+		})
+	}
+}
+
+// sortedCopy returns a sorted copy, so an assertion on a JSON array's contents does
+// not depend on the order the encoder happened to emit.
+func sortedCopy(in []string) []string {
+	out := append([]string{}, in...)
+	sort.Strings(out)
+	return out
 }

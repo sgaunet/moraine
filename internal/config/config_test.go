@@ -353,3 +353,55 @@ func TestNewJobsAndDryRun(t *testing.T) {
 		}
 	})
 }
+
+func TestNewMinConfidence(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   float64
+		wantErr bool
+	}{
+		{"default off", 0, false},
+		{"mid range", 0.7, false},
+		{"upper bound", 1, false},
+		{"negative rejected", -0.1, true},
+		{"above one rejected", 1.1, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := defOpts("/some/src")
+			o.MinConfidence = tc.value
+			cfg, err := config.New(o)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("--min-confidence %g must be a usage error", tc.value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.MinConfidence != tc.value {
+				t.Errorf("MinConfidence = %g; want %g", cfg.MinConfidence, tc.value)
+			}
+		})
+	}
+}
+
+func TestNewVoteIsOptIn(t *testing.T) {
+	cfg, err := config.New(defOpts("/some/src"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Vote {
+		t.Error("Vote must default to false: it costs one model call per sampled photo")
+	}
+	o := defOpts("/some/src")
+	o.Vote = true
+	cfg, err = config.New(o)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Vote {
+		t.Error("Vote = false; want the flag to carry through")
+	}
+}

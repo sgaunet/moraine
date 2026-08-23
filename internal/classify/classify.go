@@ -1,8 +1,8 @@
 // Package classify assigns a theme to a cluster using a three-stage pipeline:
 // an optional Ollama vision model (constrained to the configured theme set)
-// decides first; if it is unavailable, errors, or abstains, a pure-Go altitude
-// heuristic applies; otherwise a guaranteed fallback theme is used
-// (FR-004/FR-005).
+// decides first; if it is unavailable, errors, abstains, or is not confident
+// enough (Options.MinConfidence), a pure-Go altitude heuristic applies; otherwise
+// a guaranteed fallback theme is used (FR-004/FR-005).
 package classify
 
 import (
@@ -12,10 +12,38 @@ import (
 	"github.com/sgaunet/moraine/internal/photo"
 )
 
-// Classifier produces a theme slug for a cluster (implemented by Ollama or a
-// fake in tests). It returns "" with a nil error when it cannot decide.
+// Verdict is what a Classifier decided about a cluster.
+type Verdict struct {
+	// Theme is a configured theme slug, or "" when the classifier abstained — it
+	// looked and had no opinion, which is different from failing.
+	Theme string
+	// Confidence is how sure the classifier is, from 0 to 1. Zero means "not
+	// reported": a single model call carries whatever confidence the model puts in
+	// its answer, a vote carries the share of votes the winning theme took, and a
+	// model that answers neither leaves it at 0. A verdict with no reported
+	// confidence is never rejected by MinConfidence — see MeetsThreshold.
+	Confidence float64
+}
+
+// MeetsThreshold reports whether the verdict is confident enough to be used.
+//
+// A threshold of 0 — the default — accepts everything, which is what keeps the gate
+// off until a threshold has been chosen from measured data (see the eval harness)
+// rather than guessed at. A verdict carrying no confidence at all is also accepted:
+// a model that ignores the confidence field is not thereby telling us it was unsure,
+// and rejecting those would send an entire run to the fallback theme.
+func (v Verdict) MeetsThreshold(threshold float64) bool {
+	if threshold <= 0 || v.Confidence == 0 {
+		return true
+	}
+	return v.Confidence >= threshold
+}
+
+// Classifier produces a Verdict for a cluster (implemented by Ollama or a fake in
+// tests). An abstention is a zero-Theme Verdict with a nil error; a failure is an
+// error.
 type Classifier interface {
-	Classify(ctx context.Context, c photo.Cluster) (string, error)
+	Classify(ctx context.Context, c photo.Cluster) (Verdict, error)
 }
 
 // Method records how a cluster's theme was decided (for logging, SC-005).
@@ -47,24 +75,48 @@ type Options struct {
 	// heuristic labels a group "mountain". A non-positive value disables the
 	// altitude heuristic (see heuristic) rather than matching every photo.
 	MountainAltitudeM float64
+	// MinConfidence is the confidence a model verdict must reach to be used, from 0
+	// to 1. Zero (the default) accepts every verdict, so the gate costs nothing
+	// until a threshold has been measured. Below it, the cluster falls through to
+	// the heuristic and then the fallback theme, exactly as an abstention does.
+	MinConfidence float64
 }
 
 // Label returns a configured theme for the cluster and the Method used. The
 // model (if configured and reachable) decides first so it sees the actual scene;
-// only when it is unavailable, errors, or abstains does the altitude heuristic
-// apply, and the fallback theme last.
+// only when it is unavailable, errors, abstains, or answers below
+// opts.MinConfidence does the altitude heuristic apply, and the fallback theme
+// last.
 func Label(ctx context.Context, c photo.Cluster, opts Options) (string, Method) {
-	if opts.Classifier != nil {
-		if l, err := opts.Classifier.Classify(ctx, c); err == nil {
-			if l = strings.TrimSpace(l); l != "" && inSet(l, opts.Themes) {
-				return l, modelMethod(c)
-			}
-		}
+	if theme := modelTheme(ctx, c, opts); theme != "" {
+		return theme, modelMethod(c)
 	}
 	if l := heuristic(c, opts); l != "" {
 		return l, MethodHeuristic
 	}
 	return opts.Fallback, MethodFallback
+}
+
+// modelTheme returns the model's answer when there is a usable one, else "". Every
+// way of not having one — no classifier, a failure, an abstention, a theme outside
+// the configured set, or a confidence below MinConfidence — reads the same to the
+// caller, which is what lets Label treat them all as "ask the heuristic next".
+func modelTheme(ctx context.Context, c photo.Cluster, opts Options) string {
+	if opts.Classifier == nil {
+		return ""
+	}
+	v, err := opts.Classifier.Classify(ctx, c)
+	if err != nil {
+		return ""
+	}
+	theme := strings.TrimSpace(v.Theme)
+	if theme == "" || !inSet(theme, opts.Themes) {
+		return ""
+	}
+	if !v.MeetsThreshold(opts.MinConfidence) {
+		return ""
+	}
+	return theme
 }
 
 // modelMethod reports whether the model saw all photos (≤3) or a sample (>3).

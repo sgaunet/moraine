@@ -26,6 +26,10 @@ var outputFormats = []string{string(config.OutputText), string(config.OutputJSON
 // are suggestions, so the list stays short rather than exhaustive.
 var gapDurations = []string{"30m", "1h", "6h", "12h", "24h"}
 
+// confidenceThresholds are common --min-confidence values. 0 is offered first
+// because it is the default and the way to turn the gate back off.
+var confidenceThresholds = []string{"0", "0.5", "0.6", "0.7", "0.8", "0.9"}
+
 // altitudeMetres are common --mountain-altitude values. The flag accepts any
 // positive number; these are suggestions, so the list stays short.
 var altitudeMetres = []string{"800", "1000", "1500", "2000", "2500"}
