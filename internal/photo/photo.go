@@ -4,6 +4,7 @@ package photo
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -56,22 +57,47 @@ func (f Format) IsRAW() bool {
 	return f == RAW
 }
 
+// extFormats maps a lower-cased, dot-prefixed file extension to its Format. It
+// is the single source of truth for which files moraine recognises, shared by
+// FormatFromExt and Extensions.
+var extFormats = map[string]Format{
+	".jpg":  JPEG,
+	".jpeg": JPEG,
+	".png":  PNG,
+	".heic": HEIC,
+	".heif": HEIC,
+	".dng":  RAW,
+	".nef":  RAW,
+	".cr2":  RAW,
+	".cr3":  RAW,
+	".arw":  RAW,
+	".raf":  RAW,
+	".rw2":  RAW,
+	".orf":  RAW,
+	".pef":  RAW,
+	".srw":  RAW,
+}
+
 // FormatFromExt maps a file name (or extension) to a recognised Format.
 // Matching is case-insensitive. The boolean is false for unsupported files.
 func FormatFromExt(name string) (Format, bool) {
-	ext := strings.ToLower(filepath.Ext(name))
-	switch ext {
-	case ".jpg", ".jpeg":
-		return JPEG, true
-	case ".png":
-		return PNG, true
-	case ".heic", ".heif":
-		return HEIC, true
-	case ".dng", ".nef", ".cr2", ".cr3", ".arw", ".raf", ".rw2", ".orf", ".pef", ".srw":
-		return RAW, true
-	default:
+	format, ok := extFormats[strings.ToLower(filepath.Ext(name))]
+	if !ok {
 		return FormatUnknown, false
 	}
+	return format, true
+}
+
+// Extensions returns every recognised file extension, dot-prefixed, lower-cased
+// and sorted. Callers that need a stable list (shell completion) use this rather
+// than restating the set.
+func Extensions() []string {
+	exts := make([]string, 0, len(extFormats))
+	for ext := range extFormats {
+		exts = append(exts, ext)
+	}
+	sort.Strings(exts)
+	return exts
 }
 
 // LatLng is a geographic coordinate in decimal degrees.

@@ -62,15 +62,15 @@ archives:
   - # Archive naming: PROJECT_NAME_v1.0.0_linux_amd64
     name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}'
 
-    # Archive format (binary = no compression, faster)
-    # Options: tar.gz, zip, binary
-    formats: ["binary"]
-
-    # Alternative: Use compressed archives
-    # formats: ["tar.gz"]
-    # format_overrides:
-    #   - goos: windows
-    #     format: zip
+    # tar.gz, NOT "binary". The Homebrew cask generates shell completions by
+    # running the staged executable, and GoReleaser can only name it as the plain
+    # binary ("moraine"): generate_completions_from_executable.executable defaults
+    # to binaries[0] and is not templated, so it can never match the versioned
+    # filename a "binary" archive stages. Homebrew then falls back to a bare PATH
+    # lookup and `brew` resets PATH to /usr/bin:/bin:/usr/sbin:/sbin during
+    # install, so every shell fails with exit 127 -- and only warns. A tar.gz
+    # stages ./moraine at a fixed path, and carries LICENSE/README too.
+    formats: ["tar.gz"]
 
 # Generate checksums file for verification
 checksum:
@@ -90,50 +90,51 @@ changelog:
       # - '^style:'     # Code style changes
       # - '^refactor:'  # Refactoring
 
-# Homebrew formula publishing (macOS package manager)
-# OPTIONAL: Remove this section if not publishing to Homebrew
-brews:
-  - # Project homepage
-    # CUSTOMIZE: Replace with your GitHub/GitLab URL
+# Homebrew cask publishing (replaces the deprecated `brews:` block, which
+# GoReleaser removes in the v2.16 line; only casks can install completions)
+homebrew_casks:
+  - name: moraine
     homepage: 'https://github.com/sgaunet/moraine'
-
-    # Project description
     description: 'Organize photos into event folders by capture time and theme'
+    # NOTE: no `license:` here -- Homebrew's cask DSL has no license stanza, so
+    # GoReleaser never emits it. MIT is declared in LICENSE and go.mod's repo.
 
-    # Tap repository directory
-    directory: Formula
+    # Tap repository directory (casks live in Casks/, not Formula/)
+    directory: Casks
 
-    # Commit author for tap updates
-    # CUSTOMIZE: Replace with your GitHub info
+    # Command name users invoke, mapped from the versioned artifact name.
+    binaries:
+      - moraine
+
+    # exiftool is required at runtime to read RAW previews.
+    dependencies:
+      - formula: exiftool
+
+    # Runs `moraine completion <shell>` at install time and writes the scripts to
+    # Homebrew's bash/zsh/fish/pwsh completion directories. `cobra` is a
+    # first-class shell_parameter_format in Homebrew and implies all four shells.
+    generate_completions_from_executable:
+      shell_parameter_format: cobra
+
+    # Strip the quarantine xattr BEFORE artifacts install, so the completion
+    # generator can actually execute the staged binary (post-install is too late).
+    hooks:
+      pre:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", staged_path]
+          end
+
     commit_author:
       name: Sylvain
       email: 1552102+sgaunet@users.noreply.github.com
 
-    # Homebrew tap repository
-    # CUSTOMIZE: Create a homebrew-tools (or homebrew-tap) repository
     repository:
       owner: sgaunet
       name: homebrew-tools
-      # Required: Personal Access Token with 'repo' scope
-      # Set HOMEBREW_TAP_TOKEN in CI/CD secrets
+      # Personal Access Token with 'repo' scope; set HOMEBREW_TAP_TOKEN in CI.
       token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
-
-    # Download URL template for binaries
-    # CUSTOMIZE: Update URL to match your repository
-    url_template: 'https://github.com/sgaunet/moraine/releases/download/{{ .Tag }}/{{ .ArtifactName }}'
-
-    # Installation script
-    install: |
-      bin.install "{{ .ArtifactName }}" => "moraine"
-
-    # Test script (validates installation)
-    test: |
-      system "#{bin}/moraine", "--help"
-
-    # Optional: Add dependencies
-    # dependencies:
-    #   - name: git
-    #   - name: docker
 
 # Optional: Snapcraft (Linux Snap packages)
 # Uncomment to publish to Snap Store

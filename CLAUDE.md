@@ -82,7 +82,8 @@ deleted. Repo: `github.com/sgaunet/moraine` (MIT).
 ## Architecture
 
 - **Three layers**: `main.go` (injects the build version, nothing else) →
-  `internal/cli` (Cobra transport: `sort`/`clean`/`version`, flags, exit codes) →
+  `internal/cli` (Cobra transport: `sort`/`clean`/`version` + built-in
+  `completion`, flags, exit codes) →
   `internal/app` (single testable orchestrator) → domain packages. No domain
   package imports Cobra.
 - **Procedural pipeline** in `app.Organize`: `scan → exifmeta` (worker pool sized by
@@ -184,10 +185,20 @@ companions distinctly. `config.Config`/`Options` add `Sidecars bool` (default tr
 SHA-256 content identity, so copied companions are already removed (proven by new tests;
 never deletes an un-archived companion).
 
-Project constitution: `.specify/memory/constitution.md` (v1.0.0). Key constraints:
-pure Go / no CGo / single binary; business logic decoupled from transport & storage;
-test-first (`go test ./... -race`, happy + failure paths); typed centralized config;
-never overwrite/lose a file (content-hash identity); destructive actions require an
-explicit documented flag (`clean` dry-run default + `--delete`); CLI errors machine-readable
-& actionable with exit codes 0/1/2.
+Project constitution: `.specify/memory/constitution.md` (**v2.0.0**, 9 principles).
+Key constraints: single purpose, pipe-composable; reproducible static binary
+(`CGO_ENABLED=0` + `-trimpath`, pinned toolchain, goreleaser v2 with checksums +
+SBOM); thin cobra commands over domain packages that import no CLI package (no
+`utils`/`helpers`/`common`/`base`); concrete types over generics (3-implementation
+rule); errors wrapped with `%w`, `log/slog` only; **pipe-safe UX — data-only stdout
+with `--output=text|json`, logs/errors/progress on stderr, `NO_COLOR` + TTY
+respected, `--quiet`/`--verbose`, exit codes 0/1/2 documented in `--help` and
+tested**; destructive actions need explicit opt-in (`clean` dry-run + `--delete`);
+`context.Context` + `SIGINT`/`SIGTERM` cancellation, explicit I/O timeouts; TDD with
+black-box `package foo_test` + `export_test.go`, `go test -count=2 -race ./...`, plus
+one end-to-end test of the built binary; generators pinned as `tool` deps with output
+committed; stdlib first, new deps need author approval (MIT/BSD/Apache-2.0 only),
+`govulncheck ./...` in CI. Conflicts resolve in favour of composability and a stable
+stdout contract. **Known carried-over non-compliance is listed in that file's Sync
+Impact Report — read it before planning UX or release work.**
 <!-- SPECKIT END -->

@@ -66,5 +66,7 @@ Safety:
 	f.BoolVar(&opts.Delete, "delete", false, "actually delete matched originals (default: dry-run, deletes nothing)")
 	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
 
+	registerSharedCompletions(cmd)
+
 	return cmd
 }

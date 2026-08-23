@@ -39,10 +39,32 @@ or deleted. Every step is explained in the logs.
 - **exiftool** (required) — used to read RAW files. Install with
   `brew install exiftool` (macOS) or `sudo apt install libimage-exiftool-perl`
   (Debian/Ubuntu). moraine verifies it at startup and exits if it is missing; point at a
-  custom binary with `-exiftool <path>`.
+  custom binary with `--exiftool <path>`.
 - *(Optional)* [Ollama](https://ollama.com) running locally with a vision model:
   `ollama pull qwen3-vl:8b`. Without Ollama, classification falls back to the heuristic
   and then to the fallback theme.
+
+## Install
+
+### Homebrew (macOS and Linux)
+
+```bash
+brew install --cask sgaunet/tools/moraine
+```
+
+Note the `--cask`: moraine ships as a Homebrew **cask**, not a formula. The cask
+pulls in `exiftool` and installs **shell completions for bash, zsh, fish and
+powershell** automatically — see [Shell completion](#shell-completion).
+
+> **Upgrading from the old formula?** The formula is superseded by the cask. Run
+> `brew uninstall moraine` first, then the command above; a formula and a cask of
+> the same name cannot coexist, and Homebrew silently prefers the formula.
+
+### Direct download
+
+Grab a `.tar.gz` for your platform from the
+[releases page](https://github.com/sgaunet/moraine/releases) and put `moraine` on
+your `PATH`. Remember to install `exiftool` yourself (see Requirements).
 
 ## Build
 
@@ -57,7 +79,8 @@ CGO_ENABLED=0 go build -ldflags "-X main.version=$(git describe --tags --always)
 ## Usage
 
 `moraine` is organized into subcommands: **`sort`** (organize photos), **`clean`**
-(delete originals already copied), and **`version`**. Run `moraine --help` to list them
+(delete originals already copied), **`completion`** (shell completion scripts) and
+**`version`**. Run `moraine --help` to list them
 and `moraine <command> --help` for command-specific options and examples.
 
 ```bash
@@ -123,6 +146,33 @@ Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 
 `moraine version` (or `--version`) prints the version. **Exit codes**: `0` success,
 `1` runtime error, `2` usage error.
+
+### Shell completion
+
+Installed automatically by the Homebrew cask. For any other install, print the script
+and load it yourself:
+
+```bash
+moraine completion zsh  > "${fpath[1]}/_moraine"          # zsh (then restart the shell)
+moraine completion bash > /etc/bash_completion.d/moraine   # bash
+moraine completion fish > ~/.config/fish/completions/moraine.fish
+moraine completion powershell | Out-String | Invoke-Expression
+```
+
+Beyond command and flag names, completion knows the values:
+
+| Where | Completes to |
+|-------|--------------|
+| `<source>` argument | directories, and files with a recognised photo extension |
+| `--dest` | directories only |
+| `--log-level` | `debug` \| `info` \| `warn` \| `error` |
+| `--themes` | the built-in themes, comma-appending and skipping ones already listed |
+| `--fallback-theme` | the built-in themes plus `other` |
+| `--gap` | common durations (`30m`, `1h`, `6h`, `12h`, `24h`) |
+
+The candidate lists are derived from the same constants the parser uses
+(`config.DefaultThemes`, `photo.Extensions`), so they cannot drift from what
+`moraine` actually accepts.
 
 > **HEIC note**: HEIC photos are dated and organized, but **not** sent to the vision
 > model (no pure-Go HEIC decoding, due to the "no CGo" constraint). A HEIC-only group
