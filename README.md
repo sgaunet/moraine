@@ -282,13 +282,21 @@ side of a pipe. Logs, progress and errors always go to **stderr**.
 ```console
 $ ./moraine sort -d ~/Photos/sorted ~/Photos/2025 2>/dev/null
 scanned=423 unreadable=2 groups=3 copied=412 skipped=8 renamed=1 errors=0 \
+bytes_copied=1983472104 bytes_skipped=41203998 \
 companions_copied=37 companions_skipped=0 companions_renamed=0 companions_errors=0 \
+companions_bytes_copied=284419 companions_bytes_skipped=0 \
 dry_run=false interrupted=false
 ```
 
 `scanned` is how many images the scan found and `unreadable` how many of those the
 run could not read metadata from — a file counted there was never placed, so it
 appears in no other counter.
+
+`bytes_copied` is what was actually written (copies and renames alike; on a
+`--dry-run`, what *would* be written), and `bytes_skipped` is what an
+already-identical destination saved writing again — the "41 MB I did not re-copy"
+figure that a count of skipped files cannot give you, since 8 skipped files could be
+8 KB or 8 GB.
 
 `--output=json` prints one object with every per-file record plus the summary:
 
@@ -309,6 +317,23 @@ $ ./moraine clean -d ~/Photos/sorted ~/Photos/2025 --output=json 2>/dev/null | j
                "source_hashed": 41, "dest_hashed": 37 }
 }
 ```
+
+`--output=json` additionally carries an **`events`** array, one entry per event the
+run placed — its theme, how that theme was decided (`method`: `model-all`,
+`model-sample`, `heuristic`, `manifest` or `fallback`), its capture-time span, and
+what placing it cost. There is no text equivalent: the text rendering is one line per
+run by contract, so it can carry totals but not a breakdown.
+
+```console
+$ ./moraine sort -d ~/Photos/sorted ~/Photos/2025 --output=json 2>/dev/null \
+    | jq -c '.events[]'
+{"theme":"mountain","method":"model-sample","photos":184,"start":"2025-08-12",
+ "end":"2025-08-14","copied":184,"skipped":0,"renamed":0,"errors":0,
+ "bytes_copied":892341008,"bytes_skipped":0}
+```
+
+An event's counters cover every file it placed — photos **and** their companions — so
+`copied` can exceed `photos`. The run's own totals keep the two apart.
 
 Per-file *narration* is a log, not data: `sort` keeps it at `--verbose`, since a real
 library produces thousands of lines, while `clean` and `undo` report each decision at

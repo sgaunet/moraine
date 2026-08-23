@@ -27,7 +27,9 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   `photo.Extensions()` so the suggestions cannot drift from what the parsers
   accept. `output.go` owns the **stdout contract** (see decision 8): the JSON
   document types, the one-line text summary, and the `reporter` that collects
-  per-file records through the `app` orchestrators' `onResult` callback.
+  per-file records through the `app` orchestrators' `onResult` callback. Per-event
+  data does not come through that callback — it arrives whole on `app.Summary.Events`,
+  because there are only as many events as there are events.
 - **`internal/config`** — single immutable `Config`/`CleanConfig`/`UndoConfig` struct
   holding every runtime parameter; `New`/`NewClean`/`NewUndo` (syntax/cross-field
   checks, no I/O) is split from `Validate` (filesystem checks, default-destination
@@ -163,8 +165,13 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
    and special files are skipped); per-file failures are non-fatal and cancellation
    stops the run promptly.
 8. **Data on stdout, logs on stderr** — stdout carries the run result only, as one
-   `key=value` line (`--output=text`) or one JSON object with every per-file record plus
-   the summary (`--output=json`); logs, progress and errors go to stderr. Anything else
+   `key=value` line (`--output=text`) or one JSON object with every per-file record, an
+   `events` array and the summary (`--output=json`); logs, progress and errors go to
+   stderr. Summary keys are additive and read by name, so a new counter
+   (`bytes_copied`, `bytes_skipped`) may be inserted anywhere in the text line; only a
+   key's name or meaning is fixed. Per-event detail is JSON-only, since the text
+   rendering is one line per run — `Method` used to be logged once and discarded, so a
+   run could report totals but never which event produced them. Anything else
    written to stdout corrupts a downstream pipe, which is why Principle V makes this
    non-negotiable. The document types live in `internal/cli/output.go` rather than
    reusing `app.Summary` directly, so renaming an internal tally field cannot silently

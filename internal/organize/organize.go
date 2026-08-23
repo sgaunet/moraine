@@ -32,6 +32,11 @@ type Result struct {
 	Err         error     // non-nil on a placement failure (run continues)
 	IsCompanion bool      // true ⇒ this Result is a sidecar of a photo (see Of)
 	Of          string    // owning photo's source path, when IsCompanion
+	// Size is the file's size in bytes: what was written for a copy or a rename, and
+	// what did not have to be written again for a skip. It is 0 on a failure, and on
+	// a dry run it is what the run would have written. Together with Action it is
+	// what lets the summary report the volume copied and the volume spared.
+	Size int64
 }
 
 // Placement is what an earlier run recorded about a file it placed: where the copy
@@ -102,7 +107,7 @@ func (o *Organizer) Place(ctx context.Context, c photo.Cluster, theme string) []
 			continue
 		}
 		res := Result{Source: p.Path, Theme: theme, Date: date}
-		res.Dest, res.Action, res.Err = o.placeOne(dirOf, p.Path, p.Name)
+		res.Dest, res.Action, res.Size, res.Err = o.placeOne(dirOf, p.Path, p.Name)
 		results = append(results, res)
 
 		// Bring the photo's companion (sidecar) files along, for any successful
@@ -183,15 +188,20 @@ func (o *Organizer) claim(path string) {
 // placeOne copies a single source file into dir, resolving collisions: an
 // identical existing file is skipped, a same-named different file is suffixed. In
 // a dry run it resolves the same Action but writes nothing.
-func (o *Organizer) placeOne(dirOf func() (string, error), src, name string) (string, Action, error) {
-	if dest, ok := o.alreadyPlaced(src); ok {
-		return dest, ActionSkippedIdentical, nil
+//
+// It also reports the file's size: the bytes written for a copy or a rename, and the
+// bytes a skip did not have to write again. A copy takes the count straight from
+// io.Copy; the skip paths cost one extra stat, which is negligible beside the
+// content comparison they already do.
+func (o *Organizer) placeOne(dirOf func() (string, error), src, name string) (string, Action, int64, error) {
+	if dest, size, ok := o.alreadyPlaced(src); ok {
+		return dest, ActionSkippedIdentical, size, nil
 	}
 	// Resolved here, not by the caller: a file the manifest already accounts for
 	// needs no destination directory, so an incremental re-run creates none.
 	dir, err := dirOf()
 	if err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
 	target := filepath.Join(dir, name)
 	if o.taken(target) {
@@ -200,62 +210,69 @@ func (o *Organizer) placeOne(dirOf func() (string, error), src, name string) (st
 		if exists(target) {
 			identical, err := sameContent(src, target)
 			if err != nil {
-				return target, "", fmt.Errorf("comparing %q: %w", target, err)
+				return target, "", 0, fmt.Errorf("comparing %q: %w", target, err)
 			}
 			if identical {
-				return target, ActionSkippedIdentical, nil
+				return target, ActionSkippedIdentical, fileSize(target), nil
 			}
 			// A previous run may already have placed this exact content under a
 			// " (N)" name. Without this check every re-run would re-collide on the
 			// original name and copy the same bytes again under the next free
 			// suffix, so re-runs would not be idempotent (SC-002/SC-008).
 			if placed, err := existingIdentical(dir, name, src); err != nil {
-				return target, "", fmt.Errorf("comparing collision variants of %q: %w", target, err)
+				return target, "", 0, fmt.Errorf("comparing collision variants of %q: %w", target, err)
 			} else if placed != "" {
-				return filepath.Join(dir, placed), ActionSkippedIdentical, nil
+				dest := filepath.Join(dir, placed)
+				return dest, ActionSkippedIdentical, fileSize(dest), nil
 			}
 		}
 		name = uniqueName(dir, name, o.taken)
 		target = filepath.Join(dir, name)
-		if err := o.copy(src, target); err != nil {
-			return target, "", err
+		n, err := o.copy(src, target)
+		if err != nil {
+			return target, "", 0, err
 		}
-		return target, ActionRenamed, nil
+		return target, ActionRenamed, n, nil
 	}
-	if err := o.copy(src, target); err != nil {
-		return target, "", err
+	n, err := o.copy(src, target)
+	if err != nil {
+		return target, "", 0, err
 	}
-	return target, ActionCopied, nil
+	return target, ActionCopied, n, nil
 }
 
 // copy performs the placement, or merely reserves the destination name when this is
 // a dry run. Routing every write through here is what makes "a dry run writes
 // nothing" a property of one line rather than a rule each caller must remember.
-func (o *Organizer) copy(src, dst string) error {
+func (o *Organizer) copy(src, dst string) (int64, error) {
 	o.claim(dst)
 	if o.DryRun {
-		return nil
+		// A preview writes nothing, so there is no io.Copy count to report; the
+		// source's own size is what the real run would have written.
+		return fileSize(src), nil
 	}
 	return copyFile(src, dst)
 }
 
-// alreadyPlaced reports the destination an earlier run recorded for src, when that
-// record can still be trusted: the source must be unchanged since it was placed
+// alreadyPlaced reports the destination and size an earlier run recorded for src,
+// when that record can still be trusted: the source must be unchanged since it was placed
 // and its copy must still be on disk unchanged. Either end failing the check falls
 // through to the normal path, so a stale or partly-undone manifest can only ever
 // cost the skip — never correctness.
-func (o *Organizer) alreadyPlaced(src string) (string, bool) {
+func (o *Organizer) alreadyPlaced(src string) (string, int64, bool) {
 	if o.Placed == nil {
-		return "", false
+		return "", 0, false
 	}
 	rec, ok := o.Placed(src)
 	if !ok || rec.Dest == "" {
-		return "", false
+		return "", 0, false
 	}
 	if !fingerprintMatches(src, rec) || !fingerprintMatches(rec.Dest, rec) {
-		return "", false
+		return "", 0, false
 	}
-	return rec.Dest, true
+	// The recorded size is the file's size, already verified against both ends by
+	// fingerprintMatches, so the skipped volume costs nothing extra to report.
+	return rec.Dest, rec.Size, true
 }
 
 // fingerprintMatches reports whether the regular file at path still has the size

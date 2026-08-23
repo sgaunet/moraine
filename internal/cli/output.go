@@ -36,7 +36,25 @@ type sortReport struct {
 	DryRun      bool         `json:"dry_run"`
 	Interrupted bool         `json:"interrupted"`
 	Results     []sortRecord `json:"results"`
+	Events      []sortEvent  `json:"events"`
 	Summary     sortSummary  `json:"summary"`
+}
+
+// sortEvent is one placed event. It exists only in the JSON rendering: the text
+// rendering is one line per run by contract, so it can carry totals but not a
+// per-event breakdown.
+type sortEvent struct {
+	Theme        string `json:"theme,omitempty"`
+	Method       string `json:"method,omitempty"`
+	Photos       int    `json:"photos"`
+	Start        string `json:"start,omitempty"`
+	End          string `json:"end,omitempty"`
+	Copied       int    `json:"copied"`
+	Skipped      int    `json:"skipped"`
+	Renamed      int    `json:"renamed"`
+	Errors       int    `json:"errors"`
+	BytesCopied  int64  `json:"bytes_copied"`
+	BytesSkipped int64  `json:"bytes_skipped"`
 }
 
 // sortRecord is one placed (or would-be-placed) file: a photo, or one of its
@@ -54,17 +72,21 @@ type sortRecord struct {
 
 // sortSummary is the tally of a `sort` run.
 type sortSummary struct {
-	Scanned           int `json:"scanned"`
-	Unreadable        int `json:"unreadable"`
-	Groups            int `json:"groups"`
-	Copied            int `json:"copied"`
-	Skipped           int `json:"skipped"`
-	Renamed           int `json:"renamed"`
-	Errors            int `json:"errors"`
-	CompanionsCopied  int `json:"companions_copied"`
-	CompanionsSkipped int `json:"companions_skipped"`
-	CompanionsRenamed int `json:"companions_renamed"`
-	CompanionsErrors  int `json:"companions_errors"`
+	Scanned                int   `json:"scanned"`
+	Unreadable             int   `json:"unreadable"`
+	Groups                 int   `json:"groups"`
+	Copied                 int   `json:"copied"`
+	Skipped                int   `json:"skipped"`
+	Renamed                int   `json:"renamed"`
+	Errors                 int   `json:"errors"`
+	BytesCopied            int64 `json:"bytes_copied"`
+	BytesSkipped           int64 `json:"bytes_skipped"`
+	CompanionsCopied       int   `json:"companions_copied"`
+	CompanionsSkipped      int   `json:"companions_skipped"`
+	CompanionsRenamed      int   `json:"companions_renamed"`
+	CompanionsErrors       int   `json:"companions_errors"`
+	CompanionsBytesCopied  int64 `json:"companions_bytes_copied"`
+	CompanionsBytesSkipped int64 `json:"companions_bytes_skipped"`
 }
 
 // cleanReport is the stdout document of a `clean` run.
@@ -130,6 +152,7 @@ type reporter struct {
 	format config.OutputFormat
 	stdout io.Writer
 	sort   []sortRecord
+	events []sortEvent
 	clean  []cleanRecord
 	undo   []undoRecord
 }
@@ -140,6 +163,7 @@ func newReporter(format config.OutputFormat, stdout io.Writer) *reporter {
 		// Start non-nil: an empty run must marshal "results":[] and not "results":null,
 		// which would break a consumer that iterates the array.
 		r.sort, r.clean, r.undo = []sortRecord{}, []cleanRecord{}, []undoRecord{}
+		r.events = []sortEvent{}
 	}
 	return r
 }
@@ -169,6 +193,28 @@ func (r *reporter) addSort(res organize.Result) {
 	r.sort = append(r.sort, rec)
 }
 
+// eventsOf converts the run's events into their wire form. Unlike the per-file
+// records, events are not streamed through a callback: they arrive whole on the
+// Summary, because there are only as many of them as there are events.
+func (r *reporter) eventsOf(sum app.Summary) []sortEvent {
+	out := r.events
+	for _, e := range sum.Events {
+		ev := sortEvent{
+			Theme: e.Theme, Method: e.Method, Photos: e.Photos,
+			Copied: e.Copied, Skipped: e.Skipped, Renamed: e.Renamed, Errors: e.Errors,
+			BytesCopied: e.BytesCopied, BytesSkipped: e.BytesSkipped,
+		}
+		if !e.Start.IsZero() {
+			ev.Start = e.Start.Format(dateFormat)
+		}
+		if !e.End.IsZero() {
+			ev.End = e.End.Format(dateFormat)
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
 // addClean records one clean decision.
 func (r *reporter) addClean(res clean.Result) {
 	if !r.json() {
@@ -196,31 +242,39 @@ func (r *reporter) addUndo(res undo.Result) {
 // emitSort writes the result of a `sort` run to stdout.
 func (r *reporter) emitSort(cfg config.Config, sum app.Summary, interrupted bool) error {
 	s := sortSummary{
-		Scanned:           sum.Scanned,
-		Unreadable:        sum.Unreadable,
-		Groups:            sum.Groups,
-		Copied:            sum.Copied,
-		Skipped:           sum.Skipped,
-		Renamed:           sum.Renamed,
-		Errors:            sum.Errors,
-		CompanionsCopied:  sum.CompanionsCopied,
-		CompanionsSkipped: sum.CompanionsSkipped,
-		CompanionsRenamed: sum.CompanionsRenamed,
-		CompanionsErrors:  sum.CompanionsErrors,
+		Scanned:                sum.Scanned,
+		Unreadable:             sum.Unreadable,
+		Groups:                 sum.Groups,
+		Copied:                 sum.Copied,
+		Skipped:                sum.Skipped,
+		Renamed:                sum.Renamed,
+		Errors:                 sum.Errors,
+		BytesCopied:            sum.BytesCopied,
+		BytesSkipped:           sum.BytesSkipped,
+		CompanionsCopied:       sum.CompanionsCopied,
+		CompanionsSkipped:      sum.CompanionsSkipped,
+		CompanionsRenamed:      sum.CompanionsRenamed,
+		CompanionsErrors:       sum.CompanionsErrors,
+		CompanionsBytesCopied:  sum.CompanionsBytesCopied,
+		CompanionsBytesSkipped: sum.CompanionsBytesSkipped,
 	}
 	if r.json() {
 		return r.writeJSON(sortReport{
 			Command: "sort", Source: cfg.Source, Dest: cfg.DestRoot,
 			DryRun: cfg.DryRun, Interrupted: interrupted,
-			Results: r.sort, Summary: s,
+			Results: r.sort, Events: r.eventsOf(sum), Summary: s,
 		})
 	}
 	_, err := fmt.Fprintf(r.stdout,
 		"scanned=%d unreadable=%d groups=%d copied=%d skipped=%d renamed=%d errors=%d"+
+			" bytes_copied=%d bytes_skipped=%d"+
 			" companions_copied=%d companions_skipped=%d companions_renamed=%d companions_errors=%d"+
+			" companions_bytes_copied=%d companions_bytes_skipped=%d"+
 			" dry_run=%t interrupted=%t\n",
 		s.Scanned, s.Unreadable, s.Groups, s.Copied, s.Skipped, s.Renamed, s.Errors,
+		s.BytesCopied, s.BytesSkipped,
 		s.CompanionsCopied, s.CompanionsSkipped, s.CompanionsRenamed, s.CompanionsErrors,
+		s.CompanionsBytesCopied, s.CompanionsBytesSkipped,
 		cfg.DryRun, interrupted)
 	if err != nil {
 		return fmt.Errorf("writing summary: %w", err)

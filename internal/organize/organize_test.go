@@ -87,8 +87,12 @@ func TestCopyFile(t *testing.T) {
 	dst := filepath.Join(dir, "dst.bin")
 	writeFile(t, src, "hello")
 
-	if err := organize.CopyFile(src, dst); err != nil {
+	n, err := organize.CopyFile(src, dst)
+	if err != nil {
 		t.Fatalf("copyFile: %v", err)
+	}
+	if n != int64(len("hello")) {
+		t.Fatalf("copied bytes: want %d, got %d", len("hello"), n)
 	}
 	got, _ := os.ReadFile(dst)
 	if string(got) != "hello" {
@@ -102,7 +106,7 @@ func TestCopyFile(t *testing.T) {
 	}
 
 	// Refuse to overwrite an existing destination — and leave it untouched.
-	err := organize.CopyFile(src, dst)
+	_, err = organize.CopyFile(src, dst)
 	if err == nil {
 		t.Fatal("expected error overwriting existing dst")
 	}
@@ -131,7 +135,7 @@ func TestCopyFilePreservesModTime(t *testing.T) {
 	if err := os.Chtimes(src, want, want); err != nil {
 		t.Fatal(err)
 	}
-	if err := organize.CopyFile(src, dst); err != nil {
+	if _, err := organize.CopyFile(src, dst); err != nil {
 		t.Fatalf("copyFile: %v", err)
 	}
 	info, err := os.Stat(dst)
@@ -162,7 +166,7 @@ func TestCopyFileFailureLeavesNothingBehind(t *testing.T) {
 	}
 	dst := filepath.Join(dest, "IMG_1.jpg")
 
-	if err := organize.CopyFile(src, dst); err == nil {
+	if _, err := organize.CopyFile(src, dst); err == nil {
 		t.Fatal("expected the copy to fail")
 	}
 	if _, err := os.Stat(dst); !os.IsNotExist(err) {

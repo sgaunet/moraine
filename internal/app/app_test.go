@@ -12,12 +12,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sgaunet/moraine/internal/app"
+	"github.com/sgaunet/moraine/internal/classify"
 	"github.com/sgaunet/moraine/internal/config"
 	"github.com/sgaunet/moraine/internal/exiftooltest"
 	"github.com/sgaunet/moraine/internal/organize"
@@ -610,7 +612,9 @@ func TestOrganizeJobs(t *testing.T) {
 	}
 
 	auto, serial := run(t, 0), run(t, 1)
-	if auto != serial {
+	// DeepEqual, not ==: Summary now carries a per-event slice. That makes this a
+	// stronger determinism check than before — the events themselves must match too.
+	if !reflect.DeepEqual(auto, serial) {
 		t.Errorf("worker count changed the outcome:\n jobs=0 %+v\n jobs=1 %+v", auto, serial)
 	}
 	if auto.Copied != 4 {
@@ -785,5 +789,89 @@ func TestOrganizeIncrementalUnderAChangedTemplateKeepsRecordedPaths(t *testing.T
 	newLayout := filepath.Join(dest, modTime.Format("2006"), modTime.Format("01"), "other")
 	if _, err := os.Stat(newLayout); err == nil {
 		t.Errorf("the new layout's folder %q was created for a fully skipped run", newLayout)
+	}
+}
+
+// TestOrganizeDescribesEachEvent covers what the per-event report exists for: which
+// events a run produced, how each theme was decided, and what each event cost. Until
+// now the method was written to one log line and discarded.
+func TestOrganizeDescribesEachEvent(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	makePNG(t, filepath.Join(src, "a.png"))
+	makePNG(t, filepath.Join(src, "b.png"))
+	// Push b.png well past the gap so it forms its own event.
+	later := modTime.Add(48 * time.Hour)
+	if err := os.Chtimes(filepath.Join(src, "b.png"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	cfg := baseCfg(src, dest, true)
+
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	if err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+	if len(sum.Events) != sum.Groups || sum.Groups != 2 {
+		t.Fatalf("events = %d, groups = %d; want 2 of each", len(sum.Events), sum.Groups)
+	}
+
+	var copied int
+	var volume int64
+	for _, ev := range sum.Events {
+		if ev.Theme == "" || ev.Method == "" || ev.Photos != 1 {
+			t.Errorf("incomplete event: %+v", ev)
+		}
+		if ev.Start.IsZero() || ev.End.Before(ev.Start) {
+			t.Errorf("event span is not coherent: %+v", ev)
+		}
+		if ev.BytesCopied <= 0 {
+			t.Errorf("event reported no copied volume: %+v", ev)
+		}
+		copied += ev.Copied
+		volume += ev.BytesCopied
+	}
+	// The events must account for exactly what the run's own totals say.
+	if copied != sum.Copied {
+		t.Errorf("events copied %d files, run says %d", copied, sum.Copied)
+	}
+	if volume != sum.BytesCopied {
+		t.Errorf("events copied %d bytes, run says %d", volume, sum.BytesCopied)
+	}
+	// Events come out in placement order, which is capture-time order.
+	if sum.Events[0].Start.After(sum.Events[1].Start) {
+		t.Error("events are not in capture-time order")
+	}
+}
+
+// An incremental re-run reuses the theme the manifest recorded, so its events must
+// say so: method=manifest is the evidence that no model call was made.
+func TestOrganizeEventsReportTheManifestMethodOnAReRun(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	makePNG(t, filepath.Join(src, "a.png"))
+	cfg := baseCfg(src, dest, true)
+
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	inc := baseCfg(src, dest, true)
+	inc.Incremental = true
+	sum, err := app.Organize(context.Background(), inc, quietLogger(), nil)
+	if err != nil {
+		t.Fatalf("incremental run: %v", err)
+	}
+	if len(sum.Events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(sum.Events))
+	}
+	ev := sum.Events[0]
+	if ev.Method != string(classify.MethodManifest) {
+		t.Errorf("method = %q, want %q", ev.Method, classify.MethodManifest)
+	}
+	// Nothing was rewritten, and the spared volume is reported instead.
+	if ev.Copied != 0 || ev.Skipped != 1 {
+		t.Errorf("event copied/skipped = %d/%d; want 0/1", ev.Copied, ev.Skipped)
+	}
+	if ev.BytesCopied != 0 || ev.BytesSkipped <= 0 {
+		t.Errorf("event volume copied/skipped = %d/%d; want 0/>0", ev.BytesCopied, ev.BytesSkipped)
 	}
 }

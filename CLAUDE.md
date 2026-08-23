@@ -89,8 +89,11 @@ defaulting to that). Originals are never modified or deleted. Repo: `github.com/
   domain packages. No domain package imports Cobra.
 - **Stdout is data, stderr is logs** (Principle V): stdout carries the run result
   only — one `key=value` line (`--output=text`) or one JSON object with every
-  per-file record plus the summary (`--output=json`); `internal/cli/output.go` owns
-  those types and treats them as a public API. `sort` logs per-file lines at debug,
+  per-file record, an `events` array (JSON only — the text line is one line per run)
+  and the summary (`--output=json`); `internal/cli/output.go` owns those types and
+  treats them as a public API. Summary keys are additive and read by name, never by
+  position. `bytes_copied`/`bytes_skipped` (and companion equivalents) report the
+  volume written and the volume an identical destination spared. `sort` logs per-file lines at debug,
   `clean` at info (its dry-run plan is the product). An interrupt prints the partial
   summary, then `interrupted: copied N, …` with exit 1; photos never reached are not
   counted as errors. `--dry-run` writes nothing at all, not even a directory.

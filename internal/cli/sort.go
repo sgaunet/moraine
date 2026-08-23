@@ -77,7 +77,9 @@ JPEG is sent only once.
 
 Output:
   stdout carries the run summary only (--output=text, the default) or the full
-  result with one record per file (--output=json). Logs go to stderr.
+  result with one record per file plus an "events" array describing each event
+  (--output=json). Logs go to stderr. Both renderings report bytes_copied (what was
+  written) and bytes_skipped (what an identical destination saved re-writing).
 
 Exit codes:
   0  success

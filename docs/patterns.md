@@ -26,8 +26,16 @@ not count those — nothing failed, nothing was attempted.
 - **stdout carries the run result only**; logs, progress and errors go to **stderr**
   (Constitution Principle V — anything else on stdout corrupts a pipe).
 - `--output=text` renders one `key=value` summary line; `--output=json` renders one
-  object with every per-file record plus the summary. The document types live in
-  `internal/cli/output.go` and are treated as a public API, not an internal detail.
+  object with every per-file record, an `events` array describing each placed event,
+  plus the summary. The document types live in `internal/cli/output.go` and are
+  treated as a public API, not an internal detail.
+- New summary keys are **additive**: consumers read by key, not position, so a key may
+  be inserted anywhere in the text line (`scanned`/`unreadable` went in first,
+  `bytes_copied`/`bytes_skipped` in the middle). What must not change is a key's name
+  or meaning.
+- Per-event data exists only in the JSON rendering — the text line is one line per
+  run. `app.Summary.Events` is bounded by the event count, not the photo count, which
+  is why the run keeps it while deliberately not keeping per-file records in text mode.
 - The `app` orchestrators stay presentation-free: `Organize`/`Clean` take an
   `onResult func(Result)` callback — the shape `clean.Cleaner.Run` already used — and
   the transport decides how to render each record.
