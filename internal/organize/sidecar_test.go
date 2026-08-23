@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sgaunet/moraine/internal/organize"
 )
@@ -367,5 +368,40 @@ func TestPlaceCompanionFailureIsNonFatal(t *testing.T) {
 	}
 	if len(comps) != 1 || comps[0].Err == nil {
 		t.Fatalf("want one errored companion result, got %+v", comps)
+	}
+}
+
+// TestPlacePreservesModTimes checks the mtime carry-over through the real placement
+// path, for a photo and for its companion alike. Both go through copyFile, but a
+// companion is placed by a separate call, so it is worth asserting rather than
+// assuming.
+func TestPlacePreservesModTimes(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	c := clusterOf(t, src, "IMG.jpg")
+	writeFile(t, filepath.Join(src, "IMG.jpg.xmp"), "appended-sidecar")
+
+	want := time.Date(2021, 8, 12, 12, 0, 0, 0, time.UTC)
+	for _, n := range []string{"IMG.jpg", "IMG.jpg.xmp"} {
+		if err := os.Chtimes(filepath.Join(src, n), want, want); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	results := sidecarOrg(dest).Place(context.Background(), c, "nature")
+	if len(results) != 2 {
+		t.Fatalf("want a photo and a companion, got %d results: %+v", len(results), results)
+	}
+	for _, r := range results {
+		if r.Err != nil {
+			t.Fatalf("placing %q: %v", r.Source, r.Err)
+		}
+		info, err := os.Stat(r.Dest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.ModTime(); !got.Equal(want) {
+			t.Errorf("%s: mtime = %s, want the source's %s", filepath.Base(r.Dest), got, want)
+		}
 	}
 }

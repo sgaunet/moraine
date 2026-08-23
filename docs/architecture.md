@@ -45,9 +45,11 @@ and from disk I/O — no domain package imports Cobra.
   folder, naming them to track the photo's final name; a caller-injected
   `IsPrimary` predicate keeps a scanned photo from being copied as a companion, so
   the package stays decoupled from `scan`.
-- **`internal/contenthash`** — the single definition of content identity
-  (`Hash(path) → Sum`, a streaming SHA-256). Shared by `organize` (dedup on copy)
-  and `clean` (matching originals to copies) so both agree on "same content".
+- **`internal/contenthash`** — the single definition of content identity: same bytes,
+  same file. It offers the two shapes its callers need — `Hash(path) → Sum` (streaming
+  SHA-256) for indexing many files, used by `clean` to match originals to copies, and
+  `Equal(a, b) → bool` (streaming byte compare, short-circuiting on the first
+  difference) for the one-pair question `organize` asks when deduping a copy.
 - **`internal/clean`** — the `clean` subcommand's filesystem logic: deletes source
   originals whose byte-identical copy exists under the destination, matching by
   content (never filename) and never touching the destination tree. Depends only on
@@ -65,8 +67,15 @@ and from disk I/O — no domain package imports Cobra.
    does the filesystem checks. `cli.Execute` silences Cobra's own output and classifies the
    returned error into exit codes: cross-field/parse/arity errors → usage (2), validation/
    dependency/run failures (wrapped with `asRuntime`) → runtime (1), help/version → 0.
-3. **Copy-only + `O_EXCL` + SHA-256** — overwriting is structurally
-   impossible; content hashing makes re-runs idempotent (skip identical,
+3. **Copy-only + atomic publish + content comparison** — a copy is staged in a
+   hidden temp file in the destination directory, fsynced, given the source's mtime,
+   and published with `link(2)`, which fails `EEXIST` rather than overwriting. So
+   overwriting is structurally impossible *and* a half-written copy can never occupy
+   a canonical name: an interrupted run would otherwise leave a truncated stub there,
+   and every later run — unable to tell a stub from different content — would
+   suffix-rename the real photo and let the stub keep the good name. The parent
+   directory is fsynced too, since durable bytes behind a lost directory entry are
+   still a lost photo. Comparing content makes re-runs idempotent (skip identical,
    suffix-rename same-name/different-content). Originals are never touched.
 4. **Interface-based classifier with guaranteed fallback** — a theme is
    always returned; the network/model stage is optional and degrades to the

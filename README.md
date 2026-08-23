@@ -24,9 +24,11 @@ or deleted. Every step is explained in the logs.
   fallback).
 - **Sampling**: a group of **3 photos or fewer** is analyzed in full; a large group is
   sampled (evenly spaced photos, configurable count).
-- **Safe, idempotent copy**: `O_EXCL` + `fsync`, never overwrites. An identical file
-  already present is **skipped** (safe re-runs); a same-named file with different content
-  is **suffixed** ` (1)`.
+- **Safe, idempotent copy**: every copy is staged in a temporary file, `fsync`ed, and
+  published atomically — a photo appears at its destination whole or not at all, even if
+  the machine dies mid-run, and never overwrites. Copies keep the original's
+  **modification time**. An identical file already present is **skipped** (safe re-runs);
+  a same-named file with different content is **suffixed** ` (1)`.
 - **Companion (sidecar) files** (on by default): files other software leaves next to a
   photo are copied into the same folder — both appended sidecars (`IMG.jpg.xmp`,
   `IMG.jpg.json`) and same-base-name sidecars (`IMG.xmp`). They follow the photo's final

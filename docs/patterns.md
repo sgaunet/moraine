@@ -32,11 +32,20 @@ aborting the whole run.
 
 ## Safety Invariants (copy-only)
 
-- Destination files are opened with `os.O_EXCL` → overwriting is impossible.
-- `sameContent()` short-circuits on size mismatch, then compares SHA-256:
-  identical → `ActionSkippedIdentical`; same name, different content →
-  `ActionRenamed` with a ` (N)` suffix via `uniqueName()`.
-- A failed copy removes the partial destination file before returning.
+- Copies are **atomic**: `copyFile()` writes to a `.moraine-*.tmp` file in the
+  destination's own directory, fsyncs it, then publishes it with `os.Link()`.
+  `link(2)` fails `EEXIST` instead of clobbering, so overwriting is impossible *and*
+  a destination name only ever appears complete. A crash can leave a hidden temp
+  behind, never a truncated file on the canonical name. Filesystems without hard
+  links (FAT/exFAT/SMB) fall back to `os.Rename()` behind an existence check.
+- Durability: the file's bytes **and** its parent directory are fsynced — data alone
+  is not enough, a lost directory entry loses the photo.
+- Copies keep the source's **modification time** (`os.Chtimes`). This is load-bearing:
+  `exifmeta` falls back to mtime when a photo has no readable EXIF date.
+- `sameContent()` short-circuits on size mismatch, then compares the bytes via
+  `contenthash.Equal()`: identical → `ActionSkippedIdentical`; same name, different
+  content → `ActionRenamed` with a ` (N)` suffix via `uniqueName()`.
+- A failed copy leaves the destination directory exactly as it found it.
 - `safeJoin()` rejects path traversal in destination subdirectories.
 - **Companion (sidecar) files** reuse the same primitives: a companion of `IMG.jpg`
   is a same-directory regular file named `IMG.jpg<suffix>` (appended) or
