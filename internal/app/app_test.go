@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/png"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/sgaunet/moraine/internal/app"
 	"github.com/sgaunet/moraine/internal/config"
 	"github.com/sgaunet/moraine/internal/exiftooltest"
+	"github.com/sgaunet/moraine/internal/organize"
 )
 
 // safeBuffer is a concurrency-safe sink for slog output (readMeta logs from workers).
@@ -87,7 +89,7 @@ func TestOrganizeBatchCopiesAndIsIdempotent(t *testing.T) {
 	makePNG(t, filepath.Join(src, "b.png"))
 	cfg := baseCfg(src, dest, true)
 
-	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -104,7 +106,7 @@ func TestOrganizeBatchCopiesAndIsIdempotent(t *testing.T) {
 	}
 
 	// Re-run → identical files skipped.
-	sum2, err := app.Organize(context.Background(), cfg, quietLogger())
+	sum2, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +122,7 @@ func TestOrganizeSinglePhoto(t *testing.T) {
 	makePNG(t, file)
 	cfg := baseCfg(file, dest, false)
 
-	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -143,7 +145,7 @@ func TestOrganizeSkipsNonImageFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), quietLogger())
+	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -170,7 +172,7 @@ func TestOrganizeContinuesOnUnreadableImage(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger)
+	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil)
 	if err != nil {
 		t.Fatalf("run must not abort on an unreadable file: %v", err)
 	}
@@ -182,22 +184,45 @@ func TestOrganizeContinuesOnUnreadableImage(t *testing.T) {
 	}
 }
 
+// TestOrganizeLoggingContract pins what each verbosity level shows. Per-file lines
+// live at debug on purpose: a real library produces thousands of them, and the run's
+// result is carried by the Summary the transport prints to stdout. The group and
+// classification narrative stays at info, so a default run still explains itself.
 func TestOrganizeLoggingContract(t *testing.T) {
-	src := t.TempDir()
-	dest := t.TempDir()
-	makePNG(t, filepath.Join(src, "a.png"))
-
-	buf := &safeBuffer{}
-	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger); err != nil {
-		t.Fatal(err)
-	}
-	out := buf.String()
-	for _, want := range []string{"group", "method", "theme", "photo", "action=copied", "dest=", "summary"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("log missing %q\n---\n%s", want, out)
+	organizeAt := func(t *testing.T, level slog.Level) string {
+		t.Helper()
+		src, dest := t.TempDir(), t.TempDir()
+		makePNG(t, filepath.Join(src, "a.png"))
+		buf := &safeBuffer{}
+		logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: level}))
+		if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil); err != nil {
+			t.Fatal(err)
 		}
+		return buf.String()
 	}
+
+	t.Run("info narrates groups but not files", func(t *testing.T) {
+		out := organizeAt(t, slog.LevelInfo)
+		for _, want := range []string{"group", "method", "theme"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("info log missing %q\n---\n%s", want, out)
+			}
+		}
+		for _, unwanted := range []string{"msg=photo", "action=copied"} {
+			if strings.Contains(out, unwanted) {
+				t.Errorf("info log must stay quiet about individual files, found %q\n---\n%s", unwanted, out)
+			}
+		}
+	})
+
+	t.Run("debug adds every file and the summary", func(t *testing.T) {
+		out := organizeAt(t, slog.LevelDebug)
+		for _, want := range []string{"group", "msg=photo", "action=copied", "dest=", "summary"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("debug log missing %q\n---\n%s", want, out)
+			}
+		}
+	})
 }
 
 func TestOrganizeOllamaUnreachableWarnsAndFallsBack(t *testing.T) {
@@ -216,7 +241,7 @@ func TestOrganizeOllamaUnreachableWarnsAndFallsBack(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	sum, err := app.Organize(context.Background(), cfg, logger)
+	sum, err := app.Organize(context.Background(), cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("run must not abort when Ollama is unreachable: %v", err)
 	}
@@ -245,7 +270,7 @@ func TestOrganizeOllamaModelMissingTellsToPull(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	sum, err := app.Organize(context.Background(), cfg, logger)
+	sum, err := app.Organize(context.Background(), cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("run must not abort when the model is missing: %v", err)
 	}
@@ -265,7 +290,7 @@ func TestOrganizeLogLevelWarnSuppressesInfo(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger); err != nil {
+	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "group") {
@@ -319,7 +344,7 @@ func TestOrganizeRAWCopiedAndDated(t *testing.T) {
 	makeRAW(t, filepath.Join(src, "shot.dng"))
 
 	// Sample 0 → no model; RAW is still recognized, dated, and copied (fallback theme).
-	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), quietLogger())
+	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -340,7 +365,7 @@ func TestOrganizeSingleRAWPhoto(t *testing.T) {
 	file := filepath.Join(dir, "single.nef")
 	makeRAW(t, file)
 
-	sum, err := app.Organize(context.Background(), baseCfg(file, dest, false), quietLogger())
+	sum, err := app.Organize(context.Background(), baseCfg(file, dest, false), quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -373,7 +398,7 @@ func TestOrganizeRAWClassifiedViaPreview(t *testing.T) {
 	cfg.OllamaURL = srv.URL
 	cfg.ExifToolPath = exifPath
 
-	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -422,7 +447,7 @@ func TestOrganizeRAWPreservesOriginalAndLeavesNoTemp(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 
-	if _, err := app.Organize(context.Background(), cfg, quietLogger()); err != nil {
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
 
@@ -462,7 +487,7 @@ func TestOrganizeCopiesCompanions(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sidecars = true
-	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -491,7 +516,7 @@ func TestOrganizeSingleFileCompanions(t *testing.T) {
 
 	cfg := baseCfg(file, dest, false)
 	cfg.Sidecars = true
-	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -516,7 +541,7 @@ func TestOrganizeCompanionThatIsAnImageIsSortedOnce(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sidecars = true
-	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -545,7 +570,7 @@ func TestOrganizeCompanionFailureNonFatal(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sidecars = true
-	sum, err := app.Organize(context.Background(), cfg, quietLogger())
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("run must not abort on a companion failure: %v", err)
 	}
@@ -554,5 +579,129 @@ func TestOrganizeCompanionFailureNonFatal(t *testing.T) {
 	}
 	if sum.CompanionsErrors != 1 {
 		t.Fatalf("CompanionsErrors = %d; want 1 (summary=%+v)", sum.CompanionsErrors, sum)
+	}
+}
+
+// TestOrganizeJobs checks that --jobs only changes how many workers read EXIF, never
+// what the run produces. 0 means "one per CPU"; 1 serialises it.
+func TestOrganizeJobs(t *testing.T) {
+	run := func(t *testing.T, jobs int) app.Summary {
+		t.Helper()
+		src, dest := t.TempDir(), t.TempDir()
+		for _, n := range []string{"a.png", "b.png", "c.png", "d.png"} {
+			makePNG(t, filepath.Join(src, n))
+		}
+		cfg := baseCfg(src, dest, true)
+		cfg.Jobs = jobs
+		sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+		if err != nil {
+			t.Fatalf("jobs=%d: %v", jobs, err)
+		}
+		return sum
+	}
+
+	auto, serial := run(t, 0), run(t, 1)
+	if auto != serial {
+		t.Errorf("worker count changed the outcome:\n jobs=0 %+v\n jobs=1 %+v", auto, serial)
+	}
+	if auto.Copied != 4 {
+		t.Errorf("copied = %d, want 4", auto.Copied)
+	}
+}
+
+// TestOrganizeInterruptDoesNotInflateErrors is the regression test for the interrupt
+// defect: organize.Place records the context error against every photo it never reached,
+// and those used to be tallied as placement failures — so a Ctrl-C on a large library
+// reported thousands of "errors" for photos that were simply never attempted.
+func TestOrganizeInterruptDoesNotInflateErrors(t *testing.T) {
+	src, dest := t.TempDir(), t.TempDir()
+	for _, n := range []string{"a.png", "b.png", "c.png", "d.png", "e.png"} {
+		makePNG(t, filepath.Join(src, n))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled: nothing will be attempted
+
+	buf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	sum, err := app.Organize(ctx, baseCfg(src, dest, true), logger, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if sum.Errors != 0 {
+		t.Errorf("Errors = %d, want 0: a cancelled run attempted nothing, so nothing failed", sum.Errors)
+	}
+	if strings.Contains(buf.String(), "placement failed") {
+		t.Errorf("an interrupt must not be logged as a placement failure\n---\n%s", buf.String())
+	}
+}
+
+// TestOrganizeOnResultSeesEveryPlacement pins the callback the transport uses to
+// render its machine-readable stdout: one record per placement, photos and
+// companions alike, matching the summary counters.
+func TestOrganizeOnResultSeesEveryPlacement(t *testing.T) {
+	src, dest := t.TempDir(), t.TempDir()
+	makePNG(t, filepath.Join(src, "a.png"))
+	if err := os.WriteFile(filepath.Join(src, "a.png.xmp"), []byte("sidecar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := baseCfg(src, dest, true)
+	cfg.Sidecars = true
+
+	var photos, companions int
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), func(r organize.Result) {
+		if r.IsCompanion {
+			companions++
+			if r.Of == "" {
+				t.Error("a companion record must name the photo it belongs to")
+			}
+			return
+		}
+		photos++
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if photos != 1 || companions != 1 {
+		t.Errorf("records: %d photos, %d companions; want 1 and 1", photos, companions)
+	}
+	if sum.Copied != photos || sum.CompanionsCopied != companions {
+		t.Errorf("records disagree with the summary: %+v", sum)
+	}
+}
+
+// TestOrganizeReportsInterruptInTheLastCluster covers the case the between-clusters
+// check cannot see: a single-event import, where one cluster holds every photo. The
+// cancellation arrives while that cluster is being placed, so the loop never gets a
+// second iteration to notice it — the run would otherwise finish "successfully"
+// having placed a few photos and abandoned the rest.
+func TestOrganizeReportsInterruptInTheLastCluster(t *testing.T) {
+	src, dest := t.TempDir(), t.TempDir()
+	for _, n := range []string{"a.png", "b.png", "c.png"} {
+		makePNG(t, filepath.Join(src, n)) // one modTime ⇒ exactly one cluster
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancel once the first record lands: the cluster has already been placed, so
+	// only the post-loop check can still report it.
+	var records int
+	sum, err := app.Organize(ctx, baseCfg(src, dest, true), quietLogger(), func(organize.Result) {
+		records++
+		cancel()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if sum.Groups != 1 {
+		t.Fatalf("want the one-cluster setup, got %d groups", sum.Groups)
+	}
+	if records == 0 {
+		t.Error("the run should have reported the placements it did complete")
+	}
+	if sum.Errors != 0 {
+		t.Errorf("Errors = %d, want 0", sum.Errors)
 	}
 }

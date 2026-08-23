@@ -17,7 +17,25 @@ if errors.Is(err, config.ErrHelp) {
 
 Per-photo failures are **non-fatal**: they are recorded in `Result.Err` and
 tallied into the run `Summary.Errors` (see `internal/app/app.go`) rather than
-aborting the whole run.
+aborting the whole run. A *cancelled* run is the exception: `organize.Place` records
+the context error against every photo it never reached, and `tally` deliberately does
+not count those — nothing failed, nothing was attempted.
+
+## Output Contract (stdout is data)
+
+- **stdout carries the run result only**; logs, progress and errors go to **stderr**
+  (Constitution Principle V — anything else on stdout corrupts a pipe).
+- `--output=text` renders one `key=value` summary line; `--output=json` renders one
+  object with every per-file record plus the summary. The document types live in
+  `internal/cli/output.go` and are treated as a public API, not an internal detail.
+- The `app` orchestrators stay presentation-free: `Organize`/`Clean` take an
+  `onResult func(Result)` callback — the shape `clean.Cleaner.Run` already used — and
+  the transport decides how to render each record.
+- Per-file narration splits by command: `sort` logs it at **debug** (thousands of lines
+  on a real library), `clean` at **info** (the dry-run plan is why you ran it).
+- Key names are snake_case in both renderings, matching the slog attribute keys the
+  tool has always emitted (`companions_copied`, `would_delete`). `.golangci.yml`
+  configures `tagliatelle` accordingly.
 
 ## Testing Patterns
 
@@ -25,6 +43,8 @@ aborting the whole run.
 - **Organization**: black-box external packages (`package foo_test`) for every
   package except `organize`, which white-box-tests its unexported helpers
   (`safeJoin`, `copyFile`, `sameContent`, `uniqueName`).
+- **Dry run**: `TestDryRunMatchesRealRun` asserts a preview and the run it previews
+  report the same actions — the property that makes `--dry-run` worth trusting.
 - **Style**: table-driven cases with `t.Run` subtests.
 - **Fakes**: real `net/http/httptest` servers for Ollama; the `Classifier`
   interface allows a `fakeClassifier` in tests — no mock framework.

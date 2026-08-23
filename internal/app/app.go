@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -43,7 +44,18 @@ type Summary struct {
 // Organize runs the full pipeline for cfg and returns a Summary. A directory
 // source is organized in batch; a single file is organized on its own. Per-photo
 // failures are logged and tallied but do not abort the run (FR-012).
-func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summary, error) {
+//
+// onResult, when non-nil, receives every placement Result as it happens — the seam
+// the transport uses to render the run's machine-readable stdout, mirroring
+// clean.Cleaner.Run. A cancelled context stops the run and is returned alongside
+// the partial Summary, so the caller can report what was done before the interrupt.
+func Organize(
+	ctx context.Context, cfg config.Config, logger *slog.Logger, onResult func(organize.Result),
+) (Summary, error) {
+	if onResult == nil {
+		onResult = func(organize.Result) {}
+	}
+
 	clusters, primaries, err := buildClusters(cfg, logger)
 	if err != nil {
 		return Summary{}, err
@@ -57,6 +69,7 @@ func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summ
 	opts.Classifier = buildClassifier(ctx, cfg, logger)
 	org := organize.New(cfg.DestRoot)
 	org.Sidecars = cfg.Sidecars
+	org.DryRun = cfg.DryRun
 	org.IsPrimary = func(p string) bool {
 		_, ok := primaries[filepath.Clean(p)]
 		return ok
@@ -75,15 +88,23 @@ func Organize(ctx context.Context, cfg config.Config, logger *slog.Logger) (Summ
 
 		for _, r := range org.Place(ctx, c, theme) {
 			tally(&sum, r, logger)
+			onResult(r)
 		}
 	}
 
-	logger.Info("summary",
+	// Debug, not info: the summary is the run's stdout data now (Principle V), so
+	// logging it again would show an interactive user the same numbers twice.
+	logger.Debug("summary",
 		"groups", sum.Groups, "copied", sum.Copied, "skipped", sum.Skipped,
 		"renamed", sum.Renamed, "errors", sum.Errors,
 		"companions_copied", sum.CompanionsCopied, "companions_skipped", sum.CompanionsSkipped,
 		"companions_renamed", sum.CompanionsRenamed, "companions_errors", sum.CompanionsErrors)
-	return sum, nil
+
+	// Report the cancellation even when it arrived inside the last (or only) cluster.
+	// The loop above only checks between clusters, so a single-event import — one
+	// cluster holding every photo — would otherwise finish "successfully" having
+	// placed a handful of photos and abandoned the rest.
+	return sum, ctx.Err()
 }
 
 // buildClassifier constructs the Ollama classifier when the model stage is
@@ -120,13 +141,19 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 }
 
 // tally records one placement Result into the summary and logs it, routing
-// companion (sidecar) outcomes into their own counters (FR-010).
+// companion (sidecar) outcomes into their own counters (FR-010). Per-file lines are
+// logged at debug: a real library produces thousands of them, and the run's result
+// is carried by the Summary on stdout, so the default output stays readable.
 func tally(sum *Summary, r organize.Result, logger *slog.Logger) {
 	if r.IsCompanion {
 		tallyCompanion(sum, r, logger)
 		return
 	}
 	if r.Err != nil {
+		if notAttempted(r.Err) {
+			logger.Debug("photo not attempted", "source", r.Source, "err", r.Err)
+			return
+		}
 		sum.Errors++
 		logger.Error("placement failed", "source", r.Source, "err", r.Err)
 		return
@@ -139,13 +166,17 @@ func tally(sum *Summary, r organize.Result, logger *slog.Logger) {
 	case organize.ActionRenamed:
 		sum.Renamed++
 	}
-	logger.Info("photo", "action", string(r.Action), "source", r.Source, "dest", r.Dest)
+	logger.Debug("photo", "action", string(r.Action), "source", r.Source, "dest", r.Dest)
 }
 
 // tallyCompanion records one companion Result and logs it. A per-companion
 // failure is non-fatal (FR-008): counted and logged, the run continues.
 func tallyCompanion(sum *Summary, r organize.Result, logger *slog.Logger) {
 	if r.Err != nil {
+		if notAttempted(r.Err) {
+			logger.Debug("companion not attempted", "source", r.Source, "of", r.Of, "err", r.Err)
+			return
+		}
 		sum.CompanionsErrors++
 		logger.Error("companion failed", "source", r.Source, "of", r.Of, "err", r.Err)
 		return
@@ -158,7 +189,15 @@ func tallyCompanion(sum *Summary, r organize.Result, logger *slog.Logger) {
 	case organize.ActionRenamed:
 		sum.CompanionsRenamed++
 	}
-	logger.Info("companion", "action", string(r.Action), "source", r.Source, "dest", r.Dest, "of", r.Of)
+	logger.Debug("companion", "action", string(r.Action), "source", r.Source, "dest", r.Dest, "of", r.Of)
+}
+
+// notAttempted reports whether a Result failed because the run was cancelled rather
+// than because the file could not be placed. organize.Place records the context
+// error against every photo it did not get to, and counting those as failures would
+// make an interrupt look like a library full of broken photos.
+func notAttempted(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // buildClusters produces the clusters to organize plus the set of scanned primary
@@ -185,7 +224,7 @@ func buildClusters(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, map
 		primaries[filepath.Clean(f.Path)] = struct{}{}
 	}
 
-	photos := readMeta(found, logger)
+	photos := readMeta(found, cfg.Jobs, logger)
 	logger.Info("exif", "read", len(photos), "of", len(found), "raw", countRAW(photos))
 
 	clusters := cluster.Cluster(photos, cfg.Gap)
@@ -218,10 +257,15 @@ func singleCluster(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, err
 	return []photo.Cluster{{Photos: []photo.Photo{p}, Start: p.Taken, End: p.Taken}}, nil
 }
 
-// readMeta reads EXIF metadata for every file using a bounded worker pool.
-// Files whose metadata cannot be read are skipped with a warning (FR-012).
-func readMeta(found []scan.Found, logger *slog.Logger) []photo.Photo {
-	workers := runtime.GOMAXPROCS(0)
+// readMeta reads EXIF metadata for every file using a bounded worker pool of jobs
+// workers, or one per GOMAXPROCS when jobs is 0. Turning it down throttles a network
+// drive; turning it up can pay off on fast local storage. Files whose metadata
+// cannot be read are skipped with a warning (FR-012).
+func readMeta(found []scan.Found, jobs int, logger *slog.Logger) []photo.Photo {
+	workers := jobs
+	if workers < 1 {
+		workers = runtime.GOMAXPROCS(0)
+	}
 	if workers < 1 {
 		workers = 1
 	}

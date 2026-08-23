@@ -34,16 +34,21 @@ func safeJoin(root, subdir string) (string, error) {
 	return joined, nil
 }
 
-// uniqueName returns a file name under dir that does not collide with an
-// existing file, suffixing " (1)", " (2)", … as needed. It never proposes a
-// name that would overwrite an existing file.
-func uniqueName(dir, name string) string {
-	if !exists(filepath.Join(dir, name)) {
+// uniqueName returns a file name under dir that does not collide with a name
+// already taken, suffixing " (1)", " (2)", … as needed. It never proposes a name
+// that would overwrite an existing file.
+//
+// taken decides what "already taken" means. A real run passes exists — only files
+// on disk count. A dry run also counts the names it has already promised to create
+// this run, so a preview reports the same collision renames the real run would
+// perform (nothing is written, so those names are not on disk to be found).
+func uniqueName(dir, name string, taken func(string) bool) string {
+	if !taken(filepath.Join(dir, name)) {
 		return name
 	}
 	for i := 1; ; i++ {
 		candidate := variantName(name, i)
-		if !exists(filepath.Join(dir, candidate)) {
+		if !taken(filepath.Join(dir, candidate)) {
 			return candidate
 		}
 	}
@@ -56,6 +61,8 @@ func uniqueName(dir, name string) string {
 //
 // Because uniqueName always fills the first free index, the occupied indices are
 // contiguous, so the scan stops at the first gap — no directory listing needed.
+// This deliberately looks only at files on disk, never at a dry run's planned
+// names: only real bytes can be compared for identity.
 func existingIdentical(dir, name, src string) (string, error) {
 	for i := 1; ; i++ {
 		candidate := variantName(name, i)

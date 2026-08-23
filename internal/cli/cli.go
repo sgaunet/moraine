@@ -16,8 +16,12 @@ import (
 //	nil              → 0 (success; also -h/--help and --version, which print and return nil)
 //	runtime failure  → 1 ("error: …")        — validation, exiftool preflight, the run
 //	anything else    → 2 ("argument error: …") — unknown command/flag, bad arity/value
+//
+// stdout receives run results only (see output.go for that contract); every log,
+// error and progress line goes to stderr, so moraine is safe in a pipe
+// (Constitution Principle V).
 func Execute(version string, args []string, stdout, stderr io.Writer) int {
-	root := newRootCmd(version, stdout)
+	root := newRootCmd(version, stdout, stderr)
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)

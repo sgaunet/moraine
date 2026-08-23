@@ -83,9 +83,17 @@ deleted. Repo: `github.com/sgaunet/moraine` (MIT).
 
 - **Three layers**: `main.go` (injects the build version, nothing else) →
   `internal/cli` (Cobra transport: `sort`/`clean`/`version` + built-in
-  `completion`, flags, exit codes) →
-  `internal/app` (single testable orchestrator) → domain packages. No domain
-  package imports Cobra.
+  `completion`, flags, exit codes, and `output.go` — the stdout contract) →
+  `internal/app` (single testable orchestrator; `Organize`/`Clean` take an
+  `onResult func(Result)` so the transport, not the domain, renders output) →
+  domain packages. No domain package imports Cobra.
+- **Stdout is data, stderr is logs** (Principle V): stdout carries the run result
+  only — one `key=value` line (`--output=text`) or one JSON object with every
+  per-file record plus the summary (`--output=json`); `internal/cli/output.go` owns
+  those types and treats them as a public API. `sort` logs per-file lines at debug,
+  `clean` at info (its dry-run plan is the product). An interrupt prints the partial
+  summary, then `interrupted: copied N, …` with exit 1; photos never reached are not
+  counted as errors. `--dry-run` writes nothing at all, not even a directory.
 - **Procedural pipeline** in `app.Organize`: `scan → exifmeta` (worker pool sized by
   `GOMAXPROCS`) `→ cluster → classify → organize.Place`, tallying a `Summary`.
 - **Typed config split** (`internal/config`): `New`/`NewClean` do pure syntax and
@@ -172,8 +180,9 @@ previews), **004-clean-originals** (`clean`; content-hash matching, dry-run defa
 **005-cobra-cli-refactor** (Cobra `sort`/`clean`/`version` tree; `internal/cli` transport;
 `config.New`/`NewClean` constructors; exit codes 0/1/2).
 
-Sort pipeline: scan → EXIF → temporal cluster (`--gap`) → classify into a configurable theme
-set (default `mountain`/`special-events`/`cook`/`family`, fallback `other`) → **copy** to
+Sort pipeline: scan → EXIF (`--jobs` workers, default one per CPU) → temporal cluster
+(`--gap`) → classify into a configurable theme set (default
+`mountain`/`special-events`/`cook`/`family`, fallback `other`) → **copy** to
 `dest/<theme>/<year>/<year-month-day>/` (+ companions, by default).
 
 006 changes (domain placement only; transport surface gains one flag): companion placement

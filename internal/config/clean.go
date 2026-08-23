@@ -11,10 +11,11 @@ import (
 // CleanConfig holds the typed configuration for one `clean` invocation. It is built
 // once by NewClean (syntax/cross-field, no I/O) and finalised by Validate (filesystem).
 type CleanConfig struct {
-	Source   string     // absolute path of the source tree to clean
-	DestRoot string     // absolute path of the destination library (the "already archived" set)
-	Delete   bool       // false ⇒ dry-run (report only); true ⇒ actually delete matched originals
-	LogLevel slog.Level // logging verbosity
+	Source   string       // absolute path of the source tree to clean
+	DestRoot string       // absolute path of the destination library (the "already archived" set)
+	Delete   bool         // false ⇒ dry-run (report only); true ⇒ actually delete matched originals
+	LogLevel slog.Level   // logging verbosity
+	Output   OutputFormat // stdout rendering of the run result (text | json)
 }
 
 // CleanOptions carries the already-parsed CLI inputs for a clean run. The transport
@@ -24,14 +25,22 @@ type CleanOptions struct {
 	Dest     string // --dest (empty ⇒ resolved to <source>/_sorted in Validate)
 	Delete   bool   // --delete
 	LogLevel string // --log-level (textual)
+	Quiet    bool   // --quiet (errors only; excludes --verbose/--log-level)
+	Verbose  bool   // --verbose (per-file detail; excludes --quiet/--log-level)
+	Output   string // --output (textual: text|json)
 }
 
 // NewClean builds a validated CleanConfig from already-parsed CLI Options. It
-// performs syntax/cross-field checks only (an invalid log-level, an unreadable
-// path) — these map to a usage error (exit 2) at the call site. Filesystem checks
-// are deferred to Validate.
+// performs syntax/cross-field checks only (an invalid log-level or output format, an
+// unreadable path) — these map to a usage error (exit 2) at the call site.
+// Filesystem checks are deferred to Validate.
 func NewClean(o CleanOptions) (CleanConfig, error) {
-	level, err := parseLevel(o.LogLevel)
+	level, err := resolveLevel(o.LogLevel, o.Quiet, o.Verbose)
+	if err != nil {
+		return CleanConfig{}, err
+	}
+
+	output, err := ParseOutput(o.Output)
 	if err != nil {
 		return CleanConfig{}, err
 	}
@@ -54,6 +63,7 @@ func NewClean(o CleanOptions) (CleanConfig, error) {
 		DestRoot: destRoot,
 		Delete:   o.Delete,
 		LogLevel: level,
+		Output:   output,
 	}, nil
 }
 

@@ -32,7 +32,10 @@ type Config struct {
 	FallbackTheme    string        // theme slug used when none is confidently chosen
 	ExifToolPath     string        // exiftool executable (name on PATH or absolute path)
 	LogLevel         slog.Level    // logging verbosity
+	Output           OutputFormat  // stdout rendering of the run result (text | json)
 	Sidecars         bool          // copy each photo's companion (sidecar) files alongside it
+	DryRun           bool          // report the planned placements without writing anything
+	Jobs             int           // EXIF worker count (0 ⇒ one per GOMAXPROCS)
 	MountainAltitude float64       // metres at/above which the heuristic labels a group "mountain" (always > 0)
 }
 
@@ -47,9 +50,23 @@ const (
 	DefaultLogLevel  = "info"
 	DefaultDestName  = "_sorted"
 	DefaultExifTool  = "exiftool"
+	DefaultOutput    = "text"
 	// DefaultMountainAltitude matches the documented heuristic threshold
 	// (specs/002-auto-photo-organizer: altitude >= 1500m -> mountain).
 	DefaultMountainAltitude = 1500.0
+)
+
+// OutputFormat selects how a run's result is rendered on stdout. Stdout carries
+// data only (Constitution Principle V), so this is the one knob that shapes the
+// tool's machine-facing contract; logs and progress always go to stderr regardless.
+type OutputFormat string
+
+// The supported stdout renderings.
+const (
+	// OutputText renders the run summary as a single key=value line.
+	OutputText OutputFormat = "text"
+	// OutputJSON renders one JSON object holding every per-file record and the summary.
+	OutputJSON OutputFormat = "json"
 )
 
 // slugPattern constrains theme slugs to filesystem-safe lowercase tokens.
@@ -68,16 +85,22 @@ type Options struct {
 	Themes           string        // --themes (comma-separated slug list)
 	Fallback         string        // --fallback-theme
 	LogLevel         string        // --log-level (textual)
+	Quiet            bool          // --quiet (errors only; excludes --verbose/--log-level)
+	Verbose          bool          // --verbose (per-file detail; excludes --quiet/--log-level)
+	Output           string        // --output (textual: text|json)
 	ExifTool         string        // --exiftool
 	Sidecars         bool          // --sidecars (copy companion files; default true at the flag)
+	DryRun           bool          // --dry-run (report the plan, write nothing)
+	Jobs             int           // --jobs (EXIF workers; 0 ⇒ one per GOMAXPROCS)
 	MountainAltitude float64       // --mountain-altitude (metres; must be > 0)
 }
 
 // New builds a validated Config from already-parsed CLI Options. It performs
 // syntax / cross-field checks only (a non-positive gap or mountain altitude, a
-// negative sample, an invalid theme/fallback/log-level, an unreadable path) —
-// these map to a usage error (exit 2) at the call site. Filesystem existence
-// checks and the destination-default resolution are deferred to Validate.
+// negative sample or job count, an invalid theme/fallback/log-level/output, an
+// unreadable path) — these map to a usage error (exit 2) at the call site.
+// Filesystem existence checks and the destination-default resolution are deferred
+// to Validate.
 func New(o Options) (Config, error) {
 	if o.Gap <= 0 {
 		return Config{}, fmt.Errorf("--gap must be strictly positive (got %s)", o.Gap)
@@ -88,8 +111,16 @@ func New(o Options) (Config, error) {
 	if o.MountainAltitude <= 0 {
 		return Config{}, fmt.Errorf("--mountain-altitude must be strictly positive (got %g)", o.MountainAltitude)
 	}
+	if o.Jobs < 0 {
+		return Config{}, fmt.Errorf("--jobs must be zero or positive (got %d)", o.Jobs)
+	}
 
-	level, err := parseLevel(o.LogLevel)
+	level, err := resolveLevel(o.LogLevel, o.Quiet, o.Verbose)
+	if err != nil {
+		return Config{}, err
+	}
+
+	output, err := ParseOutput(o.Output)
 	if err != nil {
 		return Config{}, err
 	}
@@ -128,7 +159,10 @@ func New(o Options) (Config, error) {
 		FallbackTheme:    strings.TrimSpace(o.Fallback),
 		ExifToolPath:     exiftool,
 		LogLevel:         level,
+		Output:           output,
 		Sidecars:         o.Sidecars,
+		DryRun:           o.DryRun,
+		Jobs:             o.Jobs,
 		MountainAltitude: o.MountainAltitude,
 	}, nil
 }
@@ -186,6 +220,34 @@ func parseThemes(list, fallback string) ([]string, error) {
 		return nil, errors.New("--themes must not be empty")
 	}
 	return themes, nil
+}
+
+// ParseOutput maps a textual --output value to an OutputFormat. It is exported
+// because `version` renders stdout without building a full Config, and the flag must
+// mean the same thing for every command.
+func ParseOutput(s string) (OutputFormat, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", string(OutputText):
+		return OutputText, nil
+	case string(OutputJSON):
+		return OutputJSON, nil
+	default:
+		return "", fmt.Errorf("--output invalid %q: expected text|json", s)
+	}
+}
+
+// resolveLevel turns the mutually exclusive verbosity flags into one slog.Level.
+// The transport enforces the exclusivity (cobra's MarkFlagsMutuallyExclusive), so
+// at most one of quiet/verbose/--log-level can have been set.
+func resolveLevel(logLevel string, quiet, verbose bool) (slog.Level, error) {
+	switch {
+	case quiet:
+		return slog.LevelError, nil
+	case verbose:
+		return slog.LevelDebug, nil
+	default:
+		return parseLevel(logLevel)
+	}
 }
 
 // parseLevel maps a textual level to slog.Level.

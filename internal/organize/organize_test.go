@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -356,5 +357,146 @@ func TestPlaceCancelledContext(t *testing.T) {
 	results := organize.New(dest).Place(ctx, c, "nature")
 	if results[0].Err == nil {
 		t.Fatal("expected context error")
+	}
+}
+
+// dryRunOrg returns an Organizer in preview mode.
+func dryRunOrg(dest string) *organize.Organizer {
+	o := organize.New(dest)
+	o.DryRun = true
+	return o
+}
+
+// entryCount reports how many filesystem entries exist under root, directories
+// included. A dry run must leave this at zero: creating empty theme/date folders
+// would already be a write.
+func entryCount(t *testing.T, root string) int {
+	t.Helper()
+	n := 0
+	err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != root {
+			n++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestDryRunWritesNothing(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	c := clusterOf(t, src, "IMG_1.jpg", "IMG_2.jpg")
+
+	results := dryRunOrg(dest).Place(context.Background(), c, "nature")
+	if len(results) != 2 {
+		t.Fatalf("want 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Err != nil {
+			t.Fatalf("dry run reported an error: %v", r.Err)
+		}
+		if r.Action != organize.ActionCopied {
+			t.Errorf("want the action the real run would take (copied), got %s", r.Action)
+		}
+		if r.Dest == "" {
+			t.Error("a preview must still say where the photo would land")
+		}
+	}
+	if n := entryCount(t, dest); n != 0 {
+		t.Errorf("dry run created %d entries under the destination; want none", n)
+	}
+}
+
+// TestDryRunMatchesRealRun is the property that makes a preview worth trusting: the
+// actions it reports are the ones the real run performs, across all three outcomes.
+func TestDryRunMatchesRealRun(t *testing.T) {
+	setup := func(t *testing.T) (src, dest string) {
+		t.Helper()
+		src, dest = t.TempDir(), t.TempDir()
+		// Pre-place one identical photo (→ skipped) and one same-name-different
+		// photo (→ renamed) so a single cluster exercises every action.
+		dir := filepath.Join(dest, "nature", "2025", "2025-08-12")
+		writeFile(t, filepath.Join(dir, "IMG_1.jpg"), "content-IMG_1.jpg")
+		writeFile(t, filepath.Join(dir, "IMG_2.jpg"), "occupied-by-something-else")
+		return src, dest
+	}
+
+	actions := func(results []organize.Result) []string {
+		out := make([]string, 0, len(results))
+		for _, r := range results {
+			if r.Err != nil {
+				out = append(out, "error")
+				continue
+			}
+			out = append(out, string(r.Action)+" "+filepath.Base(r.Dest))
+		}
+		return out
+	}
+
+	srcDry, destDry := setup(t)
+	dry := actions(dryRunOrg(destDry).Place(
+		context.Background(), clusterOf(t, srcDry, "IMG_1.jpg", "IMG_2.jpg", "IMG_3.jpg"), "nature"))
+
+	srcReal, destReal := setup(t)
+	live := actions(organize.New(destReal).Place(
+		context.Background(), clusterOf(t, srcReal, "IMG_1.jpg", "IMG_2.jpg", "IMG_3.jpg"), "nature"))
+
+	if !slices.Equal(dry, live) {
+		t.Errorf("dry run and real run disagree:\n dry = %v\nreal = %v", dry, live)
+	}
+	if want := []string{"skipped-identical IMG_1.jpg", "renamed IMG_2 (1).jpg", "copied IMG_3.jpg"}; !slices.Equal(live, want) {
+		t.Errorf("real run actions = %v, want %v", live, want)
+	}
+}
+
+// TestDryRunResolvesIntraRunCollisions covers the case a preview can only get right
+// by remembering its own promises: two photos with the same name and no file at the
+// destination yet. Nothing is written, so the second collision is invisible to the
+// filesystem — it must still be reported as the rename the real run would do.
+func TestDryRunResolvesIntraRunCollisions(t *testing.T) {
+	dest := t.TempDir()
+	srcA, srcB := t.TempDir(), t.TempDir()
+	a := clusterOf(t, srcA, "IMG_1.jpg")
+	b := clusterOf(t, srcB, "IMG_1.jpg") // same name, different content, different dir
+	c := photo.Cluster{Photos: append(a.Photos, b.Photos...), Start: a.Start, End: a.End}
+
+	results := dryRunOrg(dest).Place(context.Background(), c, "nature")
+	if len(results) != 2 {
+		t.Fatalf("want 2 results, got %d", len(results))
+	}
+	if results[0].Action != organize.ActionCopied {
+		t.Errorf("first photo: want copied, got %s", results[0].Action)
+	}
+	if results[1].Action != organize.ActionRenamed {
+		t.Errorf("second photo: want renamed, got %s", results[1].Action)
+	}
+	if got := filepath.Base(results[1].Dest); got != "IMG_1 (1).jpg" {
+		t.Errorf("second photo dest = %q, want 'IMG_1 (1).jpg'", got)
+	}
+	if n := entryCount(t, dest); n != 0 {
+		t.Errorf("dry run created %d entries; want none", n)
+	}
+}
+
+func TestDryRunSkipsCompanions(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	c := clusterOf(t, src, "IMG.jpg")
+	writeFile(t, filepath.Join(src, "IMG.jpg.xmp"), "sidecar")
+
+	org := dryRunOrg(dest)
+	org.Sidecars = true
+	results := org.Place(context.Background(), c, "nature")
+	if len(results) != 2 {
+		t.Fatalf("want the photo and its companion previewed, got %d results", len(results))
+	}
+	if n := entryCount(t, dest); n != 0 {
+		t.Errorf("dry run created %d entries; want none", n)
 	}
 }

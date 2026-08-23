@@ -39,7 +39,7 @@ func TestCleanEndToEndDelete(t *testing.T) {
 	writeCleanFile(t, video, []byte("VIDEO"))
 
 	cfg := config.CleanConfig{Source: src, DestRoot: dst, Delete: true}
-	sum, err := app.Clean(context.Background(), cfg, discardLogger())
+	sum, err := app.Clean(context.Background(), cfg, discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("Clean: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestCleanPreviewThenCommit(t *testing.T) {
 	writeCleanFile(t, filepath.Join(dst, "IMG.jpg"), []byte("PIC"))
 
 	preview, err := app.Clean(context.Background(),
-		config.CleanConfig{Source: src, DestRoot: dst, Delete: false}, discardLogger())
+		config.CleanConfig{Source: src, DestRoot: dst, Delete: false}, discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("preview: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestCleanPreviewThenCommit(t *testing.T) {
 	}
 
 	commit, err := app.Clean(context.Background(),
-		config.CleanConfig{Source: src, DestRoot: dst, Delete: true}, discardLogger())
+		config.CleanConfig{Source: src, DestRoot: dst, Delete: true}, discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestCleanRemovesCompanionByContent(t *testing.T) {
 	writeCleanFile(t, orphan, []byte("NOT-ARCHIVED-DIFFERENT-SIZE"))
 
 	preview, err := app.Clean(context.Background(),
-		config.CleanConfig{Source: src, DestRoot: dst, Delete: false}, discardLogger())
+		config.CleanConfig{Source: src, DestRoot: dst, Delete: false}, discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("preview: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestCleanRemovesCompanionByContent(t *testing.T) {
 	}
 
 	sum, err := app.Clean(context.Background(),
-		config.CleanConfig{Source: src, DestRoot: dst, Delete: true}, discardLogger())
+		config.CleanConfig{Source: src, DestRoot: dst, Delete: true}, discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("Clean: %v", err)
 	}
@@ -143,12 +143,12 @@ func TestCleanRemovesCompanionsAfterSort(t *testing.T) {
 
 	cfg := baseCfg(src, dst, true)
 	cfg.Sidecars = true
-	if _, err := app.Organize(context.Background(), cfg, discardLogger()); err != nil {
+	if _, err := app.Organize(context.Background(), cfg, discardLogger(), nil); err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
 
 	sum, err := app.Clean(context.Background(),
-		config.CleanConfig{Source: src, DestRoot: dst, Delete: true}, discardLogger())
+		config.CleanConfig{Source: src, DestRoot: dst, Delete: true}, discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("Clean: %v", err)
 	}

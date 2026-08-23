@@ -34,6 +34,10 @@ or deleted. Every step is explained in the logs.
   `IMG.jpg.json`) and same-base-name sidecars (`IMG.xmp`). They follow the photo's final
   name on a collision rename, obey the same no-overwrite rules, and are removed by `clean`
   too. Disable with `--sidecars=false`.
+- **Dry run**: `--dry-run` reports exactly what would be copied, skipped or renamed —
+  including the ` (1)` renames — and writes nothing at all, not even a folder.
+- **Pipe-safe output**: the run result goes to **stdout** (`--output=text|json`), logs
+  and progress to **stderr**. Ctrl-C is graceful: it reports how far it got.
 - **Single-photo mode**: pass a file instead of a directory.
 
 ## Requirements
@@ -99,9 +103,18 @@ and `moraine <command> --help` for command-specific options and examples.
 # photos only — do not copy companion/sidecar files
 ./moraine sort --sidecars=false -d ~/Photos/sorted ~/Photos/2025
 
-# Custom theme vocabulary + verbose logs (-l log-level)
+# Preview the plan — writes nothing at all (-n dry-run)
+./moraine sort --dry-run -d ~/Photos/sorted ~/Photos/2025
+
+# Machine-readable result on stdout, logs discarded
+./moraine sort --output=json -d ~/Photos/sorted ~/Photos/2025 2>/dev/null | jq .summary
+
+# Throttle a network drive to one EXIF reader (-j jobs)
+./moraine sort --jobs 1 -d ~/Photos/sorted ~/Photos/2025
+
+# Custom theme vocabulary + per-file logs (-v verbose; -q for errors only)
 ./moraine sort --themes "friends,hiking,party,nature" --fallback-theme "misc" \
-  -l debug -d ~/Photos/sorted ~/Photos/2025
+  --verbose -d ~/Photos/sorted ~/Photos/2025
 
 # Delete originals already safely copied — dry-run by default, then commit
 ./moraine clean -d ~/Photos/sorted ~/Photos/2025            # preview (deletes nothing)
@@ -115,6 +128,54 @@ and `moraine <command> --help` for command-specific options and examples.
 
 Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 (e.g. `~/Photos/sorted/nature/2025/2025-08-12/IMG_1234.jpg`). Originals stay in place.
+
+### Output: data on stdout, logs on stderr
+
+**stdout carries the run result and nothing else**, so `moraine` is safe on either
+side of a pipe. Logs, progress and errors always go to **stderr**.
+
+`--output=text` (the default) prints one `key=value` line:
+
+```console
+$ ./moraine sort -d ~/Photos/sorted ~/Photos/2025 2>/dev/null
+groups=3 copied=412 skipped=8 renamed=1 errors=0 companions_copied=37 \
+companions_skipped=0 companions_renamed=0 companions_errors=0 dry_run=false interrupted=false
+```
+
+`--output=json` prints one object with every per-file record plus the summary:
+
+```console
+$ ./moraine clean -d ~/Photos/sorted ~/Photos/2025 --output=json 2>/dev/null | jq .
+{
+  "command": "clean",
+  "source": "/home/me/Photos/2025",
+  "dest": "/home/me/Photos/sorted",
+  "delete": false,
+  "interrupted": false,
+  "results": [
+    { "path": "/home/me/Photos/2025/IMG_1234.jpg",
+      "decision": "would-delete",
+      "reason": "identical copy found" }
+  ],
+  "summary": { "deleted": 0, "would_delete": 37, "kept": 4, "errors": 0,
+               "source_hashed": 41, "dest_hashed": 37 }
+}
+```
+
+Per-file *narration* is a log, not data: `sort` keeps it at `--verbose`, since a real
+library produces thousands of lines, while `clean` reports each decision at the
+default level — previewing that plan is the reason you run it.
+
+**Interrupting** a run (Ctrl-C) is graceful: everything already copied is complete and
+durable, the summary still prints on stdout with `interrupted=true`, and stderr says
+how far it got (`interrupted: copied 412, skipped 8, …`). Exit code is `1`, since the
+run did not finish what was asked.
+
+> **Migrating to the stdout contract** (v0, breaking): logs used to go to **stdout**,
+> mixed in with everything else. They now go to **stderr**, and stdout carries only the
+> run result described above. If you were capturing logs with `moraine sort … > log.txt`,
+> use `2> log.txt`. Per-photo lines also moved to `--verbose`. At v0 the stdout contract
+> may still change; it will be signalled here when it does.
 
 > **Migrating from the pre-1.0 flag CLI**: the interface moved to subcommands with
 > GNU-style flags. `moraine <dir>` → `moraine sort <dir>`; `-dest` → `--dest` (or `-d`);
@@ -134,6 +195,11 @@ Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 | `--themes`         |       | string   | `mountain,special-events,cook,family` | themes (comma-separated slugs)                 |
 | `--fallback-theme` |       | string   | `other`                   | fallback theme when none is determined                     |
 | `--log-level`      | `-l`  | string   | `info`                    | `debug` \| `info` \| `warn` \| `error`                     |
+| `--quiet`          | `-q`  | bool     | `false`                   | log errors only (excludes `--verbose` / `--log-level`)     |
+| `--verbose`        | `-v`  | bool     | `false`                   | log every file (excludes `--quiet` / `--log-level`)        |
+| `--output`         |       | string   | `text`                    | stdout format: `text` \| `json`                            |
+| `--dry-run`        | `-n`  | bool     | `false`                   | report the plan; writes **nothing**, not even a folder     |
+| `--jobs`           | `-j`  | int      | `0`                       | EXIF reader workers (`0` = one per CPU)                    |
 | `--exiftool`       |       | string   | `exiftool`                | exiftool executable (name on `PATH` or absolute path); **required** for RAW |
 | `--sidecars`       |       | bool     | `true`                    | also copy each photo's companion/sidecar files (`--sidecars=false` to disable) |
 | `--mountain-altitude` |    | float    | `1500`                    | metres at/above which the altitude heuristic labels a group `mountain` (must be `> 0`) |
@@ -147,9 +213,14 @@ Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 | `--dest`      | `-d`  | string   | `<source>/_sorted` | destination library holding the copies (**never** deleted from) |
 | `--delete`    |       | bool     | `false`            | actually delete matched originals (default: dry-run)         |
 | `--log-level` | `-l`  | string   | `info`             | `debug` \| `info` \| `warn` \| `error`                       |
+| `--quiet`     | `-q`  | bool     | `false`            | log errors only (excludes `--verbose` / `--log-level`)        |
+| `--verbose`   | `-v`  | bool     | `false`            | log every file (excludes `--quiet` / `--log-level`)          |
+| `--output`    |       | string   | `text`             | stdout format: `text` \| `json`                              |
 
-`moraine version` (or `--version`) prints the version. **Exit codes**: `0` success,
-`1` runtime error, `2` usage error.
+`moraine version` reports the build's identity — version, commit, build time, Go
+version and platform — and honours `--output=json`; `moraine --version` prints just
+its first line. **Exit codes**: `0` success, `1` runtime error (including an
+interrupted run), `2` usage error.
 
 ### Shell completion
 

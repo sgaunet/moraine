@@ -23,7 +23,9 @@ and from disk I/O — no domain package imports Cobra.
   marker. The only package that imports Cobra. `completion.go` holds the shell
   completion candidates; it derives them from `config.DefaultThemes` and
   `photo.Extensions()` so the suggestions cannot drift from what the parsers
-  accept.
+  accept. `output.go` owns the **stdout contract** (see decision 7): the JSON
+  document types, the one-line text summary, and the `reporter` that collects
+  per-file records through the `app` orchestrators' `onResult` callback.
 - **`internal/config`** — single immutable `Config`/`CleanConfig` struct holding every
   runtime parameter; `New`/`NewClean` (syntax/cross-field checks, no I/O) is split from
   `Validate` (filesystem checks, default-destination resolution).
@@ -105,6 +107,29 @@ and from disk I/O — no domain package imports Cobra.
    the original is retained (fail-safe); only regular files are considered (symlinks
    and special files are skipped); per-file failures are non-fatal and cancellation
    stops the run promptly.
+7. **Data on stdout, logs on stderr** — stdout carries the run result only, as one
+   `key=value` line (`--output=text`) or one JSON object with every per-file record plus
+   the summary (`--output=json`); logs, progress and errors go to stderr. Anything else
+   written to stdout corrupts a downstream pipe, which is why Principle V makes this
+   non-negotiable. The document types live in `internal/cli/output.go` rather than
+   reusing `app.Summary` directly, so renaming an internal tally field cannot silently
+   change what scripts parse — the wire format is a public API and is spelled out as
+   one. The `app` orchestrators stay presentation-free: they hand every `Result` to an
+   `onResult` callback (the shape `clean.Cleaner.Run` already used) and the transport
+   decides how to render it. Per-file *narration* splits by command: `sort` logs it at
+   debug, since a real library produces thousands of lines, while `clean` keeps it at
+   info because previewing that plan is the point of running it.
+8. **Dry run that writes nothing** — `--dry-run` reaches `organize` as
+   `Organizer.DryRun`, which skips both the copy *and* the `MkdirAll`, so a preview
+   leaves no empty folders either. Every `Result` still carries the Action the real run
+   would take. To keep that promise across intra-run collisions, the organizer remembers
+   the destination names it has already promised (`planned`) and feeds them to
+   `uniqueName` alongside `exists` — otherwise two same-named photos would both be
+   previewed as landing on the same path, under-reporting a rename the real run performs.
+9. **Interrupt is a report, not a crash** — `organize.Place` records the context error
+   against every photo it never reached; `app.tally` excludes those from the error count
+   (nothing failed — nothing was attempted), and the transport prints the partial summary
+   before returning `interrupted: copied N, …` with exit 1.
 
 ## Integration Points
 
