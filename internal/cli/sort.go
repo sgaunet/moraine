@@ -36,9 +36,13 @@ Classification (a theme is always assigned):
      group with an EXIF altitude >= --mountain-altitude (default 1500 m) as
      "mountain", when "mountain" is one of the themes;
   3. otherwise: the fallback theme (--fallback-theme).
-HEIC photos are dated and organized but not sent to the model. RAW photos
-(.dng/.nef/.cr2/...) are organized too; their embedded preview is extracted with
-exiftool (required, see --exiftool) and sent to the model.
+RAW photos (.dng/.nef/.cr2/...) are classified from the embedded preview exiftool
+extracts (exiftool is required, see --exiftool). HEIC embeds no such preview, so it
+is decoded by the first of sips, heif-convert, ffmpeg or magick found on PATH; that
+converter is OPTIONAL, and without one HEIC photos are still dated, organized and
+copied, only their group falls back to the heuristic or the fallback theme.
+Images are downscaled before being sent, and a RAW or HEIC shot alongside its own
+JPEG is sent only once.
 
 Output:
   stdout carries the run summary only (--output=text, the default) or the full

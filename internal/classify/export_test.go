@@ -10,6 +10,8 @@ import (
 var (
 	EvenlySpaced   = evenlySpaced
 	NormaliseTheme = normaliseTheme
+	Shrink         = shrink
+	MaxImageDim    = maxImageDim
 )
 
 func (o *OllamaClassifier) ChoosePhotos(c photo.Cluster) []photo.Photo { return o.choosePhotos(c) }

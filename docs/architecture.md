@@ -25,7 +25,7 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   marker. The only package that imports Cobra. `completion.go` holds the shell
   completion candidates; it derives them from `config.DefaultThemes` and
   `photo.Extensions()` so the suggestions cannot drift from what the parsers
-  accept. `output.go` owns the **stdout contract** (see decision 7): the JSON
+  accept. `output.go` owns the **stdout contract** (see decision 8): the JSON
   document types, the one-line text summary, and the `reporter` that collects
   per-file records through the `app` orchestrators' `onResult` callback.
 - **`internal/config`** — single immutable `Config`/`CleanConfig`/`UndoConfig` struct
@@ -101,17 +101,40 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 4. **Interface-based classifier with guaranteed fallback** — a theme is
    always returned; the network/model stage is optional and degrades to the
    fallback when Ollama is unreachable.
-5. **RAW via mandatory exiftool, previews in memory** — RAW pixels can't be
-   decoded in pure Go, so `internal/rawpreview` shells out to exiftool to
-   extract the embedded JPEG preview (`JpgFromRaw → PreviewImage →
-   ThumbnailImage`) and feeds the bytes to the model without ever writing a
-   temp file. exiftool is **required**: `main.run()` calls
-   `rawpreview.EnsureAvailable` after `config.Validate` and before
-   `app.Organize`, so a missing dependency fails fast (exit 1) before any file
-   is touched. A RAW with no usable preview degrades like HEIC. Small events
-   send every eligible photo (RAW included); large events prefer JPEG/PNG and
-   fill the sample with RAW (FR-012).
-6. **`clean` subcommand — dry-run by default, content-matched deletion** — feature
+5. **RAW via mandatory exiftool, HEIC via an optional converter** — neither
+   format's pixels can be decoded in pure Go, but they fail differently and so are
+   served by different programs. A RAW carries a full JPEG preview, which
+   `internal/rawpreview` copies straight out with exiftool (`JpgFromRaw →
+   PreviewImage → ThumbnailImage`), in memory, never writing a temp file. exiftool
+   is **required**: `main.run()` calls `rawpreview.EnsureAvailable` after
+   `config.Validate` and before `app.Organize`, so a missing dependency fails fast
+   (exit 1) before any file is touched.
+
+   A HEIC carries no such preview — measured on iPhone files, all three exiftool
+   tags return zero bytes, because its derived images are HEVC-coded inside the
+   HEIF container — so `internal/heicpreview` decodes it with the first of `sips`,
+   `heif-convert`, `ffmpeg` or `magick` found on PATH, reading the JPEG from stdout
+   where the tool allows and from a scratch file (removed before returning) where
+   it does not. That converter is **optional** and `Detect` returns nil rather than
+   an error when none exists: a HEIC photo is still scanned, dated, organized and
+   copied, and only its group's classification falls back. `classify` keeps the two
+   seams separate (`RawPreview`, `HEICPreview`) precisely because having one says
+   nothing about having the other. Small events send every eligible photo (previews
+   included); large events prefer JPEG/PNG and fill the sample with extracted
+   previews (FR-012), which cost a process spawn each.
+6. **Cheap, stable model calls** — `internal/classify` keeps what reaches Ollama
+   small and what comes back meaningful. Images are downscaled to 1024 px on the
+   long side before base64 (a vision model tiles its input, so the dimensions —
+   not the file size — set the inference cost); a RAW or HEIC shot alongside its
+   own JPEG is recognised by directory + base name and sent once; the cluster's
+   capture span, highest altitude and location ride along as text. The model is
+   loaded once per run by an empty-message `/api/chat` warm-up, issued outside any
+   single classification's timeout and only when there is actually something to
+   classify, and `keep_alive` holds it resident between clusters. Retries are
+   reserved for transient failures (transport, 5xx, 408, 429) with exponential
+   backoff: decoding is pinned to temperature 0 and a fixed seed, so re-asking
+   after a rejected answer would only re-read the same answer.
+7. **`clean` subcommand — dry-run by default, content-matched deletion** — feature
    004. A source original is deleted only when a byte-identical copy (same
    `contenthash.Sum`) exists anywhere under the destination; filenames are never
    used, so suffix-renamed and skipped-identical copies still match. The default is
@@ -126,7 +149,7 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
    the original is retained (fail-safe); only regular files are considered (symlinks
    and special files are skipped); per-file failures are non-fatal and cancellation
    stops the run promptly.
-7. **Data on stdout, logs on stderr** — stdout carries the run result only, as one
+8. **Data on stdout, logs on stderr** — stdout carries the run result only, as one
    `key=value` line (`--output=text`) or one JSON object with every per-file record plus
    the summary (`--output=json`); logs, progress and errors go to stderr. Anything else
    written to stdout corrupts a downstream pipe, which is why Principle V makes this
@@ -138,28 +161,28 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
    decides how to render it. Per-file *narration* splits by command: `sort` logs it at
    debug, since a real library produces thousands of lines, while `clean` keeps it at
    info because previewing that plan is the point of running it.
-8. **Dry run that writes nothing** — `--dry-run` reaches `organize` as
+9. **Dry run that writes nothing** — `--dry-run` reaches `organize` as
    `Organizer.DryRun`, which skips both the copy *and* the `MkdirAll`, so a preview
    leaves no empty folders either. Every `Result` still carries the Action the real run
    would take. To keep that promise across intra-run collisions, the organizer remembers
    the destination names it has already promised (`planned`) and feeds them to
    `uniqueName` alongside `exists` — otherwise two same-named photos would both be
    previewed as landing on the same path, under-reporting a rename the real run performs.
-9. **Interrupt is a report, not a crash** — `organize.Place` records the context error
+10. **Interrupt is a report, not a crash** — `organize.Place` records the context error
    against every photo it never reached; `app.tally` excludes those from the error count
    (nothing failed — nothing was attempted), and the transport prints the partial summary
    before returning `interrupted: copied N, …` with exit 1.
 
-10. **The manifest is a shortcut, never an authority** — an incremental run trusts a
+11. **The manifest is a shortcut, never an authority** — an incremental run trusts a
     record only while *both* ends still match it: the source must have the recorded
     size and mtime, and so must the copy. Any mismatch — an edited photo, a copy
     removed by hand, a partly undone run — falls through to the full byte comparison,
     so a stale manifest can only ever cost the skip, never correctness. `undo` applies
     the same rule before deleting anything, which is what makes "only removes what this
     run created" true rather than merely intended. Mtimes survive the round trip
-    because a copy is stamped with its source's (see decision 6), so one recorded pair
+    because a copy is stamped with its source's (see decision 3), so one recorded pair
     fingerprints both files.
-11. **Theme reuse over re-classification** — on an incremental run a cluster whose
+12. **Theme reuse over re-classification** — on an incremental run a cluster whose
     already-placed photos agree on one still-configured theme keeps it
     (`method=manifest`), instead of asking the model again. That is not only cheaper:
     it keeps a photo added to an old event filed *with* that event, which classifying

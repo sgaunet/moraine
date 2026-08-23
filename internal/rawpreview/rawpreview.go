@@ -1,8 +1,9 @@
 // Package rawpreview is the single place that talks to the external exiftool
 // program. It verifies exiftool is available (mandatory at startup) and extracts
-// the embedded JPEG preview from a RAW file so the vision model can "see" it.
-// Previews are captured in memory (exiftool's stdout) and never written to disk
-// (feature 003, FR-005). It depends on no transport or storage package.
+// the embedded JPEG preview from a file whose pixels Go cannot decode — a camera
+// RAW, or a HEIC — so the vision model can "see" it. Previews are captured in
+// memory (exiftool's stdout) and never written to disk (feature 003, FR-005). It
+// depends on no transport or storage package.
 package rawpreview
 
 import (
@@ -16,13 +17,17 @@ import (
 	"time"
 )
 
-// ErrNoPreview means the RAW file exposes no embedded image under any supported
-// tag. Callers treat it as "skip this photo as model input" (non-fatal), not as
-// an operational failure.
+// ErrNoPreview means the file exposes no embedded image under any supported tag.
+// Callers treat it as "skip this photo as model input" (non-fatal), not as an
+// operational failure. It is the normal outcome for a HEIC written without a
+// thumbnail, and for a RAW whose maker stores no JPEG alongside the sensor data.
 var ErrNoPreview = errors.New("no embedded preview")
 
 // previewTags are tried largest-first: a full-size embedded JPEG before the
-// smaller preview, before the thumbnail of last resort (FR-004).
+// smaller preview, before the thumbnail of last resort (FR-004). The list spans
+// both sources: JpgFromRaw is a RAW tag, while a HEIC typically answers only to
+// ThumbnailImage. A tag the file does not carry simply yields nothing and the
+// next one is tried.
 var previewTags = []string{"JpgFromRaw", "PreviewImage", "ThumbnailImage"}
 
 // Extractor extracts embedded previews via exiftool. The zero value is unusable;
@@ -41,9 +46,9 @@ func NewExtractor(path string, timeout time.Duration) *Extractor {
 	return &Extractor{Path: path, Timeout: timeout, Logger: slog.Default()}
 }
 
-// Extract returns the largest available embedded JPEG preview of rawPath, in
-// memory. It tries previewTags in order and returns the first non-empty result.
-// It returns ErrNoPreview when every tag is empty, or a wrapped error when
+// Extract returns the largest available embedded JPEG preview of path (a RAW or a
+// HEIC), in memory. It tries previewTags in order and returns the first non-empty
+// result. It returns ErrNoPreview when every tag is empty, or a wrapped error when
 // exiftool cannot run or times out. No temporary file is written.
 func (e *Extractor) Extract(ctx context.Context, rawPath string) ([]byte, error) {
 	for _, tag := range previewTags {

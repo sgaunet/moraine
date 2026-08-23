@@ -64,6 +64,18 @@ func TestFormatDecodable(t *testing.T) {
 	if photo.HEIC.Decodable() {
 		t.Error("HEIC must not be decodable (placeholder path)")
 	}
+	// NeedsPreview is the complement of Decodable: the formats whose pixels only
+	// exiftool can reach.
+	for _, f := range []photo.Format{photo.RAW, photo.HEIC} {
+		if !f.NeedsPreview() {
+			t.Errorf("%s must need an extracted preview", f)
+		}
+	}
+	for _, f := range []photo.Format{photo.JPEG, photo.PNG, photo.FormatUnknown} {
+		if f.NeedsPreview() {
+			t.Errorf("%s must not need an extracted preview", f)
+		}
+	}
 	if photo.RAW.Decodable() {
 		t.Error("RAW must not be decodable (preview extracted via exiftool)")
 	}
