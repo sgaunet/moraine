@@ -18,6 +18,10 @@ type completionFunc func(*cobra.Command, []string, string) ([]string, cobra.Shel
 // canonical value.
 var logLevels = []string{"debug", "info", "warn", "error"}
 
+// outputFormats are the values accepted by --output, kept in step with the
+// config.OutputFormat constants.
+var outputFormats = []string{string(config.OutputText), string(config.OutputJSON)}
+
 // gapDurations are common --gap values. The flag accepts any Go duration; these
 // are suggestions, so the list stays short rather than exhaustive.
 var gapDurations = []string{"30m", "1h", "6h", "12h", "24h"}
@@ -98,4 +102,15 @@ func registerSharedCompletions(cmd *cobra.Command) {
 	cmd.ValidArgsFunction = completeSource
 	_ = cmd.MarkFlagDirname("dest")
 	_ = cmd.RegisterFlagCompletionFunc("log-level", completeFixed(logLevels...))
+}
+
+// registerVerbosityFlags adds --quiet/--verbose as the two shorthands over
+// --log-level and declares all three mutually exclusive. Letting cobra enforce that
+// keeps the rule in one line and surfaces a violation as a usage error (exit 2),
+// instead of plumbing "was --log-level set?" down into the config package.
+func registerVerbosityFlags(cmd *cobra.Command, quiet, verbose *bool) {
+	f := cmd.Flags()
+	f.BoolVarP(quiet, "quiet", "q", false, "log errors only (same as --log-level error)")
+	f.BoolVarP(verbose, "verbose", "v", false, "log every file (same as --log-level debug)")
+	cmd.MarkFlagsMutuallyExclusive("quiet", "verbose", "log-level")
 }

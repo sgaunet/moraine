@@ -15,12 +15,22 @@ func TestVersionSubcommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("version exit = %d, want 0", code)
 	}
-	if strings.TrimSpace(out.String()) != "moraine 1.2.3" {
-		t.Errorf("version output = %q, want %q", strings.TrimSpace(out.String()), "moraine 1.2.3")
+	// The first line is the stable identity; the build detail follows it.
+	if got := firstLine(out.String()); got != "moraine 1.2.3" {
+		t.Errorf("version first line = %q, want %q", got, "moraine 1.2.3")
+	}
+	// go and platform are always knowable; the vcs stamp may be absent (a test
+	// binary, or a build made outside a repository), so it is not asserted.
+	for _, want := range []string{"go=", "platform="} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("version output missing %q\n---\n%s", want, out.String())
+		}
 	}
 }
 
-func TestVersionFlagMatchesSubcommand(t *testing.T) {
+// TestVersionFlagIsTheTerseForm holds the two spellings together: --version prints
+// exactly the subcommand's first line, so neither can drift into a different name.
+func TestVersionFlagIsTheTerseForm(t *testing.T) {
 	var sub, flag bytes.Buffer
 	if code := cli.Execute("1.2.3", []string{"version"}, &sub, io.Discard); code != 0 {
 		t.Fatalf("version subcommand exit = %d", code)
@@ -28,9 +38,18 @@ func TestVersionFlagMatchesSubcommand(t *testing.T) {
 	if code := cli.Execute("1.2.3", []string{"--version"}, &flag, io.Discard); code != 0 {
 		t.Fatalf("--version flag exit = %d", code)
 	}
-	if sub.String() != flag.String() {
-		t.Errorf("version subcommand %q != --version %q", sub.String(), flag.String())
+	if strings.TrimSpace(flag.String()) != firstLine(sub.String()) {
+		t.Errorf("--version %q is not the subcommand's first line %q",
+			strings.TrimSpace(flag.String()), firstLine(sub.String()))
 	}
+}
+
+// firstLine returns s up to the first newline, trimmed.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 func TestVersionNeedsNoSourceOrTools(t *testing.T) {

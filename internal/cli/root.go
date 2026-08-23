@@ -4,13 +4,23 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sgaunet/moraine/internal/config"
 )
 
 // newRootCmd builds the moraine root command and attaches every subcommand. The
 // root has no Run of its own: invoked bare it prints help (exit 0). Errors and
 // usage are silenced so cli.Execute owns all error rendering and the exit-code
 // mapping; the --version flag is enabled here (mirrors the `version` subcommand).
-func newRootCmd(version string, stdout io.Writer) *cobra.Command {
+//
+// The value of the persistent --output flag is shared with the subcommands through a
+// pointer: cobra parses into it before any RunE runs, so each command reads the
+// resolved value at execution time.
+func newRootCmd(version string, stdout, stderr io.Writer) *cobra.Command {
+	var output string
+	// One resolution for both spellings: --version prints this report's first line,
+	// `version` prints the whole thing.
+	build := buildReport(version)
 	root := &cobra.Command{
 		Use:   "moraine",
 		Short: "Automatic photo organizer",
@@ -27,16 +37,32 @@ Commands:
   version   print the version
   completion  generate the shell completion script
 
+Output:
+  stdout carries the run result only, as one key=value line (--output=text, the
+  default) or one JSON object (--output=json). Logs, progress and errors go to
+  stderr, so moraine is safe on either side of a pipe.
+
+Exit codes:
+  0  success
+  1  runtime failure (unreadable source, missing exiftool, interrupted run)
+  2  usage error (unknown command or flag, bad argument count or value)
+
 Run "moraine <command> --help" for command-specific options and examples.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		Version:       version,
+		Version:       build.Version,
 	}
 	root.SetVersionTemplate("moraine {{.Version}}\n")
 
-	root.AddCommand(newSortCmd(stdout))
-	root.AddCommand(newCleanCmd(stdout))
-	root.AddCommand(newVersionCmd(version, stdout))
+	// --output is persistent: every command writes its result to stdout, so the
+	// rendering choice belongs to the tool rather than to each subcommand.
+	root.PersistentFlags().StringVar(&output, "output", config.DefaultOutput,
+		"stdout format for the run result: text|json (logs always go to stderr)")
+	_ = root.RegisterFlagCompletionFunc("output", completeFixed(outputFormats...))
+
+	root.AddCommand(newSortCmd(stdout, stderr, &output))
+	root.AddCommand(newCleanCmd(stdout, stderr, &output))
+	root.AddCommand(newVersionCmd(build, stdout, &output))
 
 	return root
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -19,7 +20,7 @@ import (
 // values bind into a config.Options; RunE turns them into a validated config.Config
 // (config.New errors are usage errors → exit 2) and runs the pipeline (filesystem
 // validation, the exiftool preflight, and app.Organize are runtime errors → exit 1).
-func newSortCmd(stdout io.Writer) *cobra.Command {
+func newSortCmd(stdout, stderr io.Writer, output *string) *cobra.Command {
 	var opts config.Options
 	cmd := &cobra.Command{
 		Use:   "sort [flags] <directory-or-file>",
@@ -37,7 +38,16 @@ Classification (a theme is always assigned):
   3. otherwise: the fallback theme (--fallback-theme).
 HEIC photos are dated and organized but not sent to the model. RAW photos
 (.dng/.nef/.cr2/...) are organized too; their embedded preview is extracted with
-exiftool (required, see --exiftool) and sent to the model.`,
+exiftool (required, see --exiftool) and sent to the model.
+
+Output:
+  stdout carries the run summary only (--output=text, the default) or the full
+  result with one record per file (--output=json). Logs go to stderr.
+
+Exit codes:
+  0  success
+  1  runtime failure (unreadable source, missing exiftool, interrupted run)
+  2  usage error (unknown flag, bad argument count or value)`,
 		Example: `  # organize a directory
   moraine sort --dest ~/Photos/sorted ~/Photos/2025
 
@@ -46,6 +56,12 @@ exiftool (required, see --exiftool) and sent to the model.`,
 
   # without Ollama (heuristic + fallback only)
   moraine sort -s 0 -d ~/Photos/sorted ~/Photos/2025
+
+  # preview the plan without writing anything
+  moraine sort --dry-run -d ~/Photos/sorted ~/Photos/2025
+
+  # machine-readable result (logs discarded)
+  moraine sort --output=json -d ~/Photos/sorted ~/Photos/2025 2>/dev/null
 
   # photos only — do not copy companion/sidecar files
   moraine sort --sidecars=false -d ~/Photos/sorted ~/Photos/2025
@@ -56,6 +72,7 @@ exiftool (required, see --exiftool) and sent to the model.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			opts.Source = args[0]
+			opts.Output = *output
 
 			cfg, err := config.New(opts)
 			if err != nil {
@@ -70,14 +87,25 @@ exiftool (required, see --exiftool) and sent to the model.`,
 				return asRuntime(err)
 			}
 
-			logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+			logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			if _, err := app.Organize(ctx, cfg, logger); err != nil {
+			rep := newReporter(cfg.Output, stdout)
+			sum, runErr := app.Organize(ctx, cfg, logger, rep.addSort)
+
+			// Report before deciding the exit code: an interrupted run still did
+			// real work, and the tally is the only record of what it managed.
+			interrupted := isInterrupt(runErr)
+			if err := rep.emitSort(cfg, sum, interrupted); err != nil {
 				return asRuntime(err)
 			}
-			return nil
+			if interrupted {
+				return asRuntime(fmt.Errorf(
+					"interrupted: copied %d, skipped %d, renamed %d, errors %d",
+					sum.Copied, sum.Skipped, sum.Renamed, sum.Errors))
+			}
+			return asRuntime(runErr)
 		},
 	}
 
@@ -92,10 +120,14 @@ exiftool (required, see --exiftool) and sent to the model.`,
 	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
 	f.StringVar(&opts.ExifTool, "exiftool", config.DefaultExifTool, "exiftool executable (name on PATH or absolute path); required to read RAW files")
 	f.BoolVar(&opts.Sidecars, "sidecars", true, "also copy companion/sidecar files next to each photo (e.g. IMG.jpg.xmp, IMG.xmp); --sidecars=false to disable")
+	f.BoolVarP(&opts.DryRun, "dry-run", "n", false, "report what would be copied, skipped or renamed without writing anything")
+	f.IntVarP(&opts.Jobs, "jobs", "j", 0, "EXIF reader workers (0 = one per CPU); lower it to throttle a network drive")
 	f.Float64Var(&opts.MountainAltitude, "mountain-altitude", config.DefaultMountainAltitude,
 		"metres at/above which the altitude heuristic labels a group \"mountain\" (must be > 0)")
 
+	registerVerbosityFlags(cmd, &opts.Quiet, &opts.Verbose)
 	registerSharedCompletions(cmd)
+	_ = cmd.RegisterFlagCompletionFunc("jobs", completeFixed())
 	_ = cmd.RegisterFlagCompletionFunc("themes", completeThemeList)
 	_ = cmd.RegisterFlagCompletionFunc("fallback-theme", completeFixed(append(defaultThemes(), config.DefaultFallback)...))
 	_ = cmd.RegisterFlagCompletionFunc("gap", completeFixed(gapDurations...))

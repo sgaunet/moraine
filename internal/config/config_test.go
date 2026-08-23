@@ -24,6 +24,7 @@ func defOpts(src string) config.Options {
 		Fallback:         config.DefaultFallback,
 		LogLevel:         config.DefaultLogLevel,
 		ExifTool:         config.DefaultExifTool,
+		Output:           config.DefaultOutput,
 		MountainAltitude: config.DefaultMountainAltitude,
 	}
 }
@@ -242,4 +243,99 @@ func TestValidateExplicitDest(t *testing.T) {
 	if cfg.DestRoot != dest {
 		t.Errorf("DestRoot: want %q, got %q", dest, cfg.DestRoot)
 	}
+}
+
+// TestNewOutputFormat covers the stdout-format flag: the empty string means the
+// default so a caller that never sets it still gets a usable Config, and anything
+// unrecognised is a usage error rather than a silent fallback.
+func TestNewOutputFormat(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		want    config.OutputFormat
+		wantErr bool
+	}{
+		{"default when empty", "", config.OutputText, false},
+		{"text", "text", config.OutputText, false},
+		{"json", "json", config.OutputJSON, false},
+		{"case insensitive", "JSON", config.OutputJSON, false},
+		{"padded", "  json  ", config.OutputJSON, false},
+		{"unknown rejected", "yaml", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := defOpts("/some/src")
+			o.Output = tc.output
+			cfg, err := config.New(o)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error for --output %q", tc.output)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.Output != tc.want {
+				t.Errorf("Output = %q, want %q", cfg.Output, tc.want)
+			}
+		})
+	}
+}
+
+// TestNewVerbosityFlags checks that --quiet/--verbose resolve to log levels. Their
+// mutual exclusion is enforced by the transport (cobra), not here, so this only
+// pins the mapping.
+func TestNewVerbosityFlags(t *testing.T) {
+	tests := []struct {
+		name     string
+		quiet    bool
+		verbose  bool
+		logLevel string
+		want     slog.Level
+	}{
+		{"default", false, false, "info", slog.LevelInfo},
+		{"explicit log level", false, false, "warn", slog.LevelWarn},
+		{"quiet", true, false, "info", slog.LevelError},
+		{"verbose", false, true, "info", slog.LevelDebug},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := defOpts("/some/src")
+			o.Quiet, o.Verbose, o.LogLevel = tc.quiet, tc.verbose, tc.logLevel
+			cfg, err := config.New(o)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.LogLevel != tc.want {
+				t.Errorf("LogLevel = %v, want %v", cfg.LogLevel, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewJobsAndDryRun(t *testing.T) {
+	t.Run("negative jobs rejected", func(t *testing.T) {
+		o := defOpts("/some/src")
+		o.Jobs = -1
+		if _, err := config.New(o); err == nil {
+			t.Fatal("expected an error for a negative --jobs")
+		}
+	})
+	t.Run("zero jobs means auto", func(t *testing.T) {
+		o := defOpts("/some/src")
+		o.Jobs = 0
+		cfg, err := config.New(o)
+		if err != nil || cfg.Jobs != 0 {
+			t.Fatalf("Jobs = %d, err = %v; want 0, nil", cfg.Jobs, err)
+		}
+	})
+	t.Run("dry run carries through", func(t *testing.T) {
+		o := defOpts("/some/src")
+		o.DryRun = true
+		cfg, err := config.New(o)
+		if err != nil || !cfg.DryRun {
+			t.Fatalf("DryRun = %v, err = %v; want true, nil", cfg.DryRun, err)
+		}
+	})
 }

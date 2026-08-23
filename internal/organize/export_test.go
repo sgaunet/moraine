@@ -4,11 +4,16 @@ package organize
 // (package organize_test) can exercise them.
 var (
 	SafeJoin    = safeJoin
-	UniqueName  = uniqueName
 	CopyFile    = copyFile
 	SameContent = sameContent
 	WithinDest  = withinDest
 )
+
+// UniqueName wraps uniqueName with the real run's notion of a taken name (a file on
+// disk), which is what the collision-naming tests exercise.
+func UniqueName(dir, name string) string {
+	return uniqueName(dir, name, exists)
+}
 
 // MatchCompanion wraps matchCompanion for black-box tests, mapping the unexported
 // companionKind to a stable string ("appended" | "base" | "none").

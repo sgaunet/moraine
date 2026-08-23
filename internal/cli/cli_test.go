@@ -145,24 +145,34 @@ func TestSortCompanionsDefaultAndOptOut(t *testing.T) {
 	})
 }
 
-// TestSortReportsCompanionCounts covers FR-010/SC-007: companion outcomes are
-// visible in the run output (a per-companion line and the summary counters).
+// TestSortReportsCompanionCounts covers FR-010/SC-007: companion outcomes stay
+// visible. Under the stdout contract the counters are data (stdout, always) while the
+// per-companion line is a log (stderr, at --verbose), so both halves are checked
+// where they now live.
 func TestSortReportsCompanionCounts(t *testing.T) {
-	src, dest := t.TempDir(), t.TempDir()
-	writePNG(t, filepath.Join(src, "a.png"))
-	writeCLIFile(t, filepath.Join(src, "a.xmp"), "base")
-	exif := stubExif(t)
-
-	var out, errb bytes.Buffer
-	code := cli.Execute("dev",
-		[]string{"sort", "--sample", "0", "--exiftool", exif, "--dest", dest, src}, &out, &errb)
-	if code != 0 {
-		t.Fatalf("exit = %d; stderr=%s", code, errb.String())
-	}
-	s := out.String()
-	for _, want := range []string{"msg=companion", "companions_copied=1"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("sort output missing %q\n---\n%s", want, s)
+	run := func(t *testing.T, extra ...string) (stdout, stderr string) {
+		t.Helper()
+		src, dest := t.TempDir(), t.TempDir()
+		writePNG(t, filepath.Join(src, "a.png"))
+		writeCLIFile(t, filepath.Join(src, "a.xmp"), "base")
+		args := append([]string{"sort", "--sample", "0", "--exiftool", stubExif(t), "--dest", dest}, extra...)
+		var out, errb bytes.Buffer
+		if code := cli.Execute("dev", append(args, src), &out, &errb); code != 0 {
+			t.Fatalf("exit = %d; stderr=%s", code, errb.String())
 		}
+		return out.String(), errb.String()
+	}
+
+	stdout, stderr := run(t)
+	if !strings.Contains(stdout, "companions_copied=1") {
+		t.Errorf("summary must carry the companion counters\n---\n%s", stdout)
+	}
+	if strings.Contains(stderr, "msg=companion") {
+		t.Errorf("per-companion lines must not appear at the default level\n---\n%s", stderr)
+	}
+
+	_, verbose := run(t, "--verbose")
+	if !strings.Contains(verbose, "msg=companion") {
+		t.Errorf("--verbose must log each companion\n---\n%s", verbose)
 	}
 }

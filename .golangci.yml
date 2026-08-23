@@ -35,6 +35,15 @@ linters:
     - wsl
     - wsl_v5
     - gomodguard
+  settings:
+    tagliatelle:
+      case:
+        rules:
+          # snake_case, to match the slog attribute keys the tool has always
+          # emitted (companions_copied, would_delete, source_hashed). The text and
+          # JSON renderings of a run are the same document, so they must name the
+          # same things identically.
+          json: snake
 
 formatters:
   enable:

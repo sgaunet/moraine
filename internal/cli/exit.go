@@ -1,6 +1,9 @@
 package cli
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // Exit codes follow the CLI contract: 0 success, 1 runtime error, 2 usage error.
 const (
@@ -27,6 +30,15 @@ func asRuntime(err error) error {
 		return nil
 	}
 	return &runtimeError{err: err}
+}
+
+// isInterrupt reports whether a run ended because it was cancelled — SIGINT,
+// SIGTERM, or a deadline — rather than because something failed. Such a run still
+// gets an exit code of 1 (it did not do what was asked), but it is reported with the
+// tally of what it completed instead of a bare "context canceled".
+func isInterrupt(err error) bool {
+	return err != nil &&
+		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 }
 
 // classify maps the error returned by command execution to an exit code:

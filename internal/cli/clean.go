@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -18,7 +19,7 @@ import (
 // byte-identical copy under the destination. Dry-run by default; --delete commits.
 // config.NewClean errors are usage errors (exit 2); Validate and app.Clean are
 // runtime errors (exit 1). It needs neither exiftool nor the classifier.
-func newCleanCmd(stdout io.Writer) *cobra.Command {
+func newCleanCmd(stdout, stderr io.Writer, output *string) *cobra.Command {
 	var opts config.CleanOptions
 	cmd := &cobra.Command{
 		Use:   "clean [flags] <source-dir>",
@@ -32,15 +33,29 @@ Safety:
   - Dry-run by default; --delete is required to remove anything.
   - Files under the destination tree are never deleted (even nested inside source).
   - On any read/hash/permission error, the original is kept (fail-safe).
-  - Only regular files are considered; symlinks and special files are skipped.`,
+  - Only regular files are considered; symlinks and special files are skipped.
+
+Output:
+  stdout carries the run summary only (--output=text, the default) or the full
+  plan with one record per evaluated file (--output=json). The per-file decisions
+  are logged to stderr, where they stay readable next to a redirected stdout.
+
+Exit codes:
+  0  success
+  1  runtime failure (unreadable source or destination, interrupted run)
+  2  usage error (unknown flag, bad argument count or value)`,
 		Example: `  # preview what would be removed (deletes nothing)
   moraine clean --dest ~/Photos/sorted ~/Photos/2025
 
   # after reviewing, actually delete the copied originals
-  moraine clean --delete -d ~/Photos/sorted ~/Photos/2025`,
+  moraine clean --delete -d ~/Photos/sorted ~/Photos/2025
+
+  # machine-readable plan (logs discarded)
+  moraine clean --output=json -d ~/Photos/sorted ~/Photos/2025 2>/dev/null`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			opts.Source = args[0]
+			opts.Output = *output
 
 			cfg, err := config.NewClean(opts)
 			if err != nil {
@@ -50,14 +65,25 @@ Safety:
 				return asRuntime(err)
 			}
 
-			logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+			logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			if _, err := app.Clean(ctx, cfg, logger); err != nil {
+			rep := newReporter(cfg.Output, stdout)
+			sum, runErr := app.Clean(ctx, cfg, logger, rep.addClean)
+
+			// Report before deciding the exit code: an interrupted run may already
+			// have deleted originals, and the tally is the only record of which.
+			interrupted := isInterrupt(runErr)
+			if err := rep.emitClean(cfg, sum, interrupted); err != nil {
 				return asRuntime(err)
 			}
-			return nil
+			if interrupted {
+				return asRuntime(fmt.Errorf(
+					"interrupted: deleted %d, would-delete %d, kept %d, errors %d",
+					sum.Deleted, sum.WouldDelete, sum.Kept, sum.Errors))
+			}
+			return asRuntime(runErr)
 		},
 	}
 
@@ -66,6 +92,7 @@ Safety:
 	f.BoolVar(&opts.Delete, "delete", false, "actually delete matched originals (default: dry-run, deletes nothing)")
 	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
 
+	registerVerbosityFlags(cmd, &opts.Quiet, &opts.Verbose)
 	registerSharedCompletions(cmd)
 
 	return cmd
