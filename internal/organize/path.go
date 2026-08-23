@@ -1,9 +1,10 @@
 // Package organize places photos onto disk under a deterministic layout below the
 // destination root — by default <theme>/<year>/<year-month-day>/, and otherwise
-// whatever Template describes (see template.go). It only ever copies (originals are
-// preserved) and never overwrites or loses a file: identical targets are skipped and
-// same-named different content is suffixed. Business logic only — no transport or
-// global state (Constitution Principle III).
+// whatever Template describes (see template.go). It never overwrites or loses a file:
+// identical targets are skipped and same-named different content is suffixed. It
+// copies, leaving originals in place, unless Move is set — and then a source is
+// removed only after its copy has been read back and verified (see copy.go). Business
+// logic only — no transport or global state (Constitution Principle III).
 package organize
 
 import (

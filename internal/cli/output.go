@@ -66,6 +66,7 @@ type sortRecord struct {
 	Date      string `json:"date,omitempty"`
 	Action    string `json:"action,omitempty"`
 	Companion bool   `json:"companion"`
+	Moved     bool   `json:"moved,omitempty"`
 	Of        string `json:"of,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
@@ -79,6 +80,7 @@ type sortSummary struct {
 	Skipped                int   `json:"skipped"`
 	Renamed                int   `json:"renamed"`
 	Errors                 int   `json:"errors"`
+	Moved                  int   `json:"moved"`
 	BytesCopied            int64 `json:"bytes_copied"`
 	BytesSkipped           int64 `json:"bytes_skipped"`
 	CompanionsCopied       int   `json:"companions_copied"`
@@ -182,6 +184,7 @@ func (r *reporter) addSort(res organize.Result) {
 		Theme:     res.Theme,
 		Action:    string(res.Action),
 		Companion: res.IsCompanion,
+		Moved:     res.Moved,
 		Of:        res.Of,
 	}
 	if !res.Date.IsZero() {
@@ -249,6 +252,7 @@ func (r *reporter) emitSort(cfg config.Config, sum app.Summary, interrupted bool
 		Skipped:                sum.Skipped,
 		Renamed:                sum.Renamed,
 		Errors:                 sum.Errors,
+		Moved:                  sum.Moved,
 		BytesCopied:            sum.BytesCopied,
 		BytesSkipped:           sum.BytesSkipped,
 		CompanionsCopied:       sum.CompanionsCopied,
@@ -267,12 +271,12 @@ func (r *reporter) emitSort(cfg config.Config, sum app.Summary, interrupted bool
 	}
 	_, err := fmt.Fprintf(r.stdout,
 		"scanned=%d unreadable=%d groups=%d copied=%d skipped=%d renamed=%d errors=%d"+
-			" bytes_copied=%d bytes_skipped=%d"+
+			" moved=%d bytes_copied=%d bytes_skipped=%d"+
 			" companions_copied=%d companions_skipped=%d companions_renamed=%d companions_errors=%d"+
 			" companions_bytes_copied=%d companions_bytes_skipped=%d"+
 			" dry_run=%t interrupted=%t\n",
 		s.Scanned, s.Unreadable, s.Groups, s.Copied, s.Skipped, s.Renamed, s.Errors,
-		s.BytesCopied, s.BytesSkipped,
+		s.Moved, s.BytesCopied, s.BytesSkipped,
 		s.CompanionsCopied, s.CompanionsSkipped, s.CompanionsRenamed, s.CompanionsErrors,
 		s.CompanionsBytesCopied, s.CompanionsBytesSkipped,
 		cfg.DryRun, interrupted)

@@ -70,7 +70,7 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 - **`internal/organize`** — copies files to `dest/` under the layout its `Template`
   describes (default `<theme>/<year>/<year-month-day>/`, set by `--path-template`;
   `template.go` parses and validates it, and collapses the date part of an undated
-  event to `unknown-date`), enforcing copy-only/no-overwrite. An
+  event to `unknown-date`), enforcing no-overwrite and — outside `Move` — copy-only. An
   injected `Placed` hook lets an incremental run skip a source whose recorded copy is
   still in place, expressed in sizes and times so the package needs no manifest
   dependency. Also
@@ -113,7 +113,7 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
    does the filesystem checks. `cli.Execute` silences Cobra's own output and classifies the
    returned error into exit codes: cross-field/parse/arity errors → usage (2), validation/
    dependency/run failures (wrapped with `asRuntime`) → runtime (1), help/version → 0.
-3. **Copy-only + atomic publish + content comparison** — a copy is staged in a
+3. **Copy by default, atomic publish, content comparison** — a copy is staged in a
    hidden temp file in the destination directory, fsynced, given the source's mtime,
    and published with `link(2)`, which fails `EEXIST` rather than overwriting. So
    overwriting is structurally impossible *and* a half-written copy can never occupy
@@ -122,7 +122,13 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
    suffix-rename the real photo and let the stub keep the good name. The parent
    directory is fsynced too, since durable bytes behind a lost directory entry are
    still a lost photo. Comparing content makes re-runs idempotent (skip identical,
-   suffix-rename same-name/different-content). Originals are never touched.
+   suffix-rename same-name/different-content). Originals are never touched — unless
+   `--move` is asked for explicitly, in which case a source is removed only after the
+   published copy has been read back and matched against the digest accumulated while
+   writing it (two full reads, where re-reading the source to compare would cost
+   three). A mismatch removes the destination and keeps the source. Skips, failures,
+   cancellations and `--dry-run` never remove anything, and a moved file is recorded as
+   such so `undo` refuses to delete what is now the only copy.
 4. **Interface-based classifier with guaranteed fallback** — a theme is
    always returned; the network/model stage is optional and degrades to the
    fallback when Ollama is unreachable.

@@ -51,6 +51,7 @@ const (
 	reasonChanged     = "changed since the run"
 	reasonNotRegular  = "no longer a regular file"
 	reasonOutsideDest = "outside the destination root; never removed"
+	reasonMoved       = "source was moved, not copied; this is the only remaining file"
 )
 
 // Result is the outcome for one recorded file. Records that placed nothing (a
@@ -120,6 +121,12 @@ func (u *Undoer) Run(ctx context.Context, run manifest.Run, onResult func(Result
 
 // evaluate decides the fate of one recorded file.
 func (u *Undoer) evaluate(rec manifest.Record, cleanDest string) Result {
+	// A --move run is not reversible: removing this copy would destroy the only file
+	// left, since the original no longer exists. Checked before the action, because a
+	// moved file was still "copied" or "renamed" as far as the action goes.
+	if rec.Moved {
+		return Result{Path: rec.Dest, Decision: DecisionKept, Reason: reasonMoved}
+	}
 	if rec.Action != actionCopied && rec.Action != actionRenamed {
 		// Chiefly "skipped-identical": the file was already there before the run.
 		return Result{Path: rec.Dest, Decision: DecisionKept, Reason: reasonNotCreated}

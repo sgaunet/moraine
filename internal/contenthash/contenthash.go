@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 )
@@ -96,4 +97,29 @@ func Equal(a, b string) (bool, error) {
 // isEOF reports whether err is one of io.ReadFull's two end-of-file signals.
 func isEOF(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// Digest accumulates a content digest from a stream. It exists so that a copy can be
+// verified against the bytes actually written to it without reading the source a
+// second time: hash while copying, then hash the published file and compare the two.
+// Re-reading the source instead would cost three full reads where this costs two.
+type Digest struct {
+	h hash.Hash
+}
+
+// NewDigest returns a Digest ready to be written to.
+func NewDigest() *Digest {
+	return &Digest{h: sha256.New()}
+}
+
+// Write feeds bytes into the digest. A hash never fails, so nor does this.
+func (d *Digest) Write(p []byte) (int, error) {
+	return d.h.Write(p)
+}
+
+// Sum returns the digest of everything written so far.
+func (d *Digest) Sum() Sum {
+	var s Sum
+	copy(s[:], d.h.Sum(nil))
+	return s
 }

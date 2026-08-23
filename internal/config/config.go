@@ -37,6 +37,7 @@ type Config struct {
 	LogLevel         slog.Level        // logging verbosity
 	Output           OutputFormat      // stdout rendering of the run result (text | json)
 	Sidecars         bool              // copy each photo's companion (sidecar) files alongside it
+	Move             bool              // remove each source file once its copy has been verified
 	DryRun           bool              // report the planned placements without writing anything
 	Incremental      bool              // trust the run manifest to skip sources already placed
 	Jobs             int               // EXIF worker count (0 ⇒ one per GOMAXPROCS)
@@ -100,6 +101,7 @@ type Options struct {
 	Output           string        // --output (textual: text|json)
 	ExifTool         string        // --exiftool
 	Sidecars         bool          // --sidecars (copy companion files; default true at the flag)
+	Move             bool          // --move (remove each source after its copy is verified)
 	DryRun           bool          // --dry-run (report the plan, write nothing)
 	Incremental      bool          // --incremental (skip sources the manifest already records as placed)
 	Jobs             int           // --jobs (EXIF workers; 0 ⇒ one per GOMAXPROCS)
@@ -184,6 +186,7 @@ func New(o Options) (Config, error) {
 		LogLevel:         level,
 		Output:           output,
 		Sidecars:         o.Sidecars,
+		Move:             o.Move,
 		DryRun:           o.DryRun,
 		Incremental:      o.Incremental,
 		Jobs:             o.Jobs,

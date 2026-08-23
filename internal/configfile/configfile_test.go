@@ -185,6 +185,7 @@ func TestLoadRejects(t *testing.T) {
 		{"a mode flag is not configurable", "sort:\n  dry_run: true\n"},
 		{"delete is not configurable", "clean:\n  delete: true\n"},
 		{"incremental is not configurable", "sort:\n  incremental: true\n"},
+		{"move is not configurable", "sort:\n  move: true\n"},
 		{"quiet is not configurable", "sort:\n  quiet: true\n"},
 		{"verbose is not configurable", "sort:\n  verbose: true\n"},
 		{"malformed yaml", "sort:\n\tgap: 6h\n"},

@@ -88,7 +88,7 @@ func (o *Organizer) placeCompanions(
 		}
 		target := companionTargetName(finalPhotoName, name, suffix, kind)
 		res := Result{Source: candidate, IsCompanion: true, Of: photoSrc}
-		res.Dest, res.Action, res.Size, res.Err = o.placeOne(dirOf, candidate, target)
+		res.Dest, res.Action, res.Size, res.Moved, res.Err = o.placeOne(dirOf, candidate, target)
 		results = append(results, res)
 	}
 	return results

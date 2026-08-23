@@ -267,3 +267,64 @@ func TestUndoSkipsRecordsThatPlacedNothing(t *testing.T) {
 		t.Errorf("summary = %+v; want an empty tally", sum)
 	}
 }
+
+// TestUndoKeepsWhatAMoveRunProduced is the safety rule that makes --move and undo
+// coexist: a moved file's original no longer exists, so its copy is the only
+// remaining file. Removing it would destroy the user's data, which is the one thing
+// undo must never do — so it keeps the copy and says why.
+func TestUndoKeepsWhatAMoveRunProduced(t *testing.T) {
+	dest := t.TempDir()
+	moved := placed(t, dest, "family/2026/2026-08-23/a.jpg", "moved-bytes", "copied")
+	moved.Moved = true
+	movedRename := placed(t, dest, "family/2026/2026-08-23/b (1).jpg", "moved-too", "renamed")
+	movedRename.Moved = true
+	// A plain copy in the same run is still removable; nothing about --move is
+	// recorded per run, only per file.
+	copied := placed(t, dest, "family/2026/2026-08-23/c.jpg", "copied-bytes", "copied")
+	run := recordRun(t, dest, moved, movedRename, copied)
+
+	var results []undo.Result
+	sum, err := (&undo.Undoer{DestRoot: dest, Delete: true}).Run(
+		context.Background(), run, func(r undo.Result) { results = append(results, r) })
+	if err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if sum.Removed != 1 || sum.Kept != 2 {
+		t.Fatalf("summary = %+v; want Removed=1 Kept=2", sum)
+	}
+	for _, rec := range []manifest.Record{moved, movedRename} {
+		if !exists(t, rec.Dest) {
+			t.Errorf("undo removed %q, but its source was moved — that was the only copy left", rec.Dest)
+		}
+	}
+	if exists(t, copied.Dest) {
+		t.Errorf("a plain copy in the same run should still have been removed: %q", copied.Dest)
+	}
+	// The reason must explain itself, since "kept" alone looks like a bug here.
+	var explained int
+	for _, r := range results {
+		if r.Decision == undo.DecisionKept && strings.Contains(r.Reason, "moved") {
+			explained++
+		}
+	}
+	if explained != 2 {
+		t.Errorf("both kept records must say the source was moved; got %d of 2", explained)
+	}
+}
+
+// A dry-run undo over a move run must also report those files as kept, so the preview
+// tells the truth about what a --delete pass would do.
+func TestUndoDryRunReportsMovedFilesAsKept(t *testing.T) {
+	dest := t.TempDir()
+	moved := placed(t, dest, "family/2026/2026-08-23/a.jpg", "moved-bytes", "copied")
+	moved.Moved = true
+	run := recordRun(t, dest, moved)
+
+	sum, err := (&undo.Undoer{DestRoot: dest}).Run(context.Background(), run, nil)
+	if err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if sum.WouldRemove != 0 || sum.Kept != 1 {
+		t.Fatalf("summary = %+v; want WouldRemove=0 Kept=1", sum)
+	}
+}

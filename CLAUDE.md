@@ -77,7 +77,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 It scans a source folder, groups photos into events by capture time, assigns each
 group a theme, then **copies** them — plus each photo's companion (sidecar) files —
 to `dest/<theme>/<year>/<year-month-day>/` (the layout is a `--path-template`,
-defaulting to that). Originals are never modified or deleted. Repo: `github.com/sgaunet/moraine` (MIT).
+defaulting to that). Originals are never modified or deleted unless `--move` is asked
+for explicitly, and then only after the copy has been verified. Repo: `github.com/sgaunet/moraine` (MIT).
 
 ## Architecture
 
@@ -112,7 +113,16 @@ defaulting to that). Originals are never modified or deleted. Repo: `github.com/
   flags stay per-invocation; Principle V). `MORAINE_CONFIG=` (empty) disables the file
   — which is how `internal/cli`'s `TestMain` keeps the suite off a developer's real
   config.
-- **Copy-only, no-clobber, atomic**: `copyFile` stages a `.moraine-*.tmp` in the
+- **`--move` (opt-in, verified)**: the only thing that removes a source, and only
+  after `verifyCopy` re-reads the published file and matches it against the SHA-256
+  `copyFile` accumulated while writing (an `io.MultiWriter` — hashing the stream keeps
+  it at two full reads, not three). A mismatch removes the *destination* and keeps the
+  source. Never removes on a skip (a skip verifies nothing that run; the incremental
+  skip never reads the bytes), an error, a cancellation, or `--dry-run`. Every removal
+  funnels through `Organizer.copy`. `organize.Result`/`manifest.Record` gain `Moved`,
+  `Summary`/stdout gain `moved`, and **`undo` refuses a moved record** — the original
+  is gone, so the copy is the only file left. A move run cannot be undone.
+- **Copy-only by default, no-clobber, atomic**: `copyFile` stages a `.moraine-*.tmp` in the
   destination dir, fsyncs it, copies the source mtime (`exifmeta` falls back to mtime),
   publishes it with `os.Link` (`EEXIST` ⇒ never overwrites, never a truncated file on a
   canonical name; `os.Rename` fallback for link-less filesystems), then fsyncs the
@@ -206,7 +216,40 @@ task check-before-commit   # lint + test + snapshot
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #8** — classification accuracy work (issue-driven, no
+Latest change: **issue #12** — the feature backlog, four independently shippable
+items in four commits (issue-driven, no `specs/` dir). **#12 stays open**: its title
+also mentions video, which the body never turned into a checklist item and which
+`scan` still deliberately ignores.
+
+1. **`--path-template`** (`internal/organize/template.go`) replaces the hardcoded
+   layout with `{theme} {year} {month} {day} {date}`. Validated in `config.New`, so a
+   bad template is exit 2 before anything is written; it closes the two gaps
+   `safeJoin` does not (a template rendering empty, and a `.moraine` first segment
+   that would collide with the bookkeeping tree). An undated event collapses the
+   *date-derived stretch* of the path to one `unknown-date` segment, so
+   `{year}/{month}/{theme}` gives `unknown-date/<theme>` and not
+   `unknown-date/unknown-date`. The destination directory is now created **on first
+   use**, so an incremental re-run stops leaving an empty folder per skipped event.
+   The manifest header records the template and a changed one warns. Verified by
+   `diff -r`-ing a default run against a `main`-built binary: byte-identical.
+2. **Per-event + volume report**: `bytes_copied`/`bytes_skipped` (+ companion
+   equivalents) in both output modes, and an `events[]` array in JSON only — the text
+   line is one line per run by contract. `classify.Method` used to be logged once and
+   discarded, so a run could report totals but never which event produced them. No new
+   syscalls on the copy path: `copyFile` returns `io.Copy`'s own count and the
+   incremental skip reuses the size its fingerprint already verified.
+3. **YAML config file** (`internal/configfile` + `internal/cli/configfile.go`), new
+   dep `go.yaml.in/yaml/v3`. See the bullet above for precedence and exclusions. The
+   subtle part is test isolation: `internal/cli`'s `TestMain` sets `MORAINE_CONFIG=`
+   so the suite never reads a developer's real file.
+4. **`--move`** — see the bullet above. **The issue's premise here was wrong**: it
+   claims the constitution mandates copy-only. It does not — the constitution's only
+   relevant rule is Principle V's explicit-opt-in gate, which `--move` satisfies. The
+   copy-only mandate was **spec-level** (`specs/002` FR-006, `specs/006`, `specs/003`),
+   so those are annotated as superseded and the constitution stays at **v2.0.0**.
+   `specs/005`'s "no new configuration sources" is annotated the same way.
+
+Previous change: **issue #8** — classification accuracy work (issue-driven, no
 `specs/` dir). `Classifier` now returns a **`Verdict{Theme, Confidence}`**: the
 structured answer carries a `confidence` (0..1, required in the schema; anything out
 of range counts as unreported), and `Options.MinConfidence` — `--min-confidence`,
@@ -223,7 +266,7 @@ photos was labeled `mountain` at self-reported confidence **0.9** by a single ca
 while `--vote` split it 1–2 and abstained — self-reported confidence does not catch a
 mixed event, the vote margin does. Pick a threshold from `task eval`, not by guessing.
 
-Previous change: **issue #14** — dating & scanning correctness (issue-driven, no
+Earlier: **issue #14** — dating & scanning correctness (issue-driven, no
 `specs/` dir). Capture dates now resolve in three tiers — EXIF → **a date in the file
 name** (`internal/exifmeta/filename.go`) → mtime — so a folder of downloads sharing
 one mtime no longer collapses into one event dated by download day (verified: three

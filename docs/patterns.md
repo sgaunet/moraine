@@ -58,7 +58,7 @@ not count those — nothing failed, nothing was attempted.
   interface allows a `fakeClassifier` in tests — no mock framework.
 - **Race**: CI runs `-race -count=1` (`CGO_ENABLED=1`).
 
-## Safety Invariants (copy-only)
+## Safety Invariants (copy by default; `--move` verifies before removing)
 
 - Copies are **atomic**: `copyFile()` writes to a `.moraine-*.tmp` file in the
   destination's own directory, fsyncs it, then publishes it with `os.Link()`.
@@ -74,6 +74,20 @@ not count those — nothing failed, nothing was attempted.
   `contenthash.Equal()`: identical → `ActionSkippedIdentical`; same name, different
   content → `ActionRenamed` with a ` (N)` suffix via `uniqueName()`.
 - A failed copy leaves the destination directory exactly as it found it.
+- **`--move`** is the one thing that removes a source, and only ever after reading the
+  published copy back: `copyFile` accumulates the SHA-256 of the bytes it writes (free,
+  through an `io.MultiWriter`), and `verifyCopy` re-hashes the published file and
+  compares. Hashing the stream rather than re-reading the source is what keeps this at
+  two full reads instead of three. A mismatch removes the *destination* — a provably
+  wrong file on a canonical name is the exact failure the atomic publish exists to
+  prevent — and keeps the source.
+- Every source removal goes through `Organizer.copy`, the same single funnel that makes
+  "a dry run writes nothing" true in one line. Nothing removes a source on a skip (a
+  skip verifies nothing that run, and the incremental variant never reads the bytes at
+  all), an error, a cancellation, or a dry run.
+- A moved placement is recorded as `moved` in the run manifest, and `undo` refuses it:
+  with the original gone, the copy is the only remaining file. **A move run cannot be
+  undone**, and `undo` says so rather than silently keeping the file.
 - `safeJoin()` rejects path traversal in destination subdirectories.
 - **Companion (sidecar) files** reuse the same primitives: a companion of `IMG.jpg`
   is a same-directory regular file named `IMG.jpg<suffix>` (appended) or
