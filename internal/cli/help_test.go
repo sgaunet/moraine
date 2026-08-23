@@ -10,7 +10,7 @@ import (
 )
 
 func TestSubcommandHelpExitsZero(t *testing.T) {
-	for _, sub := range []string{"sort", "clean", "version"} {
+	for _, sub := range []string{"sort", "clean", "completion", "version"} {
 		var out bytes.Buffer
 		code := cli.Execute("dev", []string{sub, "--help"}, &out, io.Discard)
 		if code != 0 {
@@ -48,7 +48,7 @@ func TestTopLevelHelpListsAllSubcommands(t *testing.T) {
 	var out bytes.Buffer
 	cli.Execute("dev", []string{"--help"}, &out, io.Discard)
 	s := out.String()
-	for _, w := range []string{"sort", "clean", "version"} {
+	for _, w := range []string{"sort", "clean", "completion", "version"} {
 		if !strings.Contains(s, w) {
 			t.Errorf("top-level help missing subcommand %q; got:\n%s", w, s)
 		}

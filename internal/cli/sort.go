@@ -91,5 +91,14 @@ exiftool (required, see --exiftool) and sent to the model.`,
 	f.StringVar(&opts.ExifTool, "exiftool", config.DefaultExifTool, "exiftool executable (name on PATH or absolute path); required to read RAW files")
 	f.BoolVar(&opts.Sidecars, "sidecars", true, "also copy companion/sidecar files next to each photo (e.g. IMG.jpg.xmp, IMG.xmp); --sidecars=false to disable")
 
+	registerSharedCompletions(cmd)
+	_ = cmd.RegisterFlagCompletionFunc("themes", completeThemeList)
+	_ = cmd.RegisterFlagCompletionFunc("fallback-theme", completeFixed(append(defaultThemes(), config.DefaultFallback)...))
+	_ = cmd.RegisterFlagCompletionFunc("gap", completeFixed(gapDurations...))
+	// Scalar flags with no knowable value set: suppress the filename fallback.
+	_ = cmd.RegisterFlagCompletionFunc("sample", completeFixed())
+	_ = cmd.RegisterFlagCompletionFunc("model", completeFixed(config.DefaultModel))
+	_ = cmd.RegisterFlagCompletionFunc("ollama-url", completeFixed(config.DefaultOllamaURL))
+
 	return cmd
 }

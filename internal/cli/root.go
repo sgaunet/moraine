@@ -25,6 +25,7 @@ Commands:
   sort      organize photos into dated, themed folders
   clean     delete source originals already copied to the destination
   version   print the version
+  completion  generate the shell completion script
 
 Run "moraine <command> --help" for command-specific options and examples.`,
 		SilenceErrors: true,

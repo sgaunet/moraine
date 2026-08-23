@@ -17,9 +17,13 @@ and from disk I/O — no domain package imports Cobra.
 ## Components
 
 - **`internal/cli`** — the CLI transport: a Cobra command tree (root + `sort`/
-  `clean`/`version`) that binds flags into `config.Options`/`CleanOptions`, calls the
-  config constructors and `app` orchestrators, and maps execution to exit codes
-  0/1/2 via a `runtimeError` marker. The only package that imports Cobra.
+  `clean`/`version`, plus Cobra's built-in `completion`) that binds flags into
+  `config.Options`/`CleanOptions`, calls the config constructors and `app`
+  orchestrators, and maps execution to exit codes 0/1/2 via a `runtimeError`
+  marker. The only package that imports Cobra. `completion.go` holds the shell
+  completion candidates; it derives them from `config.DefaultThemes` and
+  `photo.Extensions()` so the suggestions cannot drift from what the parsers
+  accept.
 - **`internal/config`** — single immutable `Config`/`CleanConfig` struct holding every
   runtime parameter; `New`/`NewClean` (syntax/cross-field checks, no I/O) is split from
   `Validate` (filesystem checks, default-destination resolution).
