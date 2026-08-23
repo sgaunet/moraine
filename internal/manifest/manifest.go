@@ -23,8 +23,9 @@ import (
 	"time"
 )
 
-// DateFormat is how a record's representative date is written, matching the
-// destination layout's day folder and the stdout contract's date field.
+// DateFormat is how a record's representative date is written, matching the stdout
+// contract's date field. It is independent of the destination layout, which
+// --path-template can change.
 const DateFormat = "2006-01-02"
 
 // SchemaVersion is written in every manifest header. A reader that meets a
@@ -55,6 +56,11 @@ type Header struct {
 	Source   string `json:"source"`
 	Dest     string `json:"dest"`
 	Started  string `json:"started"`
+	// PathTemplate is the destination layout the run placed files under. It lets a
+	// later --incremental run notice that the layout changed since — recorded files
+	// keep the path they were given, so the two layouts coexist. Empty on manifests
+	// written before templates existed, which reads as "unknown", not "the default".
+	PathTemplate string `json:"path_template,omitempty"`
 }
 
 // Record is one placed file — a photo or one of its companions. Size and MTime
@@ -83,6 +89,10 @@ type Record struct {
 // A nil *Writer is a working no-op writer: the caller that has no manifest to
 // write (a dry run) holds nil instead of branching at every record.
 type Writer struct {
+	// PathTemplate is the destination layout this run used, written into the header.
+	// Set it before the first Add, in the public-field style organize.Organizer uses.
+	PathTemplate string
+
 	dir    string // <destRoot>/.moraine/runs
 	header Header
 	stamp  string // run-id base derived from the run's start time
@@ -170,6 +180,7 @@ func (w *Writer) open() error {
 		}
 		w.file, w.buf, w.path = f, bufio.NewWriter(f), path
 		w.header.Run = name[:len(name)-len(ext)]
+		w.header.PathTemplate = w.PathTemplate
 		return w.writeLine(w.header)
 	}
 }

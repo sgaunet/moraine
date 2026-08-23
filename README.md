@@ -3,8 +3,9 @@
 **Automatic photo organizer** — a single, CGo-free Go binary that organizes a photo
 directory **with no UI and no interaction**. It analyzes the photos, groups them into
 **events** (by capture time), assigns a **theme** to each group, then **copies** each
-photo to `destination/<theme>/<year>/<year-month-day>/`. Originals are **never** modified
-or deleted. Every step is explained in the logs.
+photo to `destination/<theme>/<year>/<year-month-day>/` — a layout you can change with
+`--path-template`. Originals are **never** modified or deleted. Every step is explained
+in the logs.
 
 ## Features
 
@@ -147,6 +148,43 @@ and `moraine <command> --help` for command-specific options and examples.
 
 Each photo is **copied** to `destination/<theme>/<year>/<year-month-day>/`
 (e.g. `~/Photos/sorted/nature/2025/2025-08-12/IMG_1234.jpg`). Originals stay in place.
+
+### Choosing the folder layout: `--path-template`
+
+The layout below the destination root is a template built from the placeholders
+`{theme}` `{year}` `{month}` `{day}` `{date}`, separated by `/`. The default,
+`{theme}/{year}/{date}`, is the layout above.
+
+```console
+./moraine sort --path-template "{theme}/{year}/{month}" -d ~/Photos/sorted ~/Photos/2025
+#   ~/Photos/sorted/nature/2025/08/IMG_1234.jpg
+
+./moraine sort --path-template "{year}/{month}-{day}/{theme}" -d ~/Photos/sorted ~/Photos/2025
+#   ~/Photos/sorted/2025/08-12/nature/IMG_1234.jpg
+
+./moraine sort --path-template "{year}" -d ~/Photos/sorted ~/Photos/2025
+#   ~/Photos/sorted/2025/IMG_1234.jpg
+```
+
+`{year}` is `2025`, `{month}` `08`, `{day}` `12`, `{date}` `2025-08-12`. Literal text
+between placeholders is kept (`photos/{year}` → `photos/2025/`). Omitting `{theme}`
+is allowed: events of different themes then share a folder, and the usual
+skip-identical / ` (N)` rules resolve any name clash.
+
+A template is rejected (exit `2`, before anything is written) when it names an unknown
+placeholder, is absolute, has an empty / `.` / `..` segment, or starts with
+`.moraine` — the destination's own bookkeeping directory.
+
+**Undated photos**: the date-derived stretch of the path collapses to a single
+`unknown-date` segment, so `{theme}/{year}/{date}` gives `<theme>/unknown-date/` and
+`{year}/{month}/{theme}` gives `unknown-date/<theme>/` — never a folder that looks
+like a real date.
+
+**Changing the template later** is safe but does not move anything: with
+`--incremental`, files an earlier run recorded are skipped at the paths they already
+have, and the run warns on stderr naming both templates. A full (non-incremental)
+re-run copies them into the new layout, leaving the old copies where they are —
+`moraine undo` or `moraine clean` cleans up.
 
 ### Dating: EXIF, then the file name, then mtime
 
@@ -317,6 +355,7 @@ run did not finish what was asked.
 | `--model`          |       | string   | `qwen3-vl:8b`             | Ollama vision model                                        |
 | `--ollama-url`     |       | string   | `http://127.0.0.1:11434`  | base URL of the Ollama API                                 |
 | `--themes`         |       | string   | `mountain,special-events,cook,family` | themes (comma-separated slugs)                 |
+| `--path-template`  |       | string   | `{theme}/{year}/{date}`   | destination layout from `{theme}` `{year}` `{month}` `{day}` `{date}` |
 | `--fallback-theme` |       | string   | `other`                   | fallback theme when none is determined                     |
 | `--log-level`      | `-l`  | string   | `info`                    | `debug` \| `info` \| `warn` \| `error`                     |
 | `--quiet`          | `-q`  | bool     | `false`                   | log errors only (excludes `--verbose` / `--log-level`)     |
@@ -437,7 +476,7 @@ internal/
   exifmeta/ EXIF extraction (date, GPS, altitude); date falls back to the file name, then mtime
   cluster/  temporal grouping (configurable gap)
   classify/ heuristic → Ollama (constrained themes) → fallback; Ollama HTTP client
-  organize/ builds the <theme>/<year>/<date> path, hash-based identity, durable copy
+  organize/ builds the destination path from --path-template, hash-based identity, durable copy
   manifest/ per-run JSON Lines record of every placement (undo + incremental read it)
   undo/     removes the copies one recorded run made, and nothing else
 ```

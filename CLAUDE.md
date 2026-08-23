@@ -76,8 +76,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 `moraine` is a single-binary, **pure-Go (no CGo)** command-line photo organizer.
 It scans a source folder, groups photos into events by capture time, assigns each
 group a theme, then **copies** them — plus each photo's companion (sidecar) files —
-to `dest/<theme>/<year>/<year-month-day>/`. Originals are never modified or
-deleted. Repo: `github.com/sgaunet/moraine` (MIT).
+to `dest/<theme>/<year>/<year-month-day>/` (the layout is a `--path-template`,
+defaulting to that). Originals are never modified or deleted. Repo: `github.com/sgaunet/moraine` (MIT).
 
 ## Architecture
 
@@ -260,7 +260,8 @@ previews), **004-clean-originals** (`clean`; content-hash matching, dry-run defa
 Sort pipeline: scan → EXIF (`--jobs` workers, default one per CPU) → temporal cluster
 (`--gap`) → classify into a configurable theme set (default
 `mountain`/`special-events`/`cook`/`family`, fallback `other`) → **copy** to
-`dest/<theme>/<year>/<year-month-day>/` (+ companions, by default).
+`dest/` under `--path-template` (default `{theme}/{year}/{date}`, i.e.
+`dest/<theme>/<year>/<year-month-day>/`) (+ companions, by default).
 
 006 changes (domain placement only; transport surface gains one flag): companion placement
 lives in `internal/organize` (new `sidecar.go` — `matchCompanion`/`companionTargetName`/
