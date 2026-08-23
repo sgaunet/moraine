@@ -120,6 +120,9 @@ Exit codes:
 	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
 	f.StringVar(&opts.ExifTool, "exiftool", config.DefaultExifTool, "exiftool executable (name on PATH or absolute path); required to read RAW files")
 	f.BoolVar(&opts.Sidecars, "sidecars", true, "also copy companion/sidecar files next to each photo (e.g. IMG.jpg.xmp, IMG.xmp); --sidecars=false to disable")
+	f.BoolVar(&opts.Incremental, "incremental", false,
+		"skip photos the run manifest already records as copied (matches on size and modification time "+
+			"instead of comparing bytes, and reuses each known event's theme)")
 	f.BoolVarP(&opts.DryRun, "dry-run", "n", false, "report what would be copied, skipped or renamed without writing anything")
 	f.IntVarP(&opts.Jobs, "jobs", "j", 0, "EXIF reader workers (0 = one per CPU); lower it to throttle a network drive")
 	f.Float64Var(&opts.MountainAltitude, "mountain-altitude", config.DefaultMountainAltitude,

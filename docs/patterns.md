@@ -74,6 +74,24 @@ not count those — nothing failed, nothing was attempted.
   placed name (`IMG (1).jpg.xmp`). `clean` removes companions through the same
   content-identity match it uses for photos (never by name).
 
+## Reversibility & Incrementality (run manifest)
+
+- A run's record is **append-as-you-go**, one JSON Lines file per run under
+  `<dest>/.moraine/runs/`. The file is created by the *first* record, so "a dry run
+  writes nothing at all" stays true without the caller having to remember it, and an
+  interrupted run still leaves a usable record of what it did place.
+- The recorded identity of a placed file is **size + mtime**, not a hash. Copies carry
+  their source's mtime, so one pair fingerprints both ends — which is what lets an
+  incremental run skip a file without reading either copy.
+- **A manifest is a shortcut, never an authority.** `undo` deletes only records whose
+  action is `copied`/`renamed` (never `skipped-identical` — that file predates the run)
+  and only while the file still matches its fingerprint; `Organizer.Placed` skips only
+  when *both* source and copy still match. Any mismatch falls through to the normal
+  path, so a stale manifest costs a skip, never correctness.
+- The manifest stays out of the domain packages: `organize` speaks of `Placement`
+  (dest, size, mtime) through an injected `Placed` hook, and `app/manifest.go` is the
+  only place that translates between the two — the same decoupling `IsPrimary` uses.
+
 ## Go-Specific Patterns
 
 - **No CGo, single static binary**: production builds use `CGO_ENABLED=0`.
@@ -87,3 +105,5 @@ not count those — nothing failed, nothing was attempted.
 - `internal/photo`: shared domain types (`Photo`, `Cluster`).
 - `internal/organize/path.go`: safe destination path construction
   (`safeJoin`, `uniqueName`).
+- `internal/manifest`: what a run placed (`New`/`Add` to write, `Latest`/`ReadRun`/
+  `Load` to read it back).

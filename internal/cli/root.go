@@ -34,6 +34,7 @@ deleted.
 Commands:
   sort      organize photos into dated, themed folders
   clean     delete source originals already copied to the destination
+  undo      remove the copies made by the last sort run
   version   print the version
   completion  generate the shell completion script
 
@@ -62,6 +63,7 @@ Run "moraine <command> --help" for command-specific options and examples.`,
 
 	root.AddCommand(newSortCmd(stdout, stderr, &output))
 	root.AddCommand(newCleanCmd(stdout, stderr, &output))
+	root.AddCommand(newUndoCmd(stdout, stderr, &output))
 	root.AddCommand(newVersionCmd(build, stdout, &output))
 
 	return root

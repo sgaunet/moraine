@@ -70,17 +70,24 @@ func Organize(
 	org := organize.New(cfg.DestRoot)
 	org.Sidecars = cfg.Sidecars
 	org.DryRun = cfg.DryRun
+	placed := placedIndex(cfg, logger)
+	org.Placed = placedHook(placed)
 	org.IsPrimary = func(p string) bool {
 		_, ok := primaries[filepath.Clean(p)]
 		return ok
 	}
+
+	// The manifest is the record of what this run copied: `undo` reads it to remove
+	// exactly those files, and a later --incremental run to recognise them.
+	rec := newRecorder(cfg, logger)
+	defer rec.close()
 
 	var sum Summary
 	for _, c := range clusters {
 		if err := ctx.Err(); err != nil {
 			return sum, err
 		}
-		theme, method := classify.Label(ctx, c, opts)
+		theme, method := labelCluster(ctx, c, opts, cfg, placed)
 		logger.Info("group",
 			"size", len(c.Photos), "method", string(method),
 			"theme", theme, "date", c.Start.Format("2006-01-02"))
@@ -88,6 +95,7 @@ func Organize(
 
 		for _, r := range org.Place(ctx, c, theme) {
 			tally(&sum, r, logger)
+			rec.add(r)
 			onResult(r)
 		}
 	}

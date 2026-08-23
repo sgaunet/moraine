@@ -11,6 +11,7 @@ import (
 	"github.com/sgaunet/moraine/internal/clean"
 	"github.com/sgaunet/moraine/internal/config"
 	"github.com/sgaunet/moraine/internal/organize"
+	"github.com/sgaunet/moraine/internal/undo"
 )
 
 // This file is moraine's stdout contract (Constitution Principle V): stdout carries
@@ -93,6 +94,33 @@ type cleanSummary struct {
 	DestHashed   int `json:"dest_hashed"`
 }
 
+// undoReport is the stdout document of an `undo` run.
+type undoReport struct {
+	Command     string       `json:"command"`
+	Dest        string       `json:"dest"`
+	Delete      bool         `json:"delete"`
+	Interrupted bool         `json:"interrupted"`
+	Results     []undoRecord `json:"results"`
+	Summary     undoSummary  `json:"summary"`
+}
+
+// undoRecord is one recorded copy and what undo decided about it.
+type undoRecord struct {
+	Path     string `json:"path"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// undoSummary is the tally of an `undo` run.
+type undoSummary struct {
+	Removed     int `json:"removed"`
+	WouldRemove int `json:"would_remove"`
+	Kept        int `json:"kept"`
+	Errors      int `json:"errors"`
+	DirsPruned  int `json:"dirs_pruned"`
+}
+
 // reporter collects a run's per-file records and renders the result on stdout. It
 // keeps records only in JSON mode: text mode prints one summary line, so holding
 // every record of a 50k-photo library would be pure waste.
@@ -101,6 +129,7 @@ type reporter struct {
 	stdout io.Writer
 	sort   []sortRecord
 	clean  []cleanRecord
+	undo   []undoRecord
 }
 
 func newReporter(format config.OutputFormat, stdout io.Writer) *reporter {
@@ -108,7 +137,7 @@ func newReporter(format config.OutputFormat, stdout io.Writer) *reporter {
 	if r.json() {
 		// Start non-nil: an empty run must marshal "results":[] and not "results":null,
 		// which would break a consumer that iterates the array.
-		r.sort, r.clean = []sortRecord{}, []cleanRecord{}
+		r.sort, r.clean, r.undo = []sortRecord{}, []cleanRecord{}, []undoRecord{}
 	}
 	return r
 }
@@ -148,6 +177,18 @@ func (r *reporter) addClean(res clean.Result) {
 		rec.Error = res.Err.Error()
 	}
 	r.clean = append(r.clean, rec)
+}
+
+// addUndo records one undo decision.
+func (r *reporter) addUndo(res undo.Result) {
+	if !r.json() {
+		return
+	}
+	rec := undoRecord{Path: res.Path, Decision: string(res.Decision), Reason: res.Reason}
+	if res.Err != nil {
+		rec.Error = res.Err.Error()
+	}
+	r.undo = append(r.undo, rec)
 }
 
 // emitSort writes the result of a `sort` run to stdout.
@@ -205,6 +246,31 @@ func (r *reporter) emitClean(cfg config.CleanConfig, sum clean.Summary, interrup
 			" delete=%t interrupted=%t\n",
 		s.Deleted, s.WouldDelete, s.Kept, s.Errors, s.SourceHashed, s.DestHashed,
 		cfg.Delete, interrupted)
+	if err != nil {
+		return fmt.Errorf("writing summary: %w", err)
+	}
+	return nil
+}
+
+// emitUndo writes the result of an `undo` run to stdout.
+func (r *reporter) emitUndo(cfg config.UndoConfig, sum undo.Summary, interrupted bool) error {
+	s := undoSummary{
+		Removed:     sum.Removed,
+		WouldRemove: sum.WouldRemove,
+		Kept:        sum.Kept,
+		Errors:      sum.Errors,
+		DirsPruned:  sum.DirsPruned,
+	}
+	if r.json() {
+		return r.writeJSON(undoReport{
+			Command: "undo", Dest: cfg.DestRoot,
+			Delete: cfg.Delete, Interrupted: interrupted,
+			Results: r.undo, Summary: s,
+		})
+	}
+	_, err := fmt.Fprintf(r.stdout,
+		"removed=%d would_remove=%d kept=%d errors=%d dirs_pruned=%d delete=%t interrupted=%t\n",
+		s.Removed, s.WouldRemove, s.Kept, s.Errors, s.DirsPruned, cfg.Delete, interrupted)
 	if err != nil {
 		return fmt.Errorf("writing summary: %w", err)
 	}
