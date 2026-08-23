@@ -29,6 +29,13 @@ func newSortCmd(stdout, stderr io.Writer, output *string) *cobra.Command {
 capture time, assign a theme to each group, then COPY each photo to
 destination/<theme>/<year>/<year-month-day>/<name>. Originals are never modified.
 
+The layout below the destination root is set by --path-template, built from the
+placeholders {theme} {year} {month} {day} {date} separated by "/" — the default
+"{theme}/{year}/{date}" is the layout above. Literal text is allowed between
+placeholders. A template may omit {theme} (events of different themes then share a
+folder, resolved by the usual skip-identical/" (N)" rules); it may not be absolute,
+contain "." or ".." segments, or start with ".moraine", which is reserved.
+
 Dating (a date is always assigned):
   1. the EXIF capture date;
   2. otherwise a date encoded in the file name (IMG_20230815_120000.jpg,
@@ -36,7 +43,10 @@ Dating (a date is always assigned):
      a batch of downloads, which share one modification time, from collapsing into a
      single event dated by the day they were downloaded;
   3. otherwise the file's modification time.
-A photo left with no usable date at all is filed under <theme>/unknown-date/.
+A photo left with no usable date at all is filed under <theme>/unknown-date/: the
+date-derived part of the template collapses to a single "unknown-date" segment, so
+"{year}/{month}/{theme}" gives unknown-date/<theme>/ rather than a folder that looks
+like a real date.
 
 Scanning never follows a symlink as a directory: a symlinked folder under the source
 is not descended into (reported with --verbose), while a symlinked file whose name
@@ -143,6 +153,9 @@ Exit codes:
 	f.IntVarP(&opts.Sample, "sample", "s", config.DefaultSample, "photos sampled per large group (0 disables the model)")
 	f.StringVar(&opts.Model, "model", config.DefaultModel, "Ollama vision model")
 	f.StringVar(&opts.Themes, "themes", config.DefaultThemes, "themes ([a-z0-9-] slugs, comma-separated)")
+	f.StringVar(&opts.PathTemplate, "path-template", config.DefaultPathTemplate,
+		"destination layout below the root, from {theme} {year} {month} {day} {date} "+
+			"(e.g. \"{year}/{month}\"); an undated event's date part becomes \"unknown-date\"")
 	f.StringVar(&opts.OllamaURL, "ollama-url", config.DefaultOllamaURL, "base URL of the local Ollama API")
 	f.StringVar(&opts.Fallback, "fallback-theme", config.DefaultFallback, "fallback theme when none is determined")
 	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
@@ -165,6 +178,7 @@ Exit codes:
 	registerSharedCompletions(cmd)
 	_ = cmd.RegisterFlagCompletionFunc("jobs", completeFixed())
 	_ = cmd.RegisterFlagCompletionFunc("themes", completeThemeList)
+	_ = cmd.RegisterFlagCompletionFunc("path-template", completeFixed(pathTemplates...))
 	_ = cmd.RegisterFlagCompletionFunc("fallback-theme", completeFixed(append(defaultThemes(), config.DefaultFallback)...))
 	_ = cmd.RegisterFlagCompletionFunc("gap", completeFixed(gapDurations...))
 	_ = cmd.RegisterFlagCompletionFunc("mountain-altitude", completeFixed(altitudeMetres...))

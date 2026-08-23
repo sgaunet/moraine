@@ -55,8 +55,10 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 - **`internal/rawpreview`** — the only package that talks to **exiftool**:
   `EnsureAvailable` (mandatory startup probe) and `Extract` (largest embedded
   preview, captured in memory — never written to disk).
-- **`internal/organize`** — copies files to
-  `dest/<theme>/<year>/<year-month-day>/`, enforcing copy-only/no-overwrite. An
+- **`internal/organize`** — copies files to `dest/` under the layout its `Template`
+  describes (default `<theme>/<year>/<year-month-day>/`, set by `--path-template`;
+  `template.go` parses and validates it, and collapses the date part of an undated
+  event to `unknown-date`), enforcing copy-only/no-overwrite. An
   injected `Placed` hook lets an incremental run skip a source whose recorded copy is
   still in place, expressed in sizes and times so the package needs no manifest
   dependency. Also
@@ -214,8 +216,9 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 Source files → `scan.Found` → `photo.Photo` (dated from EXIF, the file name, or
 mtime) → `[]photo.Cluster` (temporal, ordered by capture time then path so the result
 never depends on which EXIF worker finished first) → theme label per cluster → copied
-to `dest/<theme>/<year>/<year-month-day>/`, or `dest/<theme>/unknown-date/` when no
-date could be determined. Per-photo errors are collected into the run `Summary`
+to `dest/` under the `--path-template` layout (by default
+`<theme>/<year>/<year-month-day>/`, and `<theme>/unknown-date/` when no date could be
+determined). Per-photo errors are collected into the run `Summary`
 rather than aborting the pipeline, as are the images the scan found but could not
 read (`Scanned`/`Unreadable`).
 

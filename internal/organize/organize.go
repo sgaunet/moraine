@@ -44,9 +44,14 @@ type Placement struct {
 }
 
 // Organizer copies photos (and, when Sidecars is set, their companion files)
-// under a destination root using the <theme>/<year>/<year-month-day>/ layout.
+// under a destination root, in the layout its Template describes (by default
+// <theme>/<year>/<year-month-day>/).
 type Organizer struct {
 	DestRoot string
+	// Template is the destination path layout. The zero Template renders
+	// DefaultTemplate, the layout moraine has always used, so a caller that never
+	// sets one is unaffected.
+	Template Template
 	// Sidecars enables copying each photo's companion (sidecar) files into the
 	// same destination folder as the photo.
 	Sidecars bool
@@ -82,14 +87,14 @@ func New(destRoot string) *Organizer {
 	return &Organizer{DestRoot: destRoot}
 }
 
-// Place copies every photo of the cluster into
-// DestRoot/<theme>/<YYYY>/<YYYY-MM-DD>/<name>, using the cluster's representative
-// date (c.Start) for all photos. It returns one Result per photo. A failure on
-// one photo is recorded in its Result.Err and does not abort the others.
+// Place copies every photo of the cluster into DestRoot/<Template>/<name>, using
+// the cluster's representative date (c.Start) for all photos. It returns one Result
+// per photo. A failure on one photo is recorded in its Result.Err and does not abort
+// the others.
 func (o *Organizer) Place(ctx context.Context, c photo.Cluster, theme string) []Result {
 	results := make([]Result, 0, len(c.Photos))
 	date := c.Start
-	dir, dirErr := o.dir(theme, date)
+	dirOf := o.lazyDir(theme, date)
 
 	for _, p := range c.Photos {
 		if err := ctx.Err(); err != nil {
@@ -97,19 +102,14 @@ func (o *Organizer) Place(ctx context.Context, c photo.Cluster, theme string) []
 			continue
 		}
 		res := Result{Source: p.Path, Theme: theme, Date: date}
-		if dirErr != nil {
-			res.Err = dirErr
-			results = append(results, res)
-			continue
-		}
-		res.Dest, res.Action, res.Err = o.placeOne(dir, p.Path, p.Name)
+		res.Dest, res.Action, res.Err = o.placeOne(dirOf, p.Path, p.Name)
 		results = append(results, res)
 
 		// Bring the photo's companion (sidecar) files along, for any successful
 		// placement action (copied/skipped-identical/renamed). They inherit the
 		// photo's theme and date and a name that tracks its final placed name.
 		if o.Sidecars && res.Err == nil {
-			comps := o.placeCompanions(dir, p.Path, filepath.Base(res.Dest))
+			comps := o.placeCompanions(dirOf, p.Path, filepath.Base(res.Dest))
 			for i := range comps {
 				comps[i].Theme = theme
 				comps[i].Date = date
@@ -120,21 +120,32 @@ func (o *Organizer) Place(ctx context.Context, c photo.Cluster, theme string) []
 	return results
 }
 
-// unknownDateDir replaces the <year>/<year-month-day> pair for a cluster with no
-// usable capture time. Formatting a zero time would file those photos under
-// "0001/0001-01-01", a folder that looks like a real date and hides the fact that
-// the date is simply unknown. Four-digit years cannot collide with this name.
-const unknownDateDir = "unknown-date"
+// lazyDir returns a memoised accessor for the cluster's destination directory.
+// Creating it on first use rather than up front is what keeps an incremental re-run
+// from leaving a new empty folder behind for a cluster whose every file is already
+// placed. Memoising means one cluster still creates the directory exactly once, and
+// a failure is reported identically to every file that needed it.
+func (o *Organizer) lazyDir(theme string, date time.Time) func() (string, error) {
+	var (
+		dir  string
+		err  error
+		done bool
+	)
+	return func() (string, error) {
+		if !done {
+			dir, err = o.dir(theme, date)
+			done = true
+		}
+		return dir, err
+	}
+}
 
 // dir builds the destination directory for a theme and date, creating it unless
 // this is a dry run — a preview must not leave empty folders behind either. The
-// path is still resolved through safeJoin, so traversal is rejected in both modes.
+// path is still resolved through safeJoin, so traversal is rejected in both modes
+// even though ParseTemplate has already rejected it when the flag was parsed.
 func (o *Organizer) dir(theme string, date time.Time) (string, error) {
-	sub := filepath.Join(theme, date.Format("2006"), date.Format("2006-01-02"))
-	if date.IsZero() {
-		sub = filepath.Join(theme, unknownDateDir)
-	}
-	dir, err := safeJoin(o.DestRoot, sub)
+	dir, err := safeJoin(o.DestRoot, o.Template.Render(theme, date))
 	if err != nil {
 		return "", err
 	}
@@ -172,9 +183,15 @@ func (o *Organizer) claim(path string) {
 // placeOne copies a single source file into dir, resolving collisions: an
 // identical existing file is skipped, a same-named different file is suffixed. In
 // a dry run it resolves the same Action but writes nothing.
-func (o *Organizer) placeOne(dir, src, name string) (string, Action, error) {
+func (o *Organizer) placeOne(dirOf func() (string, error), src, name string) (string, Action, error) {
 	if dest, ok := o.alreadyPlaced(src); ok {
 		return dest, ActionSkippedIdentical, nil
+	}
+	// Resolved here, not by the caller: a file the manifest already accounts for
+	// needs no destination directory, so an incremental re-run creates none.
+	dir, err := dirOf()
+	if err != nil {
+		return "", "", err
 	}
 	target := filepath.Join(dir, name)
 	if o.taken(target) {

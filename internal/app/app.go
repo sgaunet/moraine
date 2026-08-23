@@ -83,6 +83,7 @@ func Organize(
 	}
 	opts.Classifier = buildClassifier(ctx, cfg, logger)
 	org := organize.New(cfg.DestRoot)
+	org.Template = cfg.PathTemplate
 	org.Sidecars = cfg.Sidecars
 	org.DryRun = cfg.DryRun
 	placed := placedIndex(cfg, logger)

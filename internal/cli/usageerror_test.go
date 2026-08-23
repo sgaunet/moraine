@@ -20,6 +20,8 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		{"missing positional", []string{"sort"}},
 		{"too many positionals", []string{"sort", tmp, tmp}},
 		{"invalid flag value", []string{"sort", "--sample", "-1", tmp}},
+		{"unknown path-template placeholder", []string{"sort", "--path-template", "{bogus}", tmp}},
+		{"path-template escaping the destination", []string{"sort", "--path-template", "../x", tmp}},
 		{"legacy rootless form", []string{tmp}},                               // moraine <dir> (no subcommand) — FR-015
 		{"legacy single-dash long flag", []string{"sort", "-dest", "X", tmp}}, // FR-015
 	}

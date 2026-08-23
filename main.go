@@ -1,8 +1,9 @@
 // Command moraine organizes photos automatically: it scans a source directory
 // (or a single file), groups photos into events by capture time, classifies each
 // group into a theme, and copies the photos into
-// destination/<theme>/<year>/<year-month-day>/. Originals are preserved. Single
-// static binary, pure Go, no CGo. exiftool is required to read RAW files.
+// destination/<theme>/<year>/<year-month-day>/ — a layout --path-template can
+// change. Originals are preserved. Single static binary, pure Go, no CGo. exiftool
+// is required to read RAW files.
 //
 // The command tree (sort / clean / version) lives in internal/cli; main only
 // injects the build version and delegates to cli.Execute.

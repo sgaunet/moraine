@@ -34,6 +34,17 @@ var confidenceThresholds = []string{"0", "0.5", "0.6", "0.7", "0.8", "0.9"}
 // positive number; these are suggestions, so the list stays short.
 var altitudeMetres = []string{"800", "1000", "1500", "2000", "2500"}
 
+// pathTemplates are common --path-template layouts: the default first, then the
+// coarser groupings a user is most likely to want instead. The flag accepts any
+// valid template, so this is a suggestion list, not the accepted set.
+var pathTemplates = []string{
+	config.DefaultPathTemplate,
+	"{theme}/{year}/{month}",
+	"{theme}/{year}",
+	"{year}/{month}/{day}",
+	"{year}/{date}",
+}
+
 // defaultThemes returns the built-in theme slugs, derived from
 // config.DefaultThemes so the completion candidates cannot drift from the flag
 // default.

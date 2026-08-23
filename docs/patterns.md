@@ -40,9 +40,9 @@ not count those — nothing failed, nothing was attempted.
 ## Testing Patterns
 
 - **File naming**: co-located `*_test.go` next to the package.
-- **Organization**: black-box external packages (`package foo_test`) for every
-  package except `organize`, which white-box-tests its unexported helpers
-  (`safeJoin`, `copyFile`, `sameContent`, `uniqueName`).
+- **Organization**: black-box external packages (`package foo_test`) everywhere,
+  including `organize`; its unexported helpers (`safeJoin`, `copyFile`,
+  `sameContent`, `uniqueName`) are reached through `export_test.go` re-exports.
 - **Dry run**: `TestDryRunMatchesRealRun` asserts a preview and the run it previews
   report the same actions — the property that makes `--dry-run` worth trusting.
 - **Style**: table-driven cases with `t.Run` subtests.

@@ -62,7 +62,9 @@ func stem(name string) string {
 // failure is recorded in its Result.Err (non-fatal). Files that are themselves
 // scanned primaries (FR-006) or that live under the destination tree (FR-007) are
 // skipped; only regular files are considered.
-func (o *Organizer) placeCompanions(dir, photoSrc, finalPhotoName string) []Result {
+func (o *Organizer) placeCompanions(
+	dirOf func() (string, error), photoSrc, finalPhotoName string,
+) []Result {
 	srcDir := filepath.Dir(photoSrc)
 	photoName := filepath.Base(photoSrc)
 	cleanDest := filepath.Clean(o.DestRoot)
@@ -86,7 +88,7 @@ func (o *Organizer) placeCompanions(dir, photoSrc, finalPhotoName string) []Resu
 		}
 		target := companionTargetName(finalPhotoName, name, suffix, kind)
 		res := Result{Source: candidate, IsCompanion: true, Of: photoSrc}
-		res.Dest, res.Action, res.Err = o.placeOne(dir, candidate, target)
+		res.Dest, res.Action, res.Err = o.placeOne(dirOf, candidate, target)
 		results = append(results, res)
 	}
 	return results

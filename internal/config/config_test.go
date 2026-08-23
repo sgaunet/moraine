@@ -26,6 +26,7 @@ func defOpts(src string) config.Options {
 		ExifTool:         config.DefaultExifTool,
 		Output:           config.DefaultOutput,
 		MountainAltitude: config.DefaultMountainAltitude,
+		PathTemplate:     config.DefaultPathTemplate,
 	}
 }
 
@@ -403,5 +404,38 @@ func TestNewVoteIsOptIn(t *testing.T) {
 	}
 	if !cfg.Vote {
 		t.Error("Vote = false; want the flag to carry through")
+	}
+}
+
+func TestNewPathTemplate(t *testing.T) {
+	cfg, err := config.New(defOpts("/some/src"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The default must render the layout moraine has always used.
+	if got, want := cfg.PathTemplate.String(), config.DefaultPathTemplate; got != want {
+		t.Errorf("PathTemplate: want %q, got %q", want, got)
+	}
+
+	o := defOpts("/some/src")
+	o.PathTemplate = "{year}/{month}"
+	cfg, err = config.New(o)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.PathTemplate.String(); got != "{year}/{month}" {
+		t.Errorf("PathTemplate: got %q", got)
+	}
+}
+
+// A bad template is a cross-field/syntax error, so it must come back from New (the
+// transport turns that into exit 2) rather than surfacing per-cluster mid-run.
+func TestNewRejectsBadPathTemplate(t *testing.T) {
+	for _, tmpl := range []string{"{bogus}", "/{theme}", "{theme}//{year}", ".moraine/{theme}", "{theme}/../x"} {
+		o := defOpts("/some/src")
+		o.PathTemplate = tmpl
+		if _, err := config.New(o); err == nil {
+			t.Errorf("New with --path-template %q: want an error, got nil", tmpl)
+		}
 	}
 }

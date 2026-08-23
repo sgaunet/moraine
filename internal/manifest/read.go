@@ -143,6 +143,10 @@ type Index struct {
 	// Skipped counts manifest files that could not be read at all, so the caller
 	// can say the index is partial instead of silently under-reporting.
 	Skipped int
+	// PathTemplate is the destination layout the newest readable run recorded, or ""
+	// when no run recorded one. A caller compares it with the layout it is about to
+	// use so it can warn that recorded files stay where they already are.
+	PathTemplate string
 }
 
 // Load folds every manifest under destRoot into an Index, oldest run first so the
@@ -159,6 +163,10 @@ func Load(destRoot string) (*Index, error) {
 		if err != nil {
 			idx.Skipped++
 			continue
+		}
+		// Files are oldest first, so the last one to set this wins.
+		if run.Header.PathTemplate != "" {
+			idx.PathTemplate = run.Header.PathTemplate
 		}
 		for _, rec := range run.Records {
 			if rec.Dest == "" || rec.Error != "" {

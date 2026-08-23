@@ -33,7 +33,9 @@ func newRecorder(cfg config.Config, logger *slog.Logger) *recorder {
 	if cfg.DryRun {
 		return &recorder{logger: logger}
 	}
-	return &recorder{writer: manifest.New(cfg.DestRoot, cfg.Source, time.Now()), logger: logger}
+	w := manifest.New(cfg.DestRoot, cfg.Source, time.Now())
+	w.PathTemplate = cfg.PathTemplate.String()
+	return &recorder{writer: w, logger: logger}
 }
 
 // add records one placement. Photos the run never got to (a cancelled context)
@@ -102,6 +104,14 @@ func placedIndex(cfg config.Config, logger *slog.Logger) *manifest.Index {
 		return nil
 	}
 	logger.Info("incremental", "known_sources", idx.Len(), "manifests_unreadable", idx.Skipped)
+	// A layout change plus --incremental is a legitimate combination — re-file only
+	// what is new — but a silent one, since every already-placed photo is skipped at
+	// its recorded path and never moves to the new layout. Say so rather than
+	// leaving the user to wonder why the new folders are nearly empty.
+	if want := cfg.PathTemplate.String(); idx.PathTemplate != "" && idx.PathTemplate != want {
+		logger.Warn("path template changed since the last run: already-placed files keep their current paths",
+			"recorded", idx.PathTemplate, "now", want)
+	}
 	return idx
 }
 

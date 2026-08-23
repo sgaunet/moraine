@@ -714,3 +714,76 @@ func TestOrganizeReportsInterruptInTheLastCluster(t *testing.T) {
 		t.Errorf("Errors = %d, want 0", sum.Errors)
 	}
 }
+
+// TestOrganizeHonoursPathTemplate proves the template reaches the Organizer through
+// the whole pipeline, not just in organize's own unit tests. Every other test in
+// this file leaves PathTemplate zero and asserts expectedDir, which is what pins
+// that the default layout is unchanged.
+func TestOrganizeHonoursPathTemplate(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	makePNG(t, filepath.Join(src, "a.png"))
+
+	cfg := baseCfg(src, dest, true)
+	tmpl, err := organize.ParseTemplate("{year}/{month}/{theme}")
+	if err != nil {
+		t.Fatalf("ParseTemplate: %v", err)
+	}
+	cfg.PathTemplate = tmpl
+
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	if err != nil {
+		t.Fatalf("Organize: %v", err)
+	}
+	if sum.Copied != 1 {
+		t.Fatalf("summary = %+v; want Copied=1", sum)
+	}
+	want := filepath.Join(dest, modTime.Format("2006"), modTime.Format("01"), "other", "a.png")
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("expected %q: %v", want, err)
+	}
+	if _, err := os.Stat(expectedDir(dest)); err == nil {
+		t.Error("the default layout was created as well")
+	}
+}
+
+// An incremental re-run under a different template must not re-copy anything, and
+// must not leave the new layout's folders behind either: the recorded files keep the
+// paths they already have. The run warns about this on stderr (see placedIndex).
+func TestOrganizeIncrementalUnderAChangedTemplateKeepsRecordedPaths(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	makePNG(t, filepath.Join(src, "a.png"))
+
+	cfg := baseCfg(src, dest, true)
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	firstDest := filepath.Join(expectedDir(dest), "a.png")
+	if _, err := os.Stat(firstDest); err != nil {
+		t.Fatalf("first run did not place the photo: %v", err)
+	}
+
+	changed := baseCfg(src, dest, true)
+	changed.Incremental = true
+	tmpl, err := organize.ParseTemplate("{year}/{month}/{theme}")
+	if err != nil {
+		t.Fatalf("ParseTemplate: %v", err)
+	}
+	changed.PathTemplate = tmpl
+
+	sum, err := app.Organize(context.Background(), changed, quietLogger(), nil)
+	if err != nil {
+		t.Fatalf("incremental run: %v", err)
+	}
+	if sum.Copied != 0 || sum.Skipped != 1 {
+		t.Fatalf("summary = %+v; want Copied=0 Skipped=1", sum)
+	}
+	if _, err := os.Stat(firstDest); err != nil {
+		t.Errorf("the recorded copy must stay where it was: %v", err)
+	}
+	newLayout := filepath.Join(dest, modTime.Format("2006"), modTime.Format("01"), "other")
+	if _, err := os.Stat(newLayout); err == nil {
+		t.Errorf("the new layout's folder %q was created for a fully skipped run", newLayout)
+	}
+}
