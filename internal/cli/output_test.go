@@ -93,6 +93,7 @@ func TestSortTextSummaryIsOneLine(t *testing.T) {
 		t.Fatalf("want a single summary line, got %d:\n%s", len(lines), out.String())
 	}
 	for _, want := range []string{
+		"scanned=1", "unreadable=0",
 		"groups=1", "copied=1", "skipped=0", "renamed=0", "errors=0",
 		"companions_copied=1", "dry_run=false", "interrupted=false",
 	} {
@@ -125,6 +126,8 @@ func TestSortJSONOutput(t *testing.T) {
 			Of        string `json:"of"`
 		} `json:"results"`
 		Summary struct {
+			Scanned          int `json:"scanned"`
+			Unreadable       int `json:"unreadable"`
 			Groups           int `json:"groups"`
 			Copied           int `json:"copied"`
 			CompanionsCopied int `json:"companions_copied"`
@@ -139,6 +142,11 @@ func TestSortJSONOutput(t *testing.T) {
 	}
 	if doc.Summary.Groups != 1 || doc.Summary.Copied != 1 || doc.Summary.CompanionsCopied != 1 {
 		t.Errorf("summary = %+v", doc.Summary)
+	}
+	// The input tallies: one image found, all of it readable. A companion is not an
+	// image the scan found, so it is not counted here.
+	if doc.Summary.Scanned != 1 || doc.Summary.Unreadable != 0 {
+		t.Errorf("scanned/unreadable = %d/%d; want 1/0", doc.Summary.Scanned, doc.Summary.Unreadable)
 	}
 	// One record per placed file: the photo and its companion.
 	if len(doc.Results) != 2 {

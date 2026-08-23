@@ -54,6 +54,8 @@ type sortRecord struct {
 
 // sortSummary is the tally of a `sort` run.
 type sortSummary struct {
+	Scanned           int `json:"scanned"`
+	Unreadable        int `json:"unreadable"`
 	Groups            int `json:"groups"`
 	Copied            int `json:"copied"`
 	Skipped           int `json:"skipped"`
@@ -194,6 +196,8 @@ func (r *reporter) addUndo(res undo.Result) {
 // emitSort writes the result of a `sort` run to stdout.
 func (r *reporter) emitSort(cfg config.Config, sum app.Summary, interrupted bool) error {
 	s := sortSummary{
+		Scanned:           sum.Scanned,
+		Unreadable:        sum.Unreadable,
 		Groups:            sum.Groups,
 		Copied:            sum.Copied,
 		Skipped:           sum.Skipped,
@@ -212,10 +216,10 @@ func (r *reporter) emitSort(cfg config.Config, sum app.Summary, interrupted bool
 		})
 	}
 	_, err := fmt.Fprintf(r.stdout,
-		"groups=%d copied=%d skipped=%d renamed=%d errors=%d"+
+		"scanned=%d unreadable=%d groups=%d copied=%d skipped=%d renamed=%d errors=%d"+
 			" companions_copied=%d companions_skipped=%d companions_renamed=%d companions_errors=%d"+
 			" dry_run=%t interrupted=%t\n",
-		s.Groups, s.Copied, s.Skipped, s.Renamed, s.Errors,
+		s.Scanned, s.Unreadable, s.Groups, s.Copied, s.Skipped, s.Renamed, s.Errors,
 		s.CompanionsCopied, s.CompanionsSkipped, s.CompanionsRenamed, s.CompanionsErrors,
 		cfg.DryRun, interrupted)
 	if err != nil {

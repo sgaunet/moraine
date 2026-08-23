@@ -73,3 +73,40 @@ func TestClusterSortsWithinCluster(t *testing.T) {
 		}
 	}
 }
+
+// TestClusterOrdersEqualTimesByPath pins the total order. Photos sharing one capture
+// time are ordinary — a burst, or a batch of downloads dated from one filename day —
+// and their order decides which of them keeps the un-suffixed name when they collide
+// at placement time. Ordering on capture time alone left that to whichever EXIF
+// worker happened to finish first.
+func TestClusterOrdersEqualTimesByPath(t *testing.T) {
+	taken := time.Date(2025, 8, 12, 8, 0, 0, 0, time.UTC)
+	mk := func(paths ...string) []photo.Photo {
+		out := make([]photo.Photo, len(paths))
+		for i, p := range paths {
+			out[i] = photo.Photo{Path: p, Name: p, Taken: taken}
+		}
+		return out
+	}
+
+	forward := cluster.Cluster(mk("a.jpg", "b.jpg", "c.jpg"), time.Hour)
+	reverse := cluster.Cluster(mk("c.jpg", "b.jpg", "a.jpg"), time.Hour)
+	if len(forward) != 1 || len(reverse) != 1 {
+		t.Fatalf("want one cluster each, got %d and %d", len(forward), len(reverse))
+	}
+	want := []string{"a.jpg", "b.jpg", "c.jpg"}
+	for _, got := range []photo.Cluster{forward[0], reverse[0]} {
+		var paths []string
+		for _, p := range got.Photos {
+			paths = append(paths, p.Path)
+		}
+		if len(paths) != len(want) {
+			t.Fatalf("paths = %v; want %v", paths, want)
+		}
+		for i := range want {
+			if paths[i] != want[i] {
+				t.Fatalf("paths = %v; want %v (input order must not matter)", paths, want)
+			}
+		}
+	}
+}

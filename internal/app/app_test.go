@@ -179,6 +179,11 @@ func TestOrganizeContinuesOnUnreadableImage(t *testing.T) {
 	if sum.Copied != 1 {
 		t.Fatalf("Copied = %d; want 1 (unreadable skipped)", sum.Copied)
 	}
+	// A skipped file is in no placement counter, so without these two the run's
+	// result would not say it had been dropped at all.
+	if sum.Scanned != 2 || sum.Unreadable != 1 {
+		t.Errorf("Scanned/Unreadable = %d/%d; want 2/1", sum.Scanned, sum.Unreadable)
+	}
 	if !strings.Contains(buf.String(), "file skipped") {
 		t.Error("expected a warning log for the unreadable file")
 	}

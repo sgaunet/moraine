@@ -12,6 +12,11 @@ import (
 
 // Cluster sorts photos by capture time and splits them into temporal events.
 // A new event begins whenever the gap to the previous photo exceeds gap.
+//
+// The sort is a total order — capture time, then path — so the result depends only
+// on the set of photos, never on the order they arrive in. Photos sharing one
+// capture time are common (a burst, or a batch dated from one filename day), and
+// their order decides which of them gets the un-suffixed name at placement time.
 func Cluster(photos []photo.Photo, gap time.Duration) []photo.Cluster {
 	if len(photos) == 0 {
 		return nil
@@ -19,8 +24,11 @@ func Cluster(photos []photo.Photo, gap time.Duration) []photo.Cluster {
 
 	sorted := make([]photo.Photo, len(photos))
 	copy(sorted, photos)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		return sorted[i].Taken.Before(sorted[j].Taken)
+	sort.Slice(sorted, func(i, j int) bool {
+		if !sorted[i].Taken.Equal(sorted[j].Taken) {
+			return sorted[i].Taken.Before(sorted[j].Taken)
+		}
+		return sorted[i].Path < sorted[j].Path
 	})
 
 	var clusters []photo.Cluster

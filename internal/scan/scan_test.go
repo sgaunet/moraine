@@ -155,3 +155,68 @@ func equal(a, b []string) bool {
 	}
 	return true
 }
+
+// TestScanExcludesDestReachedThroughSymlink pins identity-based exclusion. Cleaned
+// strings are not identity: on macOS /tmp is a symlink to /private/tmp, so a
+// destination named through one and walked through the other would not match, and
+// the previous run's copies would be re-ingested as new photos.
+func TestScanExcludesDestReachedThroughSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need elevation on windows")
+	}
+	src := t.TempDir()
+	realDest := filepath.Join(src, "real_sorted")
+	write(t, filepath.Join(src, "keep.jpg"))
+	write(t, filepath.Join(realDest, "trip", "already-sorted.jpg"))
+
+	// The destination is named through a symlink; the walk meets the real directory.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDest, link); err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := scan.Scan(src, link, discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := relNames(t, src, found); !equal(names, []string{"keep.jpg"}) {
+		t.Fatalf("found %v; want only keep.jpg (the destination is the same directory)", names)
+	}
+}
+
+// TestScanSymlinkHandling pins the documented, asymmetric rule: a symlinked
+// directory is never descended into (and says so at debug level), while a symlinked
+// file with a recognised extension is listed like any other photo.
+func TestScanSymlinkHandling(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need elevation on windows")
+	}
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "hidden.jpg"))
+	target := filepath.Join(outside, "target.jpg")
+	write(t, target)
+
+	src := t.TempDir()
+	write(t, filepath.Join(src, "plain.jpg"))
+	if err := os.Symlink(outside, filepath.Join(src, "linked-dir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(src, "linked.jpg")); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	found, err := scan.Scan(src, filepath.Join(src, "_sorted"), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// linked.jpg is in; hidden.jpg behind the symlinked directory is not.
+	if names := relNames(t, src, found); !equal(names, []string{"linked.jpg", "plain.jpg"}) {
+		t.Fatalf("found %v; want the plain photo and the symlinked file only", names)
+	}
+	if !strings.Contains(logs.String(), "symlink not followed") {
+		t.Errorf("the skipped directory symlink must be logged; got:\n%s", logs.String())
+	}
+}

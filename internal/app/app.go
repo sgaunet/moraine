@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -36,11 +37,17 @@ const heicConvertTimeout = 60 * time.Second
 
 // Summary tallies what a run did, for the final log line and for tests.
 type Summary struct {
-	Groups  int
-	Copied  int
-	Skipped int
-	Renamed int
-	Errors  int
+	// Input outcomes: how many images the scan found, and how many of those the
+	// run could not read metadata from. A file counted as unreadable was never
+	// placed, so it appears in no other counter — without these two, an input the
+	// run silently dropped left no trace in the result at all.
+	Scanned    int
+	Unreadable int
+	Groups     int
+	Copied     int
+	Skipped    int
+	Renamed    int
+	Errors     int
 	// Companion (sidecar) outcomes, kept separate from photo outcomes (FR-010).
 	CompanionsCopied  int
 	CompanionsSkipped int
@@ -63,7 +70,7 @@ func Organize(
 		onResult = func(organize.Result) {}
 	}
 
-	clusters, primaries, err := buildClusters(cfg, logger)
+	in, err := buildClusters(cfg, logger)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -80,7 +87,7 @@ func Organize(
 	placed := placedIndex(cfg, logger)
 	org.Placed = placedHook(placed)
 	org.IsPrimary = func(p string) bool {
-		_, ok := primaries[filepath.Clean(p)]
+		_, ok := in.primaries[filepath.Clean(p)]
 		return ok
 	}
 
@@ -89,8 +96,9 @@ func Organize(
 	rec := newRecorder(cfg, logger)
 	defer rec.close()
 
-	var sum Summary
-	for _, c := range clusters {
+	// Set before the loop: an interrupted run must still report what it was given.
+	sum := Summary{Scanned: in.scanned, Unreadable: in.unreadable}
+	for _, c := range in.clusters {
 		if err := ctx.Err(); err != nil {
 			return sum, err
 		}
@@ -110,6 +118,7 @@ func Organize(
 	// Debug, not info: the summary is the run's stdout data now (Principle V), so
 	// logging it again would show an interactive user the same numbers twice.
 	logger.Debug("summary",
+		"scanned", sum.Scanned, "unreadable", sum.Unreadable,
 		"groups", sum.Groups, "copied", sum.Copied, "skipped", sum.Skipped,
 		"renamed", sum.Renamed, "errors", sum.Errors,
 		"companions_copied", sum.CompanionsCopied, "companions_skipped", sum.CompanionsSkipped,
@@ -235,22 +244,37 @@ func notAttempted(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// buildClusters produces the clusters to organize plus the set of scanned primary
-// photo paths (cleaned absolute), used to keep a photo from being copied as its
-// own companion (FR-006). A directory source yields many clusters; a single file
-// yields exactly one and a one-element primary set.
-func buildClusters(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, map[string]struct{}, error) {
+// input is what the scan and EXIF stages produce for the rest of the pipeline: the
+// clusters to organize, the set of scanned primary photo paths (cleaned absolute)
+// that keeps a photo from being copied as its own companion (FR-006), and the two
+// input tallies the run Summary reports.
+type input struct {
+	clusters   []photo.Cluster
+	primaries  map[string]struct{}
+	scanned    int // images the scan discovered
+	unreadable int // discovered images whose metadata could not be read
+}
+
+// buildClusters runs the scan and EXIF stages. A directory source yields many
+// clusters; a single file yields exactly one and a one-element primary set.
+func buildClusters(cfg config.Config, logger *slog.Logger) (input, error) {
 	if !cfg.SourceIsDir {
 		clusters, err := singleCluster(cfg, logger)
 		if err != nil {
-			return nil, nil, err
+			// A single-photo run has nowhere to record a per-file failure, so an
+			// unreadable file is fatal here rather than tallied.
+			return input{}, err
 		}
-		return clusters, map[string]struct{}{filepath.Clean(cfg.Source): {}}, nil
+		return input{
+			clusters:  clusters,
+			primaries: map[string]struct{}{filepath.Clean(cfg.Source): {}},
+			scanned:   1,
+		}, nil
 	}
 
 	found, err := scan.Scan(cfg.Source, cfg.DestRoot, logger)
 	if err != nil {
-		return nil, nil, err
+		return input{}, err
 	}
 	logger.Info("scan", "images", len(found), "excluded_dest", cfg.DestRoot)
 
@@ -264,7 +288,14 @@ func buildClusters(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, map
 
 	clusters := cluster.Cluster(photos, cfg.Gap)
 	logger.Info("cluster", "photos", len(photos), "groups", len(clusters), "gap", cfg.Gap.String())
-	return clusters, primaries, nil
+	// readMeta drops exactly the files it could not read, so the shortfall is the
+	// unreadable count — no second tally to keep in step with it.
+	return input{
+		clusters:   clusters,
+		primaries:  primaries,
+		scanned:    len(found),
+		unreadable: len(found) - len(photos),
+	}, nil
 }
 
 // countRAW reports how many photos are RAW, for the run logs (FR-010).
@@ -327,5 +358,10 @@ func readMeta(found []scan.Found, jobs int, logger *slog.Logger) []photo.Photo {
 		}(f)
 	}
 	wg.Wait()
+	// The pool finishes in whatever order the filesystem answers, so restore the
+	// lexical order scan.Scan produced. cluster.Cluster orders by path within one
+	// capture time anyway; keeping the pipeline's own data in a fixed order is what
+	// makes the logs and the per-file stdout records reproducible too.
+	slices.SortFunc(photos, func(a, b photo.Photo) int { return strings.Compare(a.Path, b.Path) })
 	return photos
 }
