@@ -29,33 +29,40 @@ const tmpPattern = ".moraine-*.tmp"
 // later run would suffix-rename the real photo and let the stub keep the good name.)
 // Sweeping such leftovers is out of scope: they are hidden, harmless, and cheap to
 // delete by hand.
-func copyFile(src, dst string) error {
+//
+// It returns the number of bytes written, which io.Copy already counts, so the run
+// can report its copied volume without stat-ing anything afterwards.
+func copyFile(src, dst string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("opening source: %w", err)
+		return 0, fmt.Errorf("opening source: %w", err)
 	}
 	defer func() { _ = in.Close() }()
 	info, err := in.Stat()
 	if err != nil {
-		return fmt.Errorf("stat source: %w", err)
+		return 0, fmt.Errorf("stat source: %w", err)
 	}
 
 	dir := filepath.Dir(dst)
 	tmp, err := os.CreateTemp(dir, tmpPattern)
 	if err != nil {
-		return fmt.Errorf("creating temporary file: %w", err)
+		return 0, fmt.Errorf("creating temporary file: %w", err)
 	}
 	// Until the link succeeds the temporary file is the only thing written, so every
 	// failure path below leaves the destination directory exactly as it was.
 	defer func() { _ = os.Remove(tmp.Name()) }()
 
-	if err := writeTemp(tmp, in, info.ModTime()); err != nil {
-		return err
+	n, err := writeTemp(tmp, in, info.ModTime())
+	if err != nil {
+		return 0, err
 	}
 	if err := link(tmp.Name(), dst); err != nil {
-		return err
+		return 0, err
 	}
-	return syncDir(dir)
+	if err := syncDir(dir); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // writeTemp streams in into the already-created temporary file, makes its bytes
@@ -64,29 +71,32 @@ func copyFile(src, dst string) error {
 // Preserving mtime is not cosmetic: exifmeta falls back to the file's modification
 // time when a photo has no readable EXIF date, so a copy stamped "now" would destroy
 // the only date signal such a photo has.
-func writeTemp(tmp *os.File, in io.Reader, modTime time.Time) error {
+//
+// It returns the number of bytes copied.
+func writeTemp(tmp *os.File, in io.Reader, modTime time.Time) (int64, error) {
 	name := tmp.Name()
 	// os.CreateTemp opens 0o600; destinations are readable like the rest of the tree.
 	if err := tmp.Chmod(0o644); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("setting destination mode: %w", err)
+		return 0, fmt.Errorf("setting destination mode: %w", err)
 	}
-	if _, err := io.Copy(tmp, in); err != nil {
+	n, err := io.Copy(tmp, in)
+	if err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("copying: %w", err)
+		return 0, fmt.Errorf("copying: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("fsync: %w", err)
+		return 0, fmt.Errorf("fsync: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing destination: %w", err)
+		return 0, fmt.Errorf("closing destination: %w", err)
 	}
 	// A zero atime leaves the access time alone; only the modification time matters.
 	if err := os.Chtimes(name, time.Time{}, modTime); err != nil {
-		return fmt.Errorf("preserving modification time: %w", err)
+		return 0, fmt.Errorf("preserving modification time: %w", err)
 	}
-	return nil
+	return n, nil
 }
 
 // link publishes the finished temporary file at dst. link(2) fails with EEXIST
@@ -137,6 +147,17 @@ func syncDir(dir string) error {
 		return fmt.Errorf("fsync directory %q: %w", dir, err)
 	}
 	return nil
+}
+
+// fileSize returns path's size, or 0 when it cannot be read. It is used only to
+// report the volume a placement did not have to copy, so an unreadable size costs a
+// number in the summary, never a photo.
+func fileSize(path string) int64 {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 // sameContent reports whether files a and b have identical content. It

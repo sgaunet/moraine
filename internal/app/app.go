@@ -53,6 +53,39 @@ type Summary struct {
 	CompanionsSkipped int
 	CompanionsRenamed int
 	CompanionsErrors  int
+	// Volume moved and volume spared. BytesCopied is what was actually written
+	// (copies and renames alike; on a dry run, what would have been written);
+	// BytesSkipped is what an already-identical destination saved re-writing. Counts
+	// alone cannot answer "was this re-run worth anything" — a run that skips 12
+	// files says nothing about whether that was 12 KB or 12 GB.
+	BytesCopied            int64
+	BytesSkipped           int64
+	CompanionsBytesCopied  int64
+	CompanionsBytesSkipped int64
+	// Events describes each event the run placed, in the order it placed them. It is
+	// bounded by the number of events, not by the number of photos, which is why the
+	// run can afford to keep it while it deliberately does not keep per-file records.
+	Events []Event
+}
+
+// Event is one placed event: how its theme was decided, how big it was, and what
+// placing it cost. Until now this was logged once and thrown away, so a run could
+// report totals but never which event produced them.
+//
+// The outcome counters cover every file placed for the event — photos and their
+// companions alike — so Copied can exceed Photos. Bytes follow Summary's meaning.
+type Event struct {
+	Theme        string
+	Method       string // how the theme was decided (classify.Method)
+	Photos       int    // photos in the cluster
+	Start        time.Time
+	End          time.Time
+	Copied       int
+	Skipped      int
+	Renamed      int
+	Errors       int
+	BytesCopied  int64
+	BytesSkipped int64
 }
 
 // Organize runs the full pipeline for cfg and returns a Summary. A directory
@@ -110,11 +143,17 @@ func Organize(
 			"theme", theme, "date", c.Start.Format("2006-01-02"))
 		sum.Groups++
 
+		ev := Event{
+			Theme: theme, Method: string(method), Photos: len(c.Photos),
+			Start: c.Start, End: c.End,
+		}
 		for _, r := range org.Place(ctx, c, theme) {
 			tally(&sum, r, logger)
+			tallyEvent(&ev, r)
 			rec.add(r)
 			onResult(r)
 		}
+		sum.Events = append(sum.Events, ev)
 	}
 
 	// Debug, not info: the summary is the run's stdout data now (Principle V), so
@@ -124,7 +163,8 @@ func Organize(
 		"groups", sum.Groups, "copied", sum.Copied, "skipped", sum.Skipped,
 		"renamed", sum.Renamed, "errors", sum.Errors,
 		"companions_copied", sum.CompanionsCopied, "companions_skipped", sum.CompanionsSkipped,
-		"companions_renamed", sum.CompanionsRenamed, "companions_errors", sum.CompanionsErrors)
+		"companions_renamed", sum.CompanionsRenamed, "companions_errors", sum.CompanionsErrors,
+		"bytes_copied", sum.BytesCopied, "bytes_skipped", sum.BytesSkipped)
 
 	// Report the cancellation even when it arrived inside the last (or only) cluster.
 	// The loop above only checks between clusters, so a single-event import — one
@@ -208,12 +248,15 @@ func tally(sum *Summary, r organize.Result, logger *slog.Logger) {
 	switch r.Action {
 	case organize.ActionCopied:
 		sum.Copied++
+		sum.BytesCopied += r.Size
 	case organize.ActionSkippedIdentical:
 		sum.Skipped++
+		sum.BytesSkipped += r.Size
 	case organize.ActionRenamed:
 		sum.Renamed++
+		sum.BytesCopied += r.Size
 	}
-	logger.Debug("photo", "action", string(r.Action), "source", r.Source, "dest", r.Dest)
+	logger.Debug("photo", "action", string(r.Action), "source", r.Source, "dest", r.Dest, "bytes", r.Size)
 }
 
 // tallyCompanion records one companion Result and logs it. A per-companion
@@ -231,12 +274,40 @@ func tallyCompanion(sum *Summary, r organize.Result, logger *slog.Logger) {
 	switch r.Action {
 	case organize.ActionCopied:
 		sum.CompanionsCopied++
+		sum.CompanionsBytesCopied += r.Size
 	case organize.ActionSkippedIdentical:
 		sum.CompanionsSkipped++
+		sum.CompanionsBytesSkipped += r.Size
 	case organize.ActionRenamed:
 		sum.CompanionsRenamed++
+		sum.CompanionsBytesCopied += r.Size
 	}
-	logger.Debug("companion", "action", string(r.Action), "source", r.Source, "dest", r.Dest, "of", r.Of)
+	logger.Debug("companion", "action", string(r.Action), "source", r.Source, "dest", r.Dest,
+		"of", r.Of, "bytes", r.Size)
+}
+
+// tallyEvent records one Result against the event it belongs to. Photos and
+// companions share these counters: what a reader wants per event is what the event
+// cost, not a second photo/companion split of the totals above. Cancelled work is
+// left out for the same reason tally leaves it out — nothing was attempted.
+func tallyEvent(ev *Event, r organize.Result) {
+	if r.Err != nil {
+		if !notAttempted(r.Err) {
+			ev.Errors++
+		}
+		return
+	}
+	switch r.Action {
+	case organize.ActionCopied:
+		ev.Copied++
+		ev.BytesCopied += r.Size
+	case organize.ActionSkippedIdentical:
+		ev.Skipped++
+		ev.BytesSkipped += r.Size
+	case organize.ActionRenamed:
+		ev.Renamed++
+		ev.BytesCopied += r.Size
+	}
 }
 
 // notAttempted reports whether a Result failed because the run was cancelled rather

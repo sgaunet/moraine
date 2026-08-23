@@ -95,6 +95,7 @@ func TestSortTextSummaryIsOneLine(t *testing.T) {
 	for _, want := range []string{
 		"scanned=1", "unreadable=0",
 		"groups=1", "copied=1", "skipped=0", "renamed=0", "errors=0",
+		"bytes_skipped=0", "companions_bytes_skipped=0",
 		"companions_copied=1", "dry_run=false", "interrupted=false",
 	} {
 		if !strings.Contains(lines[0], want) {
@@ -125,12 +126,27 @@ func TestSortJSONOutput(t *testing.T) {
 			Companion bool   `json:"companion"`
 			Of        string `json:"of"`
 		} `json:"results"`
+		Events []struct {
+			Theme        string `json:"theme"`
+			Method       string `json:"method"`
+			Photos       int    `json:"photos"`
+			Start        string `json:"start"`
+			End          string `json:"end"`
+			Copied       int    `json:"copied"`
+			Skipped      int    `json:"skipped"`
+			BytesCopied  int64  `json:"bytes_copied"`
+			BytesSkipped int64  `json:"bytes_skipped"`
+		} `json:"events"`
 		Summary struct {
-			Scanned          int `json:"scanned"`
-			Unreadable       int `json:"unreadable"`
-			Groups           int `json:"groups"`
-			Copied           int `json:"copied"`
-			CompanionsCopied int `json:"companions_copied"`
+			Scanned                int   `json:"scanned"`
+			Unreadable             int   `json:"unreadable"`
+			Groups                 int   `json:"groups"`
+			Copied                 int   `json:"copied"`
+			CompanionsCopied       int   `json:"companions_copied"`
+			BytesCopied            int64 `json:"bytes_copied"`
+			BytesSkipped           int64 `json:"bytes_skipped"`
+			CompanionsBytesCopied  int64 `json:"companions_bytes_copied"`
+			CompanionsBytesSkipped int64 `json:"companions_bytes_skipped"`
 		} `json:"summary"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
@@ -166,6 +182,32 @@ func TestSortJSONOutput(t *testing.T) {
 	}
 	if companions != 1 {
 		t.Errorf("companion records = %d, want 1", companions)
+	}
+	// Volume: everything was copied, so nothing was spared, and the byte totals must
+	// be real sizes rather than zero placeholders.
+	if doc.Summary.BytesCopied <= 0 || doc.Summary.CompanionsBytesCopied <= 0 {
+		t.Errorf("copied volume = %d photo / %d companion bytes; want both > 0",
+			doc.Summary.BytesCopied, doc.Summary.CompanionsBytesCopied)
+	}
+	if doc.Summary.BytesSkipped != 0 || doc.Summary.CompanionsBytesSkipped != 0 {
+		t.Errorf("nothing was skipped, so the spared volume must be 0; got %d / %d",
+			doc.Summary.BytesSkipped, doc.Summary.CompanionsBytesSkipped)
+	}
+	// One event, described: its theme, how the theme was decided, and its cost.
+	if len(doc.Events) != 1 {
+		t.Fatalf("want 1 event, got %d: %+v", len(doc.Events), doc.Events)
+	}
+	ev := doc.Events[0]
+	if ev.Theme == "" || ev.Method == "" || ev.Photos != 1 || ev.Start == "" || ev.End == "" {
+		t.Errorf("incomplete event: %+v", ev)
+	}
+	// The event's counters cover the photo and its companion alike.
+	if ev.Copied != 2 || ev.Skipped != 0 {
+		t.Errorf("event copied/skipped = %d/%d; want 2/0", ev.Copied, ev.Skipped)
+	}
+	if ev.BytesCopied != doc.Summary.BytesCopied+doc.Summary.CompanionsBytesCopied {
+		t.Errorf("the only event's copied volume (%d) must equal the run's (%d+%d)",
+			ev.BytesCopied, doc.Summary.BytesCopied, doc.Summary.CompanionsBytesCopied)
 	}
 }
 
@@ -267,6 +309,9 @@ func TestJSONOutputIsAlwaysAnArray(t *testing.T) {
 	if !strings.Contains(out.String(), `"results":[]`) {
 		t.Errorf("an empty run must render results as [], got:\n%s", out.String())
 	}
+	if !strings.Contains(out.String(), `"events":[]`) {
+		t.Errorf("an empty run must render events as [], got:\n%s", out.String())
+	}
 }
 
 func TestSortDryRunWritesNothing(t *testing.T) {
@@ -346,5 +391,94 @@ func TestVersionJSONOutput(t *testing.T) {
 	}
 	if doc.GoVersion == "" || doc.Platform == "" {
 		t.Errorf("go version and platform are always knowable; got %+v", doc)
+	}
+}
+
+// TestSortReportsTheVolumeItDidNotRecopy is the point of the byte counters: a re-run
+// over an already-sorted library reports how much I/O it saved, which a count of
+// skipped files cannot express — 12 skipped files could be 12 KB or 12 GB.
+func TestSortReportsTheVolumeItDidNotRecopy(t *testing.T) {
+	args, _ := sortFixture(t, "--output=json")
+	// First run copies; second run finds both files identical and skips them.
+	if code := cli.Execute("dev", args, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("first run: exit = %d", code)
+	}
+	var out bytes.Buffer
+	if code := cli.Execute("dev", args, &out, io.Discard); code != 0 {
+		t.Fatalf("second run: exit = %d", code)
+	}
+
+	var doc struct {
+		Results []struct {
+			Source string `json:"source"`
+			Action string `json:"action"`
+		} `json:"results"`
+		Summary struct {
+			Copied                 int   `json:"copied"`
+			Skipped                int   `json:"skipped"`
+			BytesCopied            int64 `json:"bytes_copied"`
+			BytesSkipped           int64 `json:"bytes_skipped"`
+			CompanionsSkipped      int   `json:"companions_skipped"`
+			CompanionsBytesSkipped int64 `json:"companions_bytes_skipped"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, out.String())
+	}
+	if doc.Summary.Copied != 0 || doc.Summary.Skipped != 1 || doc.Summary.CompanionsSkipped != 1 {
+		t.Fatalf("re-run summary = %+v; want nothing copied and both files skipped", doc.Summary)
+	}
+	if doc.Summary.BytesCopied != 0 {
+		t.Errorf("a re-run wrote nothing, so bytes_copied must be 0; got %d", doc.Summary.BytesCopied)
+	}
+	// Cross-check the reported volume against the sources' real sizes on disk.
+	var wantPhoto, wantCompanion int64
+	for _, r := range doc.Results {
+		info, err := os.Stat(r.Source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if filepath.Ext(r.Source) == ".png" {
+			wantPhoto += info.Size()
+		} else {
+			wantCompanion += info.Size()
+		}
+	}
+	if doc.Summary.BytesSkipped != wantPhoto {
+		t.Errorf("bytes_skipped = %d, want %d (the photo's real size)", doc.Summary.BytesSkipped, wantPhoto)
+	}
+	if doc.Summary.CompanionsBytesSkipped != wantCompanion {
+		t.Errorf("companions_bytes_skipped = %d, want %d", doc.Summary.CompanionsBytesSkipped, wantCompanion)
+	}
+}
+
+// A dry run writes nothing, so its reported volume is what it *would* have written —
+// otherwise the preview could not answer "how much will this copy?".
+func TestSortDryRunReportsTheVolumeItWouldWrite(t *testing.T) {
+	args, dest := sortFixture(t, "--output=json", "--dry-run")
+	var out bytes.Buffer
+	if code := cli.Execute("dev", args, &out, io.Discard); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	var doc struct {
+		Summary struct {
+			BytesCopied           int64 `json:"bytes_copied"`
+			CompanionsBytesCopied int64 `json:"companions_bytes_copied"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, out.String())
+	}
+	if doc.Summary.BytesCopied <= 0 || doc.Summary.CompanionsBytesCopied <= 0 {
+		t.Errorf("a dry run must report the volume it would write; got %d / %d",
+			doc.Summary.BytesCopied, doc.Summary.CompanionsBytesCopied)
+	}
+	// ... while still writing nothing at all.
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("a dry run must write nothing, found %d entries in the destination", len(entries))
 	}
 }
