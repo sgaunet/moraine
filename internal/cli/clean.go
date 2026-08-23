@@ -13,13 +13,14 @@ import (
 
 	"github.com/sgaunet/moraine/internal/app"
 	"github.com/sgaunet/moraine/internal/config"
+	"github.com/sgaunet/moraine/internal/configfile"
 )
 
 // newCleanCmd builds the `clean` subcommand: it deletes source originals that have a
 // byte-identical copy under the destination. Dry-run by default; --delete commits.
 // config.NewClean errors are usage errors (exit 2); Validate and app.Clean are
 // runtime errors (exit 1). It needs neither exiftool nor the classifier.
-func newCleanCmd(stdout, stderr io.Writer, output *string) *cobra.Command {
+func newCleanCmd(stdout, stderr io.Writer, output, configPath *string) *cobra.Command {
 	var opts config.CleanOptions
 	cmd := &cobra.Command{
 		Use:   "clean [flags] <source-dir>",
@@ -53,13 +54,19 @@ Exit codes:
   # machine-readable plan (logs discarded)
   moraine clean --output=json -d ~/Photos/sorted ~/Photos/2025 2>/dev/null`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Source = args[0]
 			opts.Output = *output
 
+			file, from, err := configfile.Load(*configPath)
+			if err != nil {
+				return err
+			}
+			fromFile := applyCleanFile(cmd, &opts, file)
+
 			cfg, err := config.NewClean(opts)
 			if err != nil {
-				return err // cross-field/syntax error → usage (exit 2)
+				return fileHint(err, from, fromFile) // cross-field/syntax error → usage (exit 2)
 			}
 			if err := cfg.Validate(); err != nil {
 				return asRuntime(err)

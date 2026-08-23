@@ -13,6 +13,7 @@ import (
 
 	"github.com/sgaunet/moraine/internal/app"
 	"github.com/sgaunet/moraine/internal/config"
+	"github.com/sgaunet/moraine/internal/configfile"
 	"github.com/sgaunet/moraine/internal/rawpreview"
 )
 
@@ -20,7 +21,7 @@ import (
 // values bind into a config.Options; RunE turns them into a validated config.Config
 // (config.New errors are usage errors → exit 2) and runs the pipeline (filesystem
 // validation, the exiftool preflight, and app.Organize are runtime errors → exit 1).
-func newSortCmd(stdout, stderr io.Writer, output *string) *cobra.Command {
+func newSortCmd(stdout, stderr io.Writer, output, configPath *string) *cobra.Command {
 	var opts config.Options
 	cmd := &cobra.Command{
 		Use:   "sort [flags] <directory-or-file>",
@@ -110,13 +111,21 @@ Exit codes:
   moraine sort --themes "friends,hiking,party,nature" --fallback-theme misc \
     -l debug -d ~/Photos/sorted ~/Photos/2025`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Source = args[0]
 			opts.Output = *output
 
+			// The file fills in only what the command line did not; a bad file is an
+			// input error like any other (exit 2), reported with its path and line.
+			file, from, err := configfile.Load(*configPath)
+			if err != nil {
+				return err
+			}
+			fromFile := applySortFile(cmd, &opts, file)
+
 			cfg, err := config.New(opts)
 			if err != nil {
-				return err // cross-field/syntax error → usage (exit 2)
+				return fileHint(err, from, fromFile) // cross-field/syntax error → usage (exit 2)
 			}
 			if err := cfg.Validate(); err != nil {
 				return asRuntime(err)

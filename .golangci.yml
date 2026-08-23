@@ -44,6 +44,10 @@ linters:
           # JSON renderings of a run are the same document, so they must name the
           # same things identically.
           json: snake
+          # The configuration file names the same settings as the flags and the JSON
+          # output, so it spells them the same way: log_level, path_template,
+          # min_confidence. camelCase would make one document disagree with the others.
+          yaml: snake
 
 formatters:
   enable:

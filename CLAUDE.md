@@ -102,6 +102,16 @@ defaulting to that). Originals are never modified or deleted. Repo: `github.com/
 - **Typed config split** (`internal/config`): `New`/`NewClean` do pure syntax and
   cross-field checks, no I/O (usage errors → exit 2); the `Validate()` methods do
   filesystem checks and resolve the `<source>/_sorted` default (→ exit 1).
+- **Config file** (`internal/configfile` + `internal/cli/configfile.go`): optional
+  YAML at `--config`, `$MORAINE_CONFIG`, `$XDG_CONFIG_HOME/moraine.yaml`, then
+  `~/.config/moraine.yaml` (**not** `os.UserConfigDir()` — on macOS that is
+  `~/Library/Application Support`). Precedence is **flag > file > default**, decided
+  by `cmd.Flags().Changed`, never by comparing against a default. Strict decoding, so
+  an unknown key is exit 2. `--dry-run`/`--delete`/`--incremental`/`--quiet`/
+  `--verbose` and the positional source are deliberately **not** configurable (mode
+  flags stay per-invocation; Principle V). `MORAINE_CONFIG=` (empty) disables the file
+  — which is how `internal/cli`'s `TestMain` keeps the suite off a developer's real
+  config.
 - **Copy-only, no-clobber, atomic**: `copyFile` stages a `.moraine-*.tmp` in the
   destination dir, fsyncs it, copies the source mtime (`exifmeta` falls back to mtime),
   publishes it with `os.Link` (`EEXIST` ⇒ never overwrites, never a truncated file on a

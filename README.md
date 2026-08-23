@@ -369,6 +369,63 @@ run did not finish what was asked.
 > `-version` → `moraine version` (or `--version`). The old rootless form and single-dash
 > long flags are no longer accepted.
 
+### Configuration file
+
+Settings you always pass can live in a YAML file instead. A **command-line flag always
+beats the file, and the file always beats the built-in default.**
+
+moraine reads the first of these that exists:
+
+1. the file named by `--config`;
+2. `$MORAINE_CONFIG`;
+3. `$XDG_CONFIG_HOME/moraine.yaml`;
+4. `~/.config/moraine.yaml`.
+
+Having no configuration file is the normal case and not an error. A file named
+*explicitly* (`--config` or `$MORAINE_CONFIG`) must exist, though — silently ignoring a
+typo'd path would leave you wondering why nothing applied. Set `MORAINE_CONFIG=`
+(empty) to ignore the file entirely for one run.
+
+```yaml
+# ~/.config/moraine.yaml
+# Keys at the top level are shared; a command's section overrides them.
+log_level: warn
+output: json
+dest: /Volumes/photos/sorted
+
+sort:
+  gap: 6h
+  themes: [mountain, special-events, cook, family]
+  fallback_theme: other
+  path_template: "{theme}/{year}/{date}"
+  model: qwen3-vl:8b
+  ollama_url: http://127.0.0.1:11434
+  sample: 3
+  jobs: 4
+  sidecars: true
+  mountain_altitude: 1500
+  min_confidence: 0.6
+  vote: true
+  exiftool: exiftool
+
+clean:
+  dest: /Volumes/photos/sorted   # overrides the shared value above
+```
+
+Keys are named after the flags, in `snake_case` (`--path-template` → `path_template`).
+`gap` is a duration string (`"6h"`, `"30m"`); `themes` is a list. `undo` accepts only
+`log_level` and `output` — it takes its destination as an argument.
+
+**Decoding is strict**: an unrecognised key is an error (exit `2`) rather than a
+setting that silently does nothing, and the message names the file and the line.
+
+**Mode flags are deliberately not configurable** — `--dry-run`, `--delete`,
+`--incremental`, `--quiet` and `--verbose`. The first three choose what a single
+invocation *does*: a file that made `clean` delete by default would defeat the whole
+point of `clean` being dry-run until you ask, and one that made every `sort` a no-op
+would be worse. `--quiet`/`--verbose` are shorthands over `log_level`, so set
+`log_level` directly.
+
 ### `sort` flags
 
 | Flag               | Short | Type     | Default                   | Role                                                       |
@@ -381,6 +438,7 @@ run did not finish what was asked.
 | `--ollama-url`     |       | string   | `http://127.0.0.1:11434`  | base URL of the Ollama API                                 |
 | `--themes`         |       | string   | `mountain,special-events,cook,family` | themes (comma-separated slugs)                 |
 | `--path-template`  |       | string   | `{theme}/{year}/{date}`   | destination layout from `{theme}` `{year}` `{month}` `{day}` `{date}` |
+| `--config`         |       | string   | *(see below)*             | read settings from this YAML file (flags always win)       |
 | `--fallback-theme` |       | string   | `other`                   | fallback theme when none is determined                     |
 | `--log-level`      | `-l`  | string   | `info`                    | `debug` \| `info` \| `warn` \| `error`                     |
 | `--quiet`          | `-q`  | bool     | `false`                   | log errors only (excludes `--verbose` / `--log-level`)     |
@@ -407,6 +465,7 @@ run did not finish what was asked.
 | `--quiet`     | `-q`  | bool     | `false`            | log errors only (excludes `--verbose` / `--log-level`)        |
 | `--verbose`   | `-v`  | bool     | `false`            | log every file (excludes `--quiet` / `--log-level`)          |
 | `--output`    |       | string   | `text`             | stdout format: `text` \| `json`                              |
+| `--config`    |       | string   | *(see above)*      | read settings from this YAML file (flags always win)          |
 
 ### `undo` flags
 
@@ -418,6 +477,7 @@ run did not finish what was asked.
 | `--quiet`     | `-q`  | bool     | `false` | log errors only (excludes `--verbose` / `--log-level`)      |
 | `--verbose`   | `-v`  | bool     | `false` | log every file (excludes `--quiet` / `--log-level`)         |
 | `--output`    |       | string   | `text`  | stdout format: `text` \| `json`                             |
+| `--config`    |       | string   | *(see above)* | read settings from this YAML file (flags always win)  |
 
 `undo` acts on the **most recent** run recorded under the destination. After a
 successful `--delete` pass that run's manifest is kept as an audit trail and marked
@@ -496,6 +556,7 @@ internal/
   cli/      Cobra command tree (sort/clean/undo/version), flag binding, exit-code mapping
   config/   centralized typed configuration + validation (slugs, file/directory source)
   app/      testable orchestration: scan → exif → cluster → classify → organize + logs
+  configfile/ optional YAML config file (flag > file > default)
   photo/    domain types (Photo, Cluster, Format)
   scan/     recursive walk, format filter, EXCLUDES destRoot
   exifmeta/ EXIF extraction (date, GPS, altitude); date falls back to the file name, then mtime
