@@ -30,6 +30,16 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   per-file records through the `app` orchestrators' `onResult` callback. Per-event
   data does not come through that callback — it arrives whole on `app.Summary.Events`,
   because there are only as many events as there are events.
+- **`internal/configfile`** — decodes the optional YAML configuration file and
+  nothing else: no Cobra, no knowledge of flag defaults. Every setting is a pointer,
+  so "absent from the file" is distinguishable from "present and equal to the
+  default" — which is what lets a flag win without this package knowing any default.
+  Decoding is strict (`KnownFields(true)`): a typo'd key is an error, because a
+  setting that silently does nothing is the worst failure a config file can have. The
+  three-layer precedence itself lives in `internal/cli/configfile.go`, the only layer
+  that can ask cobra whether a flag was actually typed (`Flags().Changed`) — comparing
+  a value against its default would be wrong, since `--sample 3` means it even when 3
+  is the default.
 - **`internal/config`** — single immutable `Config`/`CleanConfig`/`UndoConfig` struct
   holding every runtime parameter; `New`/`NewClean`/`NewUndo` (syntax/cross-field
   checks, no I/O) is split from `Validate` (filesystem checks, default-destination

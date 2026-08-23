@@ -13,13 +13,14 @@ import (
 
 	"github.com/sgaunet/moraine/internal/app"
 	"github.com/sgaunet/moraine/internal/config"
+	"github.com/sgaunet/moraine/internal/configfile"
 )
 
 // newUndoCmd builds the `undo` subcommand: it removes the copies made by the most
 // recent `sort` run, read from that run's manifest. Dry-run by default; --delete
 // commits. config.NewUndo errors are usage errors (exit 2); Validate and app.Undo
 // are runtime errors (exit 1). It needs neither exiftool nor the classifier.
-func newUndoCmd(stdout, stderr io.Writer, output *string) *cobra.Command {
+func newUndoCmd(stdout, stderr io.Writer, output, configPath *string) *cobra.Command {
 	var opts config.UndoOptions
 	cmd := &cobra.Command{
 		Use:   "undo [flags] <destination-root>",
@@ -59,13 +60,19 @@ Exit codes:
   # machine-readable plan (logs discarded)
   moraine undo --output=json ~/Photos/sorted 2>/dev/null`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Dest = args[0]
 			opts.Output = *output
 
+			file, from, err := configfile.Load(*configPath)
+			if err != nil {
+				return err
+			}
+			fromFile := applyUndoFile(cmd, &opts, file)
+
 			cfg, err := config.NewUndo(opts)
 			if err != nil {
-				return err // cross-field/syntax error → usage (exit 2)
+				return fileHint(err, from, fromFile) // cross-field/syntax error → usage (exit 2)
 			}
 			if err := cfg.Validate(); err != nil {
 				return asRuntime(err)

@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	github.com/evanoberholster/imagemeta v1.0.0
 	github.com/spf13/cobra v1.10.2
+	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/image v0.45.0
 )
 
