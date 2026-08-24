@@ -35,9 +35,25 @@ func TestAvailableWalksUpToAnExistingAncestor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Available on a not-yet-created destination: %v", err)
 	}
-	if got != want {
-		t.Errorf("Available = %d for a missing path; want %d, its ancestor's filesystem", got, want)
+	// Compared with a tolerance rather than for equality. The two readings are taken
+	// a moment apart from a live filesystem, so anything else writing to the disk —
+	// another test in this suite, or anything at all on the machine — moves the
+	// second one and fails a test that is not about free space changing. The
+	// question here is only which filesystem answered, and a wrong one differs by
+	// orders of magnitude, never by a fraction of a percent.
+	if !within(got, want, 0.01) {
+		t.Errorf("Available = %d for a missing path; want about %d, its ancestor's filesystem",
+			got, want)
 	}
+}
+
+// within reports whether got is inside tolerance (a fraction of want) of want.
+func within(got, want uint64, tolerance float64) bool {
+	spread := want - got
+	if got > want {
+		spread = got - want
+	}
+	return float64(spread) <= float64(want)*tolerance
 }
 
 // The walk steps past a missing path, not past a broken one. A destination named
