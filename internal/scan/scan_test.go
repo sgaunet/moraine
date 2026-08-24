@@ -52,6 +52,32 @@ func TestScanRecursiveAndFilters(t *testing.T) {
 	}
 }
 
+// Size is what the run's free-space estimate is built from, so it has to be the real
+// byte count and not, say, the block count or a zero left by a missing stat.
+func TestScanReportsFileSize(t *testing.T) {
+	src := t.TempDir()
+	body := bytes.Repeat([]byte("j"), 4096+17) // deliberately not a block multiple
+	if err := os.WriteFile(filepath.Join(src, "a.jpg"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(src, "sub", "b.png")) // one byte
+
+	found, err := scan.Scan(src, filepath.Join(src, "_sorted"), discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sizes := make(map[string]int64, len(found))
+	for _, f := range found {
+		sizes[filepath.Base(f.Path)] = f.Size
+	}
+	if got := sizes["a.jpg"]; got != int64(len(body)) {
+		t.Errorf("a.jpg Size = %d; want %d", got, len(body))
+	}
+	if got := sizes["b.png"]; got != 1 {
+		t.Errorf("b.png Size = %d; want 1", got)
+	}
+}
+
 func TestScanExcludesDestRootUnderSource(t *testing.T) {
 	src := t.TempDir()
 	dest := filepath.Join(src, "_sorted") // destination nested under source

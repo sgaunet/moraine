@@ -99,7 +99,9 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   summary, then `interrupted: copied N, …` with exit 1; photos never reached are not
   counted as errors. `--dry-run` writes nothing at all, not even a directory.
 - **Procedural pipeline** in `app.Organize`: `scan → exifmeta` (worker pool sized by
-  `GOMAXPROCS`) `→ cluster → classify → organize.Place`, tallying a `Summary`.
+  `GOMAXPROCS`) `→ cluster → classify → organize.Place`, tallying a `Summary`. Between
+  scan and exifmeta, `checkFreeSpace` compares the scanned bytes against
+  `diskspace.Available(destRoot)` and warns — never aborts — when they do not fit.
 - **Typed config split** (`internal/config`): `New`/`NewClean` do pure syntax and
   cross-field checks, no I/O (usage errors → exit 2); the `Validate()` methods do
   filesystem checks and resolve the `<source>/_sorted` default (→ exit 1).
@@ -203,7 +205,7 @@ task check-before-commit   # lint + test + snapshot
 - **Entrypoint**: `main.go` → **Transport**: `internal/cli` → **Orchestration**:
   `internal/app`
 - **Domain**: `internal/{config,scan,exifmeta,cluster,classify,organize,clean,undo,
-  manifest,photo,contenthash,rawpreview}`; fake-exec test helper in `internal/exiftooltest`
+  manifest,photo,contenthash,rawpreview,diskspace}`; fake-exec test helper in `internal/exiftooltest`
 - **Tests**: co-located `internal/**/*_test.go`
 - **Specs**: `specs/00N-*/` · **Constitution**: `.specify/memory/constitution.md`
 - **Config**: `.golangci.yml`, `Taskfile.yml`, `mise.toml`, `.goreleaser.yml`
@@ -216,7 +218,22 @@ task check-before-commit   # lint + test + snapshot
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #12** — the feature backlog, four independently shippable
+Latest change: **issue #19** — free-space preflight (split out of #13). New
+`internal/diskspace`: `Available(path)` over `syscall.Statfs`, build-tagged `unix` with
+a `!unix` stub so the tree still builds on Windows, and — the part that matters — it
+answers for the **nearest existing ancestor**, since the destination root is created on
+first use and so is normally absent when asked. `scan.Found` gains `Size` (one extra
+lstat per recognised file, invisible next to the EXIF read that follows); `app.buildClusters`
+sums it in the loop that already builds the primaries set and calls `checkFreeSpace`,
+which logs `space needed_bytes=… available_bytes=…` at debug always and **warns** when
+it does not fit. **Warn, never abort** — the estimate is an upper bound both ways
+(blind to companions, and it counts photos an incremental re-run skips), so an abort
+could refuse a run that writes nothing. A platform that cannot answer degrades to one
+debug line, not a warning per run. No new flag, no stdout-contract change. Verified on
+a 1 MB DMG: the warning fired before any write, the run continued and copied 2 of 3
+with the third an ENOSPC per-photo error.
+
+Previous change: **issue #12** — the feature backlog, four independently shippable
 items in four commits (issue-driven, no `specs/` dir). **#12 stays open**: its title
 also mentions video, which the body never turned into a checklist item and which
 `scan` still deliberately ignores.
@@ -249,7 +266,7 @@ also mentions video, which the body never turned into a checklist item and which
    so those are annotated as superseded and the constitution stays at **v2.0.0**.
    `specs/005`'s "no new configuration sources" is annotated the same way.
 
-Previous change: **issue #8** — classification accuracy work (issue-driven, no
+Before that: **issue #8** — classification accuracy work (issue-driven, no
 `specs/` dir). `Classifier` now returns a **`Verdict{Theme, Confidence}`**: the
 structured answer carries a `confidence` (0..1, required in the schema; anything out
 of range counts as unreported), and `Options.MinConfidence` — `--min-confidence`,

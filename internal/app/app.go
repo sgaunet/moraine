@@ -19,6 +19,7 @@ import (
 	"github.com/sgaunet/moraine/internal/classify"
 	"github.com/sgaunet/moraine/internal/cluster"
 	"github.com/sgaunet/moraine/internal/config"
+	"github.com/sgaunet/moraine/internal/diskspace"
 	"github.com/sgaunet/moraine/internal/exifmeta"
 	"github.com/sgaunet/moraine/internal/heicpreview"
 	"github.com/sgaunet/moraine/internal/organize"
@@ -366,9 +367,12 @@ func buildClusters(cfg config.Config, logger *slog.Logger) (input, error) {
 	logger.Info("scan", "images", len(found), "excluded_dest", cfg.DestRoot)
 
 	primaries := make(map[string]struct{}, len(found))
+	var needed int64
 	for _, f := range found {
 		primaries[filepath.Clean(f.Path)] = struct{}{}
+		needed += f.Size
 	}
+	checkFreeSpace(cfg.DestRoot, needed, logger)
 
 	photos := readMeta(found, cfg.Jobs, logger)
 	logger.Info("exif", "read", len(photos), "of", len(found), "raw", countRAW(photos))
@@ -383,6 +387,33 @@ func buildClusters(cfg config.Config, logger *slog.Logger) (input, error) {
 		scanned:    len(found),
 		unreadable: len(found) - len(photos),
 	}, nil
+}
+
+// checkFreeSpace compares what the scan found against what the destination filesystem
+// has free, and warns once when it does not fit. Without it a full disk announces
+// itself as one "placement failed" per photo, with nothing in the run saying that the
+// disk — and not the photos — was the problem.
+//
+// It never aborts, and that is a decision rather than an omission: the estimate is an
+// upper bound in two directions. It cannot see companion files, which organize only
+// discovers per source directory, and it counts every photo even though a re-run skips
+// the ones already placed byte-identically. On a nearly-full destination holding an
+// already-complete archive, a size-based abort would refuse a run that writes nothing
+// at all. Report the numbers and let the run decide for itself, photo by photo.
+func checkFreeSpace(destRoot string, needed int64, logger *slog.Logger) {
+	avail, err := diskspace.Available(destRoot)
+	if err != nil {
+		// Debug, not warn: an advisory the platform cannot provide is not a problem
+		// with the run, and a warning on every run of a build without statfs would be
+		// noise. Logged rather than swallowed all the same.
+		logger.Debug("free space unknown", "dest", destRoot, "err", err)
+		return
+	}
+	logger.Debug("space", "needed_bytes", needed, "available_bytes", avail, "dest", destRoot)
+	if needed > 0 && uint64(needed) > avail {
+		logger.Warn("destination may be too small: the run will copy what fits",
+			"needed_bytes", needed, "available_bytes", avail, "dest", destRoot)
+	}
 }
 
 // countRAW reports how many photos are RAW, for the run logs (FR-010).
