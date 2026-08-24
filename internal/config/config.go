@@ -40,7 +40,7 @@ type Config struct {
 	Move             bool              // remove each source file once its copy has been verified
 	DryRun           bool              // report the planned placements without writing anything
 	Incremental      bool              // trust the run manifest to skip sources already placed
-	Jobs             int               // EXIF worker count (0 ⇒ one per GOMAXPROCS)
+	Jobs             int               // EXIF reader and copy worker count (0 ⇒ one per GOMAXPROCS)
 	MountainAltitude float64           // metres at/above which the heuristic labels a group "mountain" (always > 0)
 	MinConfidence    float64           // confidence a model verdict must reach to be used (0 ⇒ accept every verdict)
 	Vote             bool              // classify each sampled photo separately and let them vote
@@ -104,7 +104,7 @@ type Options struct {
 	Move             bool          // --move (remove each source after its copy is verified)
 	DryRun           bool          // --dry-run (report the plan, write nothing)
 	Incremental      bool          // --incremental (skip sources the manifest already records as placed)
-	Jobs             int           // --jobs (EXIF workers; 0 ⇒ one per GOMAXPROCS)
+	Jobs             int           // --jobs (EXIF and copy workers; 0 ⇒ one per GOMAXPROCS)
 	MountainAltitude float64       // --mountain-altitude (metres; must be > 0)
 	MinConfidence    float64       // --min-confidence (0..1; 0 disables the gate)
 	Vote             bool          // --vote (per-photo classification + majority vote)

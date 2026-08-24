@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // companionKind classifies how a candidate file relates to a photo's name.
@@ -55,21 +56,24 @@ func stem(name string) string {
 	return strings.TrimSuffix(name, filepath.Ext(name))
 }
 
-// placeCompanions discovers the companion (sidecar) files of the photo at
-// photoSrc and copies each into dir, naming it to track the photo's final placed
-// name (finalPhotoName). It reuses placeOne, so companions inherit the copy-only,
-// no-overwrite, skip-identical and ` (N)`-suffix guarantees. A per-companion
-// failure is recorded in its Result.Err (non-fatal). Files that are themselves
-// scanned primaries (FR-006) or that live under the destination tree (FR-007) are
-// skipped; only regular files are considered.
-func (o *Organizer) placeCompanions(
-	dirOf func() (string, error), photoSrc, finalPhotoName string,
-) []Result {
+// planCompanions discovers the companion (sidecar) files of the photo at photoSrc
+// and resolves where each one goes, naming it to track the photo's final placed name
+// (finalPhotoName). It reuses resolveOne, so companions inherit the copy-only,
+// no-overwrite, skip-identical and ` (N)`-suffix guarantees. A per-companion failure
+// is recorded in its Result.Err (non-fatal). Files that are themselves scanned
+// primaries (FR-006) or that live under the destination tree (FR-007) are skipped;
+// only regular files are considered.
+//
+// Like every other resolution this happens on the planning goroutine, which is what
+// keeps the directory listing cache below free of synchronisation.
+func (o *Organizer) planCompanions(
+	dirOf func() (string, error), photoSrc, finalPhotoName, theme string, date time.Time,
+) []filePlan {
 	srcDir := filepath.Dir(photoSrc)
 	photoName := filepath.Base(photoSrc)
 	cleanDest := filepath.Clean(o.DestRoot)
 
-	var results []Result
+	var plans []filePlan
 	for _, e := range o.readDir(srcDir) {
 		if !e.Type().IsRegular() {
 			continue // skip directories, symlinks, special files
@@ -87,11 +91,12 @@ func (o *Organizer) placeCompanions(
 			continue // never ingest from the destination tree (FR-007)
 		}
 		target := companionTargetName(finalPhotoName, name, suffix, kind)
-		res := Result{Source: candidate, IsCompanion: true, Of: photoSrc}
-		res.Dest, res.Action, res.Size, res.Moved, res.Err = o.placeOne(dirOf, candidate, target)
-		results = append(results, res)
+		pl := o.resolveOne(dirOf, candidate, target)
+		pl.res.IsCompanion, pl.res.Of = true, photoSrc
+		pl.res.Theme, pl.res.Date = theme, date
+		plans = append(plans, pl)
 	}
-	return results
+	return plans
 }
 
 // readDir returns dir's entries, caching one listing per directory so companion

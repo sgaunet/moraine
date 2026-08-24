@@ -175,9 +175,18 @@ func writeTemp(tmp *os.File, in io.Reader, modTime time.Time) (int64, contenthas
 // Filesystems without hard links (FAT/exFAT/SMB — ordinary destinations for a photo
 // library on an external drive) reject it outright; there the copy falls back to a
 // rename guarded by an existence check. rename(2) does overwrite, so that path is a
-// check-then-act rather than an atomic guarantee — acceptable because moraine places
-// files from a single sequential loop, and it still never leaves a partial file at
-// the canonical name.
+// check-then-act rather than an atomic guarantee.
+//
+// What makes it safe is no longer that placements are serial: every destination name
+// is reserved by Place's planning phase, which runs on one goroutine before any copy
+// starts, so no two copies of a run can target the same name. The staging file is
+// created by os.CreateTemp, which is O_CREATE|O_EXCL with its own retry, so workers
+// never collide there either. The window that remains is against a process outside
+// this run, which this check has never defended against. It still never leaves a
+// partial file at the canonical name.
+//
+// The reservation argument holds while clusters are placed one at a time, which
+// app.Organize does; placing two clusters concurrently would reopen this.
 func link(tmpName, dst string) error {
 	err := os.Link(tmpName, dst)
 	if err == nil {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/sgaunet/moraine/internal/photo"
@@ -84,20 +86,32 @@ type Organizer struct {
 	// (FR-006). Injected by the caller to keep this package decoupled from the
 	// scanner; nil ⇒ "never primary".
 	IsPrimary func(absPath string) bool
+	// Jobs bounds how many placements copy at once (0 ⇒ one per GOMAXPROCS). It is
+	// the same --jobs the EXIF stage uses, for the same reason: turning it down
+	// throttles a slow drive at either end of the copy, turning it up pays off on
+	// fast local storage.
+	Jobs int
 	// dirEntries caches one os.ReadDir result per source directory so companion
-	// discovery stays linear (one listing per directory). Place runs sequentially,
-	// so no synchronisation is needed.
+	// discovery stays linear (one listing per directory). Companion discovery happens
+	// in Place's planning phase, which is sequential, so no synchronisation is needed.
 	dirEntries map[string][]os.DirEntry
 	// afterPublish, when set, runs between publishing a copy and verifying it. That
 	// window is the only place a corrupt destination can be simulated, so it is the
 	// seam the verify-failure test uses; installed via export_test.go and always nil
 	// in production.
 	afterPublish func(dst string)
-	// planned holds the destination paths a dry run has already promised to create.
-	// Only a dry run populates it: a real run writes its files, so the filesystem
-	// itself records what is taken. Without it two same-named photos in one run
-	// would both be previewed as landing on the same path.
-	planned map[string]struct{}
+	// reserved maps a destination path this run has promised to create to the source
+	// whose bytes will be published there. Because Place resolves every name before
+	// it copies anything, the copy is not on disk when the next file of the cluster
+	// is resolved, and the reserving source is the only readable file holding the
+	// bytes that are going there. Recording *what* will be at a path rather than
+	// merely *that* something will be is what keeps two identical same-named photos
+	// reported as copy + skipped-identical instead of copy + rename.
+	//
+	// Place clears it on return outside a dry run: by then the files are on disk and
+	// exists answers for them, and a name whose write failed is genuinely free again.
+	// A dry run keeps it, because nothing is ever written to speak for itself.
+	reserved map[string]string
 }
 
 // New builds an Organizer writing under destRoot.
@@ -107,35 +121,196 @@ func New(destRoot string) *Organizer {
 
 // Place copies every photo of the cluster into DestRoot/<Template>/<name>, using
 // the cluster's representative date (c.Start) for all photos. It returns one Result
-// per photo. A failure on one photo is recorded in its Result.Err and does not abort
-// the others.
+// per photo, followed by that photo's companions when Sidecars is set. A failure on
+// one photo is recorded in its Result.Err and does not abort the others.
+//
+// It runs in two phases. Every destination name is resolved first, on one goroutine,
+// in the cluster's own order; only then are the bytes copied, by a pool of Jobs
+// workers. The split is what lets the copies run concurrently without the naming
+// becoming a race: which photo keeps the un-suffixed name is decided by the total
+// order cluster.Cluster establishes and by nothing else, the " (N)" indices stay
+// contiguous for existingIdentical to walk, and the returned slice is in exactly the
+// order a serial run produced — which the stdout contract depends on.
+//
+// The caller keeps every tally, the manifest and the result callback on its own
+// goroutine, since Place returns whole clusters; nothing in this package is shared
+// with a concurrent Place of another cluster.
 func (o *Organizer) Place(ctx context.Context, c photo.Cluster, theme string) []Result {
-	results := make([]Result, 0, len(c.Photos))
-	date := c.Start
-	dirOf := o.lazyDir(theme, date)
+	if !o.DryRun {
+		// The reservations exist only for the window between resolving a name and
+		// writing it, which closes here.
+		defer func() { o.reserved = nil }()
+	}
+	results, units := o.plan(ctx, c, theme)
+	o.execute(ctx, units, results)
+	return compact(results, units)
+}
 
-	for _, p := range c.Photos {
-		if err := ctx.Err(); err != nil {
-			results = append(results, Result{Source: p.Path, Theme: theme, Date: date, Err: err})
-			continue
-		}
-		res := Result{Source: p.Path, Theme: theme, Date: date}
-		res.Dest, res.Action, res.Size, res.Moved, res.Err = o.placeOne(dirOf, p.Path, p.Name)
-		results = append(results, res)
+// filePlan is one resolved placement: the Result as far as it can be decided without
+// writing, plus whether a write is still owed. Reusing Result rather than a parallel
+// struct is deliberate — everything the placement will report is already decided by
+// the time the plan exists, except the two things only a write can produce.
+type filePlan struct {
+	res   Result
+	write bool
+}
 
-		// Bring the photo's companion (sidecar) files along, for any successful
-		// placement action (copied/skipped-identical/renamed). They inherit the
-		// photo's theme and date and a name that tracks its final placed name.
-		if o.Sidecars && res.Err == nil {
-			comps := o.placeCompanions(dirOf, p.Path, filepath.Base(res.Dest))
-			for i := range comps {
-				comps[i].Theme = theme
-				comps[i].Date = date
-			}
-			results = append(results, comps...)
+// photoPlan is one unit of concurrent work: a photo together with the companions
+// that follow it into the same folder. The pair is the unit rather than the file,
+// for two reasons that are both properties of the pair — a companion's destination
+// name tracks the photo's final placed name, and a photo whose write fails places no
+// companions at all.
+type photoPlan struct {
+	photo      filePlan
+	companions []filePlan
+	base       int // index of the photo's Result in the results slice
+	n          int // live Results from base: 1+len(companions), or 1 if the photo failed
+}
+
+// idle reports whether the unit owes no writes, so a cluster the manifest already
+// accounts for spins up no goroutines at all.
+func (u *photoPlan) idle() bool {
+	if u.photo.write {
+		return false
+	}
+	for _, c := range u.companions {
+		if c.write {
+			return false
 		}
 	}
-	return results
+	return true
+}
+
+// plan resolves every destination name for the cluster, in cluster order, on one
+// goroutine. It returns the Results as far as they can be decided plus the units of
+// work still owing bytes. Everything that reads or writes shared Organizer state —
+// the directory cache, the reservations, the memoised destination directory —
+// happens here and nowhere else.
+func (o *Organizer) plan(ctx context.Context, c photo.Cluster, theme string) ([]Result, []photoPlan) {
+	date := c.Start
+	dirOf := o.lazyDir(theme, date)
+	results := make([]Result, 0, len(c.Photos))
+	units := make([]photoPlan, 0, len(c.Photos))
+
+	for _, p := range c.Photos {
+		base := len(results)
+		if err := ctx.Err(); err != nil {
+			results = append(results, Result{Source: p.Path, Theme: theme, Date: date, Err: err})
+			units = append(units, photoPlan{base: base, n: 1})
+			continue
+		}
+		pl := o.resolveOne(dirOf, p.Path, p.Name)
+		pl.res.Theme, pl.res.Date = theme, date
+		results = append(results, pl.res)
+		unit := photoPlan{photo: pl, base: base, n: 1}
+
+		// Bring the photo's companion (sidecar) files along, for any placement that
+		// resolved successfully. They inherit the photo's theme and date and a name
+		// that tracks its final placed name.
+		if o.Sidecars && pl.res.Err == nil {
+			unit.companions = o.planCompanions(dirOf, p.Path, filepath.Base(pl.res.Dest), theme, date)
+			for _, comp := range unit.companions {
+				results = append(results, comp.res)
+			}
+			unit.n = 1 + len(unit.companions)
+		}
+		units = append(units, unit)
+	}
+	return results, units
+}
+
+// execute copies the bytes every planned placement still owes, Jobs at a time. It
+// follows the shape the EXIF stage established: a buffered channel as the semaphore,
+// taken before the goroutine starts so at most that many exist at once, and a
+// WaitGroup to join them.
+//
+// No lock and no re-ordering afterwards: each unit owns a contiguous, disjoint
+// stretch of results, so the workers never touch the same element.
+func (o *Organizer) execute(ctx context.Context, units []photoPlan, results []Result) {
+	sem := make(chan struct{}, workerCount(o.Jobs))
+	var wg sync.WaitGroup
+	for i := range units {
+		u := &units[i]
+		if u.idle() {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(u *photoPlan) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			o.executeUnit(ctx, u, results)
+		}(u)
+	}
+	wg.Wait()
+}
+
+// executeUnit writes one photo and then its companions. A photo that could not be
+// written places no companions: the run reports the photo's failure once rather than
+// once more per sidecar that was never going to be written.
+func (o *Organizer) executeUnit(ctx context.Context, u *photoPlan, results []Result) {
+	if err := ctx.Err(); err != nil {
+		// Recorded exactly as the planning phase records a photo it never reached:
+		// source, theme and date, and no placement detail at all.
+		results[u.base] = unreached(u.photo.res, err)
+		u.n = 1
+		return
+	}
+	if u.photo.write {
+		results[u.base] = o.executeOne(u.photo)
+		if results[u.base].Err != nil {
+			u.n = 1
+			return
+		}
+	}
+	for i, comp := range u.companions {
+		if comp.write {
+			results[u.base+1+i] = o.executeOne(comp)
+		}
+	}
+}
+
+// executeOne performs one planned copy and completes its Result with the two things
+// only the write can report: the bytes copied, and whether the source was removed.
+func (o *Organizer) executeOne(pl filePlan) Result {
+	res := pl.res
+	n, moved, err := o.copy(res.Source, res.Dest)
+	if err != nil {
+		// The destination is kept on the Result — it says where the run was trying to
+		// put the file — but the action is cleared: nothing happened.
+		res.Action, res.Size, res.Moved, res.Err = "", 0, false, err
+		return res
+	}
+	res.Size, res.Moved = n, moved
+	return res
+}
+
+// unreached is the Result of a file the run never got to.
+func unreached(r Result, err error) Result {
+	return Result{Source: r.Source, Theme: r.Theme, Date: r.Date, Err: err}
+}
+
+// compact drops the companion slots of photos whose write failed, in place and in
+// order. Companions are planned before it is known whether their photo can be
+// written, so their slots are reserved and then given up.
+func compact(results []Result, units []photoPlan) []Result {
+	out := results[:0]
+	for _, u := range units {
+		out = append(out, results[u.base:u.base+u.n]...)
+	}
+	return out
+}
+
+// workerCount is how many placements copy at once: jobs, or one per GOMAXPROCS when
+// jobs is 0. It mirrors the EXIF stage's sizing so one --jobs means one thing.
+func workerCount(jobs int) int {
+	if jobs < 1 {
+		jobs = runtime.GOMAXPROCS(0)
+	}
+	if jobs < 1 {
+		jobs = 1
+	}
+	return jobs
 }
 
 // lazyDir returns a memoised accessor for the cluster's destination directory.
@@ -176,87 +351,96 @@ func (o *Organizer) dir(theme string, date time.Time) (string, error) {
 	return dir, nil
 }
 
-// taken reports whether a destination path is already claimed — by a file on disk
-// or, in a dry run, by an earlier placement of this same run.
-func (o *Organizer) taken(path string) bool {
-	if exists(path) {
-		return true
-	}
-	_, planned := o.planned[path]
-	return planned
-}
-
-// claim records a destination path as used. It is a no-op outside a dry run, where
-// the file written to that path speaks for itself.
-func (o *Organizer) claim(path string) {
-	if !o.DryRun {
-		return
-	}
-	if o.planned == nil {
-		o.planned = make(map[string]struct{})
-	}
-	o.planned[path] = struct{}{}
-}
-
-// placeOne copies a single source file into dir, resolving collisions: an
-// identical existing file is skipped, a same-named different file is suffixed. In
-// a dry run it resolves the same Action but writes nothing.
+// contentAt returns the path holding the bytes that will be at path when the run
+// finishes, and whether anything will be there at all. A destination this run has
+// already reserved answers with the *source* that reserved it: the copy is not on
+// disk yet, but by construction it will hold exactly that source's bytes.
 //
-// It also reports the file's size — the bytes written for a copy or a rename, and the
-// bytes a skip did not have to write again. A copy takes the count straight from
-// io.Copy; the skip paths cost one extra stat, which is negligible beside the content
-// comparison they already do — and whether the source was removed, which under --move
-// happens for a verified copy or rename and for nothing else.
-func (o *Organizer) placeOne(
-	dirOf func() (string, error), src, name string,
-) (dest string, action Action, size int64, moved bool, err error) {
+// This is the one place that knows the writes are deferred, and every collision
+// decision goes through it — which is what keeps a preview and the run it previews
+// answering the same question about the same pair of files.
+func (o *Organizer) contentAt(path string) (string, bool) {
+	if src, ok := o.reserved[path]; ok {
+		return src, true // reservations are only ever taken on names nothing else holds
+	}
+	if exists(path) {
+		return path, true
+	}
+	return "", false
+}
+
+// taken reports whether a destination path is already spoken for — by a file on
+// disk, or by an earlier placement of this same run.
+func (o *Organizer) taken(path string) bool {
+	_, ok := o.contentAt(path)
+	return ok
+}
+
+// reserve records that src's bytes are going to dst.
+func (o *Organizer) reserve(dst, src string) {
+	if o.reserved == nil {
+		o.reserved = make(map[string]string)
+	}
+	o.reserved[dst] = src
+}
+
+// resolveOne decides where a single source file goes and what will happen to it,
+// resolving collisions: an identical file already there (or already going there) is
+// skipped, a same-named different file is suffixed. It reserves the name it settles
+// on, so the next file of the cluster sees it, and reports whether bytes are still
+// owed. It writes nothing.
+//
+// The size it reports is the bytes a skip did not have to write again; a copy's size
+// is only known once io.Copy has counted it, so that is filled in by executeOne.
+func (o *Organizer) resolveOne(dirOf func() (string, error), src, name string) filePlan {
+	res := Result{Source: src}
 	if d, size, ok := o.alreadyPlaced(src); ok {
 		// A skip verified nothing this run — the incremental check deliberately never
 		// reads the bytes — so --move never removes a source it merely recognised.
-		return d, ActionSkippedIdentical, size, false, nil
+		res.Dest, res.Action, res.Size = d, ActionSkippedIdentical, size
+		return filePlan{res: res}
 	}
 	// Resolved here, not by the caller: a file the manifest already accounts for
 	// needs no destination directory, so an incremental re-run creates none.
 	dir, err := dirOf()
 	if err != nil {
-		return "", "", 0, false, err
+		res.Err = err
+		return filePlan{res: res}
 	}
 	target := filepath.Join(dir, name)
-	if o.taken(target) {
-		// Only a real file has content to compare; a dry run's own planned target
-		// is a name reservation, so it falls straight through to the rename.
-		if exists(target) {
-			identical, err := sameContent(src, target)
-			if err != nil {
-				return target, "", 0, false, fmt.Errorf("comparing %q: %w", target, err)
-			}
-			if identical {
-				return target, ActionSkippedIdentical, fileSize(target), false, nil
-			}
-			// A previous run may already have placed this exact content under a
-			// " (N)" name. Without this check every re-run would re-collide on the
-			// original name and copy the same bytes again under the next free
-			// suffix, so re-runs would not be idempotent (SC-002/SC-008).
-			if placed, err := existingIdentical(dir, name, src); err != nil {
-				return target, "", 0, false, fmt.Errorf("comparing collision variants of %q: %w", target, err)
-			} else if placed != "" {
-				d := filepath.Join(dir, placed)
-				return d, ActionSkippedIdentical, fileSize(d), false, nil
-			}
+	if holder, ok := o.contentAt(target); ok {
+		identical, err := sameContent(src, holder)
+		if err != nil {
+			res.Dest, res.Err = target, fmt.Errorf("comparing %q: %w", target, err)
+			return filePlan{res: res}
+		}
+		if identical {
+			res.Dest, res.Action, res.Size = target, ActionSkippedIdentical, fileSize(holder)
+			return filePlan{res: res}
+		}
+		// A previous run — or an earlier photo of this one — may already have placed
+		// this exact content under a " (N)" name. Without this check every re-run
+		// would re-collide on the original name and copy the same bytes again under
+		// the next free suffix, so re-runs would not be idempotent (SC-002/SC-008).
+		placed, placedHolder, err := o.existingIdentical(dir, name, src)
+		if err != nil {
+			res.Dest, res.Err = target, fmt.Errorf("comparing collision variants of %q: %w", target, err)
+			return filePlan{res: res}
+		}
+		if placed != "" {
+			res.Dest = filepath.Join(dir, placed)
+			res.Action, res.Size = ActionSkippedIdentical, fileSize(placedHolder)
+			return filePlan{res: res}
 		}
 		name = uniqueName(dir, name, o.taken)
 		target = filepath.Join(dir, name)
-		n, moved, err := o.copy(src, target)
-		if err != nil {
-			return target, "", 0, false, err
-		}
-		return target, ActionRenamed, n, moved, nil
+		o.reserve(target, src)
+		res.Dest, res.Action = target, ActionRenamed
+		return filePlan{res: res, write: true}
 	}
-	n, moved, err := o.copy(src, target)
-	if err != nil {
-		return target, "", 0, false, err
-	}
-	return target, ActionCopied, n, moved, nil
+	o.reserve(target, src)
+	res.Dest, res.Action = target, ActionCopied
+	return filePlan{res: res, write: true}
 }
 
 // copy performs the placement, or merely reserves the destination name when this is
@@ -265,7 +449,6 @@ func (o *Organizer) placeOne(
 // the same now holds for "only a verified copy removes its source", since this is
 // also the only place a source is ever deleted.
 func (o *Organizer) copy(src, dst string) (int64, bool, error) {
-	o.claim(dst)
 	if o.DryRun {
 		// A preview writes nothing, so there is no io.Copy count to report; the
 		// source's own size is what the real run would have written. It removes

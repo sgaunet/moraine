@@ -225,8 +225,10 @@ func TestMoveKeepsSourceOnVerifyMismatch(t *testing.T) {
 	org := moveOrg(dest)
 	organize.SetAfterPublish(org, func(dst string) {
 		// Same length, different bytes: only the digest can catch this.
+		// Errorf, not Fatal: this hook runs on a placement worker, and FailNow off
+		// the test goroutine would abort that goroutine rather than the test.
 		if err := os.WriteFile(dst, []byte("XXXXXXXXXXXXXXXXX"), 0o644); err != nil {
-			t.Fatal(err)
+			t.Errorf("corrupting the copy: %v", err)
 		}
 	})
 

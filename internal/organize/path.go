@@ -57,27 +57,31 @@ func uniqueName(dir, name string, taken func(string) bool) string {
 }
 
 // existingIdentical returns the name of a file already in dir that is a collision
-// variant of name (" (1)", " (2)", …) and byte-identical to src, or "" when there
-// is none. It lets a re-run recognise content it already placed under a suffixed
-// name instead of copying it again under the next free suffix.
+// variant of name (" (1)", " (2)", …) and byte-identical to src, along with the path
+// holding those bytes. It returns "" when there is none. It lets a re-run recognise
+// content it already placed under a suffixed name instead of copying it again under
+// the next free suffix.
 //
-// Because uniqueName always fills the first free index, the occupied indices are
-// contiguous, so the scan stops at the first gap — no directory listing needed.
-// This deliberately looks only at files on disk, never at a dry run's planned
-// names: only real bytes can be compared for identity.
-func existingIdentical(dir, name, src string) (string, error) {
+// Because uniqueName always fills the first index this run has not taken — on disk
+// or reserved — the occupied indices stay contiguous, so the scan still stops at the
+// first gap and needs no directory listing. It resolves each candidate through
+// contentAt rather than reading the disk directly: a variant this run has promised
+// but not yet written is answered by the source that reserved it, whose bytes are
+// the bytes that will be there. Looking only at disk would see that variant as the
+// gap and stop one place too early.
+func (o *Organizer) existingIdentical(dir, name, src string) (variant, holder string, err error) {
 	for i := 1; ; i++ {
 		candidate := variantName(name, i)
-		target := filepath.Join(dir, candidate)
-		if !exists(target) {
-			return "", nil
+		at, ok := o.contentAt(filepath.Join(dir, candidate))
+		if !ok {
+			return "", "", nil
 		}
-		same, err := sameContent(src, target)
+		same, err := sameContent(src, at)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if same {
-			return candidate, nil
+			return candidate, at, nil
 		}
 	}
 }

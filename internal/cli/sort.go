@@ -195,7 +195,7 @@ Exit codes:
 			"never on a skip or an error, and a moved run cannot be undone "+
 			"(preview it with --move --dry-run)")
 	f.BoolVarP(&opts.DryRun, "dry-run", "n", false, "report what would be copied, skipped or renamed without writing anything")
-	f.IntVarP(&opts.Jobs, "jobs", "j", 0, "EXIF reader workers (0 = one per CPU); lower it to throttle a network drive")
+	f.IntVarP(&opts.Jobs, "jobs", "j", 0, "EXIF reader and copy workers (0 = one per CPU); lower it to throttle a network drive")
 	f.Float64Var(&opts.MountainAltitude, "mountain-altitude", config.DefaultMountainAltitude,
 		"metres at/above which the altitude heuristic labels a group \"mountain\" (must be > 0)")
 	f.Float64Var(&opts.MinConfidence, "min-confidence", 0,

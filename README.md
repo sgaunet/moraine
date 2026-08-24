@@ -139,7 +139,7 @@ and `moraine <command> --help` for command-specific options and examples.
 # Machine-readable result on stdout, logs discarded
 ./moraine sort --output=json -d ~/Photos/sorted ~/Photos/2025 2>/dev/null | jq .summary
 
-# Throttle a network drive to one EXIF reader (-j jobs)
+# Throttle a network drive to one worker, reading and copying alike (-j jobs)
 ./moraine sort --jobs 1 -d ~/Photos/sorted ~/Photos/2025
 
 # Custom theme vocabulary + per-file logs (-v verbose; -q for errors only)
@@ -491,7 +491,7 @@ would be worse. `--quiet`/`--verbose` are shorthands over `log_level`, so set
 | `--output`         |       | string   | `text`                    | stdout format: `text` \| `json`                            |
 | `--dry-run`        | `-n`  | bool     | `false`                   | report the plan; writes **nothing**, not even a folder     |
 | `--move`           |       | bool     | `false`                   | remove each source after **verifying** its copy; never on a skip or error; **not undoable** |
-| `--jobs`           | `-j`  | int      | `0`                       | EXIF reader workers (`0` = one per CPU)                    |
+| `--jobs`           | `-j`  | int      | `0`                       | EXIF reader and copy workers (`0` = one per CPU)           |
 | `--exiftool`       |       | string   | `exiftool`                | exiftool executable (name on `PATH` or absolute path); **required** for RAW |
 | `--sidecars`       |       | bool     | `true`                    | also copy each photo's companion/sidecar files (`--sidecars=false` to disable) |
 | `--incremental`    |       | bool     | `false`                   | skip sources the run manifest already records as copied, and reuse each known event's theme |

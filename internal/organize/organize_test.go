@@ -477,7 +477,12 @@ func TestDryRunResolvesIntraRunCollisions(t *testing.T) {
 	dest := t.TempDir()
 	srcA, srcB := t.TempDir(), t.TempDir()
 	a := clusterOf(t, srcA, "IMG_1.jpg")
-	b := clusterOf(t, srcB, "IMG_1.jpg") // same name, different content, different dir
+	b := clusterOf(t, srcB, "IMG_1.jpg") // same name, different dir
+	// clusterOf derives its content from the file name, so both photos would
+	// otherwise be byte-identical — which is the *other* case, and the one
+	// TestPlaceDedupsIdenticalPhotosWithinOneRun covers. Make them genuinely differ
+	// so this test exercises the collision rename it is named for.
+	writeFile(t, b.Photos[0].Path, "a different photo that happens to share a name")
 	c := photo.Cluster{Photos: append(a.Photos, b.Photos...), Start: a.Start, End: a.End}
 
 	results := dryRunOrg(dest).Place(context.Background(), c, "nature")

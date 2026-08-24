@@ -125,6 +125,7 @@ func Organize(
 	org.Sidecars = cfg.Sidecars
 	org.Move = cfg.Move
 	org.DryRun = cfg.DryRun
+	org.Jobs = cfg.Jobs
 	placed := placedIndex(cfg, logger)
 	org.Placed = placedHook(placed)
 	org.IsPrimary = func(p string) bool {
