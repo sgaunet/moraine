@@ -188,13 +188,15 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
 
 ## Development Commands
 
-Tool versions are pinned in `mise.toml` (go 1.26.2, task, golangci-lint, goreleaser).
+Tool versions are pinned in `mise.toml` (go 1.26.6, task, golangci-lint, goreleaser,
+govulncheck).
 
 ```bash
 task build   # CGO_ENABLED=0 go build -o moraine .
 task test    # go test -count=2 -race ./...
 task lint    # golangci-lint run
-task check-before-commit   # lint + test + snapshot
+task vuln    # govulncheck ./...
+task check-before-commit   # lint + test + snapshot + vuln
 
 ./moraine sort -d ~/Photos/sorted ~/Photos/2025
 ./moraine sort --incremental -d ~/Photos/sorted ~/Photos/2025   # skip what the manifest knows

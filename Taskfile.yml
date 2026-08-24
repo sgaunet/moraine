@@ -23,6 +23,7 @@ tasks:
     deps:
       - test
       - snapshot
+      - vuln
     cmds:
       - task: lint
 
@@ -35,6 +36,11 @@ tasks:
     desc: "Run unit tests with race detection"
     cmds:
       - go test -count=2 -race ./...
+
+  vuln:
+    desc: "Scan for known vulnerabilities reachable from our code"
+    cmds:
+      - govulncheck ./...
 
   eval:
     desc: "Measure classification accuracy against a labeled corpus (MORAINE_EVAL_CORPUS=<dir>)"
