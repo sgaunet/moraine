@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/sgaunet/moraine/internal/contenthash"
@@ -16,6 +17,32 @@ import (
 // way of every name moraine cares about: they can never collide with a photo name
 // and are invisible to existingIdentical's " (N)" variant scan.
 const tmpPattern = ".moraine-*.tmp"
+
+// copyBufSize is the scratch buffer a copy streams through. io.Copy's own default is
+// 32 KiB, which on a 40 MB RAW is over a thousand read/write syscall pairs; a
+// megabyte cuts that to forty for one page-sized allocation that is then reused.
+const copyBufSize = 1 << 20
+
+// copyBufPool reuses those buffers across photos, so a run that copies thousands of
+// files allocates a handful of megabyte buffers rather than one per file. Pointers,
+// not slices: putting a slice back in a sync.Pool boxes the header and allocates.
+var copyBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, copyBufSize)
+		return &b
+	},
+}
+
+// withCopyBuffer runs fn with a pooled scratch buffer.
+func withCopyBuffer(fn func(buf []byte) (int64, error)) (int64, error) {
+	buf, ok := copyBufPool.Get().(*[]byte)
+	if !ok {
+		scratch := make([]byte, copyBufSize)
+		buf = &scratch
+	}
+	defer copyBufPool.Put(buf)
+	return fn(*buf)
+}
 
 // copyFile copies src to dst durably and atomically, never touching src: the bytes
 // go to a temporary file in dst's own directory, are fsynced, get src's modification
@@ -115,7 +142,14 @@ func writeTemp(tmp *os.File, in io.Reader, modTime time.Time) (int64, contenthas
 		return 0, none, fmt.Errorf("setting destination mode: %w", err)
 	}
 	digest := contenthash.NewDigest()
-	n, err := io.Copy(io.MultiWriter(tmp, digest), in)
+	n, err := withCopyBuffer(func(buf []byte) (int64, error) {
+		// The source is wrapped in a bare io.Reader on purpose. io.CopyBuffer ignores
+		// the buffer it is handed when the source implements io.WriterTo — which
+		// *os.File does — and File.WriteTo cannot splice into a MultiWriter, so it
+		// falls back to a fresh 32 KiB buffer of its own. Hiding the method is what
+		// makes the pooled buffer actually get used.
+		return io.CopyBuffer(io.MultiWriter(tmp, digest), struct{ io.Reader }{in}, buf)
+	})
 	if err != nil {
 		_ = tmp.Close()
 		return 0, none, fmt.Errorf("copying: %w", err)
@@ -141,9 +175,18 @@ func writeTemp(tmp *os.File, in io.Reader, modTime time.Time) (int64, contenthas
 // Filesystems without hard links (FAT/exFAT/SMB — ordinary destinations for a photo
 // library on an external drive) reject it outright; there the copy falls back to a
 // rename guarded by an existence check. rename(2) does overwrite, so that path is a
-// check-then-act rather than an atomic guarantee — acceptable because moraine places
-// files from a single sequential loop, and it still never leaves a partial file at
-// the canonical name.
+// check-then-act rather than an atomic guarantee.
+//
+// What makes it safe is no longer that placements are serial: every destination name
+// is reserved by Place's planning phase, which runs on one goroutine before any copy
+// starts, so no two copies of a run can target the same name. The staging file is
+// created by os.CreateTemp, which is O_CREATE|O_EXCL with its own retry, so workers
+// never collide there either. The window that remains is against a process outside
+// this run, which this check has never defended against. It still never leaves a
+// partial file at the canonical name.
+//
+// The reservation argument holds while clusters are placed one at a time, which
+// app.Organize does; placing two clusters concurrently would reopen this.
 func link(tmpName, dst string) error {
 	err := os.Link(tmpName, dst)
 	if err == nil {

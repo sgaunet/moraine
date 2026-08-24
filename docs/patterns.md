@@ -65,7 +65,17 @@ not count those — nothing failed, nothing was attempted.
   `link(2)` fails `EEXIST` instead of clobbering, so overwriting is impossible *and*
   a destination name only ever appears complete. A crash can leave a hidden temp
   behind, never a truncated file on the canonical name. Filesystems without hard
-  links (FAT/exFAT/SMB) fall back to `os.Rename()` behind an existence check.
+  links (FAT/exFAT/SMB) fall back to `os.Rename()` behind an existence check; what
+  keeps that check-then-act safe while copies run concurrently is that `Place`
+  reserves every destination name on one goroutine before any copy starts, so no two
+  workers can target the same name.
+- **Placement is two-phase**: `Place()` resolves every destination name serially, in
+  the cluster's own order, then copies the bytes with a pool of `--jobs` workers.
+  That is what lets the copies overlap without the naming becoming a race — which
+  photo keeps the un-suffixed name is decided by `cluster.Cluster`'s total order and
+  nothing else, the ` (N)` indices stay contiguous for `existingIdentical()` to walk,
+  and the returned results keep the order a serial run produced. The caller's tallies,
+  the run manifest and the `onResult` stream all stay on its own goroutine.
 - Durability: the file's bytes **and** its parent directory are fsynced — data alone
   is not enough, a lost directory entry loses the photo.
 - Copies keep the source's **modification time** (`os.Chtimes`). This is load-bearing:
@@ -91,7 +101,7 @@ not count those — nothing failed, nothing was attempted.
 - `safeJoin()` rejects path traversal in destination subdirectories.
 - **Companion (sidecar) files** reuse the same primitives: a companion of `IMG.jpg`
   is a same-directory regular file named `IMG.jpg<suffix>` (appended) or
-  `IMG.<other-ext>` (same base name); it is placed via `placeOne()` so it inherits
+  `IMG.<other-ext>` (same base name); it is resolved via `resolveOne()` so it inherits
   skip-identical / ` (N)`-suffix / no-overwrite. Its name tracks the photo's final
   placed name (`IMG (1).jpg.xmp`). `clean` removes companions through the same
   content-identity match it uses for photos (never by name).

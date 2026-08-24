@@ -20,6 +20,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"sync"
 )
 
 // Sum is the SHA-256 content digest of a file. It is comparable, so it can be used
@@ -29,6 +30,28 @@ type Sum [sha256.Size]byte
 // chunkSize is the read granularity of Equal: large enough that the syscall cost
 // disappears next to the copy itself, small enough to stay off the heap's radar.
 const chunkSize = 64 * 1024
+
+// chunkPool reuses Equal's and Hash's scratch buffers. Both used to allocate on
+// every call — Equal two 64 KiB buffers per pair, Hash a fresh 32 KiB one inside
+// io.Copy — and clean asks about every candidate file in a library, so those
+// allocations are per-file rather than per-run. Pointers, not slices: putting a
+// slice back in a sync.Pool boxes the header and allocates.
+var chunkPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, chunkSize)
+		return &b
+	},
+}
+
+// getChunk borrows a scratch buffer and the function that returns it.
+func getChunk() ([]byte, func()) {
+	buf, ok := chunkPool.Get().(*[]byte)
+	if !ok {
+		scratch := make([]byte, chunkSize)
+		buf = &scratch
+	}
+	return *buf, func() { chunkPool.Put(buf) }
+}
 
 // Hash returns the SHA-256 content digest of the file at path. The file is streamed
 // through the hash (constant memory regardless of size); it is never buffered whole.
@@ -42,7 +65,12 @@ func Hash(path string) (Sum, error) {
 	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	buf, release := getChunk()
+	defer release()
+	// The file is wrapped in a bare io.Reader so io.CopyBuffer actually uses buf:
+	// it ignores the buffer whenever the source implements io.WriterTo, and
+	// *os.File does.
+	if _, err := io.CopyBuffer(h, struct{ io.Reader }{f}, buf); err != nil {
 		return sum, fmt.Errorf("reading %q: %w", path, err)
 	}
 	copy(sum[:], h.Sum(nil))
@@ -67,8 +95,10 @@ func Equal(a, b string) (bool, error) {
 	}
 	defer func() { _ = fb.Close() }()
 
-	ba := make([]byte, chunkSize)
-	bb := make([]byte, chunkSize)
+	ba, releaseA := getChunk()
+	defer releaseA()
+	bb, releaseB := getChunk()
+	defer releaseB()
 	for {
 		// A genuine read failure is checked before the comparison: it must surface as
 		// an error, never be mistaken for "different content" (which would make the

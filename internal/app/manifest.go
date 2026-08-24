@@ -131,6 +131,65 @@ func placedHook(idx *manifest.Index) func(string) (organize.Placement, bool) {
 	}
 }
 
+// lookAhead is how many events may be classified ahead of the one being placed:
+// one waiting in the channel, one still in flight. That is the whole point — the
+// model round-trip for the next event overlaps the copy I/O of this one — and it is
+// deliberately not wider. Ollama serialises requests per model unless
+// OLLAMA_NUM_PARALLEL is raised, so a second concurrent classification would queue
+// server-side and win nothing. What is bought here is pipelining, not parallel
+// inference; widening it is a one-line change once someone measures a case for it.
+const lookAhead = 2
+
+// labelled is one classified event on its way from the look-ahead to the loop that
+// places it.
+type labelled struct {
+	cluster photo.Cluster
+	theme   string
+	method  classify.Method
+}
+
+// labelAhead classifies events on a goroutine of its own and delivers them in
+// cluster order, so the caller can place event N while event N+1 is being
+// classified. Order needs no restoring afterwards: there is exactly one producer,
+// which is also why nothing here contends with the placement stage — the Organizer
+// and its caches stay on the caller's goroutine, as does every tally.
+//
+// The returned stop function cancels the look-ahead and waits for it, so no
+// goroutine outlives Organize. Callers must defer it: that is what makes an early
+// return from the placement loop safe, and it is prompt rather than merely correct,
+// since cancelling aborts an in-flight model call instead of waiting it out.
+func labelAhead(
+	ctx context.Context, clusters []photo.Cluster,
+	opts classify.Options, cfg config.Config, idx *manifest.Index,
+) (<-chan labelled, func()) {
+	ahead, cancel := context.WithCancel(ctx)
+	out := make(chan labelled, lookAhead-1)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		defer close(out)
+		for _, c := range clusters {
+			// Checked before the call, not after: an already-interrupted run must not
+			// pull a vision model into memory to answer a question nobody will read.
+			if ahead.Err() != nil {
+				return
+			}
+			theme, method := labelCluster(ahead, c, opts, cfg, idx)
+			select {
+			case out <- labelled{cluster: c, theme: theme, method: method}:
+			case <-ahead.Done():
+				return // the loop stopped consuming; drop this answer and leave
+			}
+		}
+	}()
+
+	return out, func() {
+		cancel()
+		<-done
+	}
+}
+
 // labelCluster assigns the cluster's theme. On an incremental run a cluster whose
 // already-placed photos all agree on one (still configured) theme keeps it: that
 // spares the model a round-trip and, more importantly, keeps a newly added photo

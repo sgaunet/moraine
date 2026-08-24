@@ -125,6 +125,7 @@ func Organize(
 	org.Sidecars = cfg.Sidecars
 	org.Move = cfg.Move
 	org.DryRun = cfg.DryRun
+	org.Jobs = cfg.Jobs
 	placed := placedIndex(cfg, logger)
 	org.Placed = placedHook(placed)
 	org.IsPrimary = func(p string) bool {
@@ -137,23 +138,31 @@ func Organize(
 	rec := newRecorder(cfg, logger)
 	defer rec.close()
 
+	// Classification is the run's one network round-trip and placement is its one
+	// bulk-I/O stage, so overlapping them is free wall-clock. The loop still consumes
+	// events strictly in order, which is what keeps Groups, Events and the onResult
+	// stream — the stdout contract — identical to a serial run. The only visible
+	// difference is in the debug log, where the model lines for the next event now
+	// interleave with the copy lines for this one.
+	labels, stopAhead := labelAhead(ctx, in.clusters, opts, cfg, placed)
+	defer stopAhead()
+
 	// Set before the loop: an interrupted run must still report what it was given.
 	sum := Summary{Scanned: in.scanned, Unreadable: in.unreadable}
-	for _, c := range in.clusters {
+	for l := range labels {
 		if err := ctx.Err(); err != nil {
 			return sum, err
 		}
-		theme, method := labelCluster(ctx, c, opts, cfg, placed)
 		logger.Info("group",
-			"size", len(c.Photos), "method", string(method),
-			"theme", theme, "date", c.Start.Format("2006-01-02"))
+			"size", len(l.cluster.Photos), "method", string(l.method),
+			"theme", l.theme, "date", l.cluster.Start.Format("2006-01-02"))
 		sum.Groups++
 
 		ev := Event{
-			Theme: theme, Method: string(method), Photos: len(c.Photos),
-			Start: c.Start, End: c.End,
+			Theme: l.theme, Method: string(l.method), Photos: len(l.cluster.Photos),
+			Start: l.cluster.Start, End: l.cluster.End,
 		}
-		for _, r := range org.Place(ctx, c, theme) {
+		for _, r := range org.Place(ctx, l.cluster, l.theme) {
 			tally(&sum, r, logger)
 			tallyEvent(&ev, r)
 			rec.add(r)

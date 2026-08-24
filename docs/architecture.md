@@ -243,6 +243,41 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
     platform that cannot answer at all degrades to one debug line, not a warning per
     run.
 
+14. **Placement resolves every name before it copies anything** — `organize.Place`
+    runs in two phases: one goroutine resolves each destination name in the cluster's
+    own order and reserves it, then a pool of `--jobs` workers copies the bytes. The
+    obvious alternative — copy concurrently and retry `uniqueName` when the publish
+    returns `EEXIST` — is a smaller change and the wrong one. Three properties depend
+    on names being handed out by a single goroutine in a fixed order: which photo
+    keeps the un-suffixed name (which is *why* `cluster.Cluster` imposes a total order
+    at all), the contiguity of the ` (N)` indices that `existingIdentical` relies on
+    to stop its scan at the first gap, and the order of `results[]` and `events[]`,
+    which is the public stdout contract. A retry loop trades all three for a race.
+
+    Resolving first also means the shared state stays where it was: the reservation
+    map, the directory-listing cache and the memoised destination directory are
+    touched only while planning, and the caller keeps its tallies, the run manifest
+    and the `onResult` stream on its own goroutine. The concurrency added no locks
+    anywhere.
+
+    The cost is that a copy is no longer on disk when the next file is resolved, so
+    the reservation records `dst -> src` rather than a bare name: a collision then
+    compares against the *source* that reserved the destination, which is a real file
+    holding exactly the bytes that are going there. That is what keeps two
+    byte-identical same-named photos reported as one copy and one skip — and it is
+    what finally makes `--dry-run` agree with the run it previews on that case, which
+    it did not before, because with nothing written there was no file to compare.
+
+15. **Classification runs one event ahead of placement** — `labelAhead` classifies on
+    a goroutine of its own and delivers events in cluster order, one buffered and one
+    in flight, so the model round-trip for the next event overlaps the copy I/O of
+    this one. Exactly one producer, which is what makes the ordering a property of the
+    construction rather than something to restore afterwards. It is deliberately not a
+    fan-out: Ollama serialises requests per model unless `OLLAMA_NUM_PARALLEL` is
+    raised, so a second concurrent classification would queue server-side and win
+    nothing, while blocking inside `warmOnce.Do` for the whole cold load of a vision
+    model. What is bought here is pipelining, not parallel inference.
+
 ## Integration Points
 
 - **External APIs**: optional local **Ollama** vision model
@@ -257,8 +292,10 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 
 Source files → `scan.Found` → `photo.Photo` (dated from EXIF, the file name, or
 mtime) → `[]photo.Cluster` (temporal, ordered by capture time then path so the result
-never depends on which EXIF worker finished first) → theme label per cluster → copied
-to `dest/` under the `--path-template` layout (by default
+never depends on which EXIF worker finished first) → theme label per cluster
+(classified one event ahead of placement) → resolved to a destination name serially,
+then copied by a pool of `--jobs` workers to `dest/` under the `--path-template`
+layout (by default
 `<theme>/<year>/<year-month-day>/`, and `<theme>/unknown-date/` when no date could be
 determined). Per-photo errors are collected into the run `Summary`
 rather than aborting the pipeline, as are the images the scan found but could not
