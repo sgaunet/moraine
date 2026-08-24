@@ -58,6 +58,12 @@ type OllamaClassifier struct {
 	// sampled photo instead of one per group, so it is opt-in.
 	Vote bool
 
+	// VoteWorkers bounds how many of a group's votes are in flight at once. Zero
+	// means defaultVoteWorkers. It is a field rather than a flag so a test can pin
+	// the serial path and prove the verdict does not depend on the order the votes
+	// came back in.
+	VoteWorkers int
+
 	// warmOnce loads the model before the first classification and never again.
 	warmOnce sync.Once
 }
@@ -209,6 +215,19 @@ type chatOptions struct {
 
 // ollamaSeed is the fixed RNG seed sent with every request for reproducibility.
 const ollamaSeed = 42
+
+// defaultVoteWorkers bounds how many per-photo votes are in flight for one group.
+//
+// Two, and the reason is a timeout rather than politeness. Each vote's Timeout
+// starts when its goroutine does, not when the server reaches it, and Ollama
+// serialises requests per model unless OLLAMA_NUM_PARALLEL is raised — so the k-th
+// concurrent vote spends (k-1) inference times of its own budget merely queued.
+// With --sample 5 against a model taking 20s an image, a fan-out of 4 would leave
+// the fourth vote waiting the full 60s and time out: the same wall-clock for one
+// vote fewer. Two caps that exposure at a single queued request with a threefold
+// margin, and still overlaps this tool's own work — preview extraction, downscaling,
+// base64, JSON marshalling — with the server's inference.
+const defaultVoteWorkers = 2
 
 // DefaultKeepAlive is how long NewOllama asks Ollama to keep the model resident
 // after a call. A run classifies one cluster after another, so unloading between

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/sgaunet/moraine/internal/photo"
 )
@@ -19,26 +20,74 @@ import (
 // why it is opt-in (--vote) and applies only to groups larger than SmallGroupMax —
 // a group the model already sees in full has nothing to gain from it.
 
+// vote is one photo's answer, kept in a slot of its own so the reduction below
+// reads the same whatever order the calls came back in.
+type vote struct {
+	verdict Verdict
+	err     error
+}
+
+// voteWorkers is the fan-out width for one group, never wider than there are votes
+// to cast.
+func (o *OllamaClassifier) voteWorkers(votes int) int {
+	n := o.VoteWorkers
+	if n < 1 {
+		n = defaultVoteWorkers
+	}
+	return min(n, votes)
+}
+
 // classifyByVote asks about each image separately and reduces the answers with
 // tallyVotes. A photo whose call fails simply does not vote; only when every one of
 // them fails is the whole classification an error, since that means the model was
 // unavailable rather than undecided.
+//
+// The calls run concurrently, bounded by voteWorkers, following the same shape as
+// the EXIF stage: a buffered channel as the semaphore, taken before the goroutine
+// starts so at most that many exist at once, and a WaitGroup to join them. Each vote
+// keeps its own retry budget, so the retry load is bounded by the fan-out width
+// rather than by the number of photos.
+//
+// Every goroutine writes one slot of its own and reads none, so the results need no
+// lock and still come back in photo order — which is what keeps the debug lines and
+// the error below reproducible rather than dependent on scheduling.
 func (o *OllamaClassifier) classifyByVote(ctx context.Context, c photo.Cluster, images []string) (Verdict, error) {
-	verdicts := make([]Verdict, 0, len(images))
-	var lastErr error
+	votes := make([]vote, len(images))
+	sem := make(chan struct{}, o.voteWorkers(len(images)))
+	var wg sync.WaitGroup
 	for i, img := range images {
-		voteCtx, cancel := o.bounded(ctx)
-		v, err := o.ask(voteCtx, c, []string{img})
-		cancel()
-		if err != nil {
-			lastErr = err
-			o.log().Debug("vote failed", "vote", i+1, "of", len(images), "err", err)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// Each vote is a model call of its own, so it gets its own Timeout budget
+			// rather than a share of one: a slow photo must not spend another's time.
+			voteCtx, cancel := o.bounded(ctx)
+			defer cancel()
+			v, err := o.ask(voteCtx, c, []string{img})
+			votes[i] = vote{verdict: v, err: err}
+		}()
+	}
+	wg.Wait()
+
+	verdicts := make([]Verdict, 0, len(images))
+	var firstErr error
+	for i, v := range votes {
+		if v.err != nil {
+			// The first vote to fail by photo order, not the last to fail by clock:
+			// under a fan-out the latter is whichever goroutine happened to finish
+			// last, which is not a fact about the run.
+			if firstErr == nil {
+				firstErr = v.err
+			}
+			o.log().Debug("vote failed", "vote", i+1, "of", len(images), "err", v.err)
 			continue
 		}
-		verdicts = append(verdicts, v)
+		verdicts = append(verdicts, v.verdict)
 	}
 	if len(verdicts) == 0 {
-		return Verdict{}, fmt.Errorf("every vote failed: %w", lastErr)
+		return Verdict{}, fmt.Errorf("every vote failed: %w", firstErr)
 	}
 	won := tallyVotes(verdicts)
 	o.log().Debug("vote result",
