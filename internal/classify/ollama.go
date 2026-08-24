@@ -38,8 +38,11 @@ type OllamaClassifier struct {
 	Sample  int
 	Themes  []string
 	Timeout time.Duration
-	HTTP    *http.Client
-	Logger  *slog.Logger
+	// HTTP is the client every call goes through. NewOllama sizes its transport's
+	// connection pool for concurrent use; replacing it with a bare &http.Client{}
+	// reinstates net/http's two-connections-per-host default.
+	HTTP   *http.Client
+	Logger *slog.Logger
 	// KeepAlive is how long Ollama should keep the model resident after a call
 	// (an Ollama duration string, e.g. "10m"). Empty leaves Ollama's own default.
 	KeepAlive string
@@ -67,7 +70,7 @@ func NewOllama(baseURL, model string, sample int, themes []string) *OllamaClassi
 		Sample:    sample,
 		Themes:    themes,
 		Timeout:   60 * time.Second,
-		HTTP:      &http.Client{},
+		HTTP:      newHTTPClient(),
 		Logger:    slog.Default(),
 		KeepAlive: DefaultKeepAlive,
 	}
@@ -91,6 +94,39 @@ type tagsResponse struct {
 	} `json:"models"`
 }
 
+// newHTTPClient returns the client every Ollama call goes through. The transport is
+// cloned from http.DefaultTransport rather than built fresh, so ProxyFromEnvironment,
+// the dial and TLS-handshake timeouts and ForceAttemptHTTP2 all survive: a user
+// behind an HTTP proxy would otherwise lose it to this one-line optimisation. Only
+// MaxIdleConnsPerHost is changed.
+//
+// No ResponseHeaderTimeout is set, deliberately: a cold vision model can take minutes
+// to produce its first byte, and the bound that belongs here is the per-call context
+// deadline (see bounded), not a transport-wide one that would abort a legitimate load.
+func newHTTPClient() *http.Client {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: idleConnsPerHost}}
+	}
+	tr := base.Clone()
+	tr.MaxIdleConnsPerHost = idleConnsPerHost
+	return &http.Client{Transport: tr}
+}
+
+// drainAndClose returns a connection to the keep-alive pool and then closes it.
+//
+// net/http only pools a connection once its body has reached EOF. Both callers read
+// through an io.LimitReader, so a reply larger than maxResponseBytes is left
+// part-read, and closing it there costs a fresh TCP handshake on the next call. The
+// drain is bounded twice over, because an unbounded read of a hostile or runaway
+// stream is its own denial of service: by drainLimit bytes, and by the request
+// context — reads on the body honour its deadline, so the same Timeout that bounds
+// the call bounds the drain.
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, drainLimit))
+	_ = body.Close()
+}
+
 // Preflight checks that Ollama is reachable and the configured model is
 // installed, by querying GET {BaseURL}/api/tags. It is bounded by a short
 // timeout and never blocks the run: any problem is reported as a Status the
@@ -111,7 +147,7 @@ func (o *OllamaClassifier) Preflight(ctx context.Context) Status {
 	if err != nil {
 		return StatusUnreachable
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { drainAndClose(resp.Body) }()
 	if resp.StatusCode != http.StatusOK {
 		return StatusUnreachable
 	}
@@ -187,6 +223,21 @@ const warmupTimeout = 2 * time.Minute
 // maxResponseBytes caps what is read from an Ollama response, so a runaway or
 // hostile endpoint cannot make the process allocate without bound.
 const maxResponseBytes = 4 << 20
+
+// drainLimit is how much of an over-long response is read past maxResponseBytes so
+// that its connection can go back in the keep-alive pool. Equal to maxResponseBytes
+// on purpose: having already agreed to read 4 MiB, reading at most 4 MiB more to
+// save a connection is the same order of magnitude, and past that the body is not
+// worth rescuing — closing early costs one connection, which is where we started.
+const drainLimit = maxResponseBytes
+
+// idleConnsPerHost sizes the keep-alive pool. net/http's default is 2
+// (http.DefaultMaxIdleConnsPerHost), which is invisible while calls are serial and
+// becomes a fresh TCP handshake per call the moment they are not. It caps the pool,
+// not the request rate, so over-sizing costs a couple of idle sockets to a local
+// server while under-sizing silently reintroduces the handshake this exists to
+// remove.
+const idleConnsPerHost = 8
 
 type chatResponse struct {
 	Message chatMessage `json:"message"`
@@ -550,7 +601,7 @@ func (o *OllamaClassifier) postChat(ctx context.Context, payload []byte) ([]byte
 	if err != nil {
 		return nil, transient(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { drainAndClose(resp.Body) }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {

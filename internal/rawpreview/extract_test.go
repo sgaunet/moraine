@@ -13,11 +13,74 @@ import (
 
 func stubExtractor(t *testing.T, opts exiftooltest.Options) *rawpreview.Extractor {
 	t.Helper()
-	path, err := exiftooltest.Stub(t.TempDir(), opts)
+	ex, _ := stubExtractorIn(t, opts)
+	return ex
+}
+
+// stubExtractorIn also returns the stub's directory, so a test can ask it how many
+// exiftool processes an Extract actually cost.
+func stubExtractorIn(t *testing.T, opts exiftooltest.Options) (*rawpreview.Extractor, string) {
+	t.Helper()
+	dir := t.TempDir()
+	path, err := exiftooltest.Stub(dir, opts)
 	if err != nil {
 		t.Fatalf("building exiftool stub: %v", err)
 	}
-	return rawpreview.NewExtractor(path, 5*time.Second)
+	return rawpreview.NewExtractor(path, 5*time.Second), dir
+}
+
+// TestExtractCostsOneProcessPerPhoto is the regression test for issue #9's exiftool
+// item: the tags used to be probed one exec.Command at a time, so a file answering
+// only to the last of them cost three process spawns — and, because the timeout is
+// per invocation, up to three times the budget the caller thought it had set.
+func TestExtractCostsOneProcessPerPhoto(t *testing.T) {
+	tests := []struct {
+		name    string
+		preview map[string][]byte
+	}{
+		// The worst case under the old loop: the winning tag is tried last.
+		{"lowest-priority tag", map[string][]byte{"ThumbnailImage": []byte("THUMB")}},
+		{"highest-priority tag", map[string][]byte{"JpgFromRaw": []byte("FULL")}},
+		// No tag at all: the old loop still paid for all three probes.
+		{"no preview at all", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ex, dir := stubExtractorIn(t, exiftooltest.Options{Previews: tc.preview})
+			_, _ = ex.Extract(context.Background(), "shot.dng")
+			got, err := exiftooltest.Invocations(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != 1 {
+				t.Errorf("Extract spawned %d exiftool processes; want exactly 1", got)
+			}
+		})
+	}
+}
+
+// TestExtractTimeoutBoundsTheWholeCall pins what the single invocation buys beyond
+// speed: Timeout used to be applied per exec.Command, so probing three tags could
+// take three times the bound and overrun the classifier's own call budget.
+func TestExtractTimeoutBoundsTheWholeCall(t *testing.T) {
+	path, err := exiftooltest.Stub(t.TempDir(), exiftooltest.Options{
+		Previews: map[string][]byte{"ThumbnailImage": []byte("THUMB")}, // the last tag tried
+		SleepMS:  200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex := rawpreview.NewExtractor(path, 100*time.Millisecond)
+
+	start := time.Now()
+	if _, err := ex.Extract(context.Background(), "shot.dng"); err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	// One invocation, so one timeout. Three would have taken past 300ms.
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Errorf("Extract took %v; the %v timeout must bound the whole call, not each tag",
+			elapsed, 100*time.Millisecond)
+	}
 }
 
 func TestExtractPrefersLargestPreview(t *testing.T) {
