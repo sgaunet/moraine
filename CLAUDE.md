@@ -99,9 +99,14 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   summary, then `interrupted: copied N, …` with exit 1; photos never reached are not
   counted as errors. `--dry-run` writes nothing at all, not even a directory.
 - **Procedural pipeline** in `app.Organize`: `scan → exifmeta` (worker pool sized by
-  `GOMAXPROCS`) `→ cluster → classify → organize.Place`, tallying a `Summary`. Between
-  scan and exifmeta, `checkFreeSpace` compares the scanned bytes against
-  `diskspace.Available(destRoot)` and warns — never aborts — when they do not fit.
+  `--jobs`, default `GOMAXPROCS`) `→ cluster → classify → organize.Place`, tallying a
+  `Summary`. Between scan and exifmeta, `checkFreeSpace` compares the scanned bytes
+  against `diskspace.Available(destRoot)` and warns — never aborts — when they do not
+  fit. **Three stages are concurrent, the tallies are not**: `readMeta`, `labelAhead`
+  (one producer classifying up to `lookAhead`=2 events ahead of the one being placed)
+  and `organize.Place`'s copy pool. `tally`/`tallyEvent`/`rec.add`/`onResult` all stay
+  on `Organize`'s own goroutine, which is why `Summary`, `manifest.Writer` and
+  `cli.reporter` need no synchronisation.
 - **Typed config split** (`internal/config`): `New`/`NewClean` do pure syntax and
   cross-field checks, no I/O (usage errors → exit 2); the `Validate()` methods do
   filesystem checks and resolve the `<source>/_sorted` default (→ exit 1).
@@ -142,10 +147,21 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   fingerprint, prunes emptied dirs, never leaves the dest root, and — after a clean
   `--delete` pass — renames the manifest `.undone` so the next `undo` steps back a run.
   `sort --incremental` (opt-in) loads every manifest into a source → record index,
-  feeding `organize.Organizer.Placed`, which short-circuits `placeOne` when *both*
+  feeding `organize.Organizer.Placed`, which short-circuits `resolveOne` when *both*
   source and copy still match; a cluster whose placed photos agree on one configured
   theme reuses it (`method=manifest`, no model call). A missing or unreadable manifest
   always degrades to a warning + full run. `clean` is untouched.
+- **Two-phase placement** (`organize.Place`): `plan` resolves every destination name
+  serially, in cluster order, reserving each in `Organizer.reserved` (`dst → src`);
+  `execute` then copies the bytes with `--jobs` workers, writing into a pre-sized
+  result slice indexed by plan position. Resolving names on one goroutine is what
+  keeps ` (N)` allocation deterministic, the variant indices contiguous (which
+  `existingIdentical` walks), and `results[]`/`events[]` in the order a serial run
+  produced. `contentAt` is the single resolver: a reserved-but-unwritten destination
+  answers with the **source** that reserved it, so an intra-run duplicate still
+  compares real bytes. The unit of concurrent work is a photo **plus its companions**,
+  since a photo whose write fails places none. `Place` clears `reserved` on return
+  unless `DryRun` — a dry run has no files to speak for themselves.
 - **Injected extension points**: `classify.Classifier` (nil = skip the model stage),
   `organize.Organizer.IsPrimary func(string) bool` (keeps `organize` decoupled from
   `scan`), and two `classify.PreviewExtractor` seams: `rawpreview.Extractor`
@@ -161,7 +177,13 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   span, max altitude and GPS ride along as prompt text; the model is warmed up once
   per run (empty-message `/api/chat`, outside any classification's timeout, only
   when something is actually classified) and held with `keep_alive`; only transient
-  failures (transport, 5xx, 408, 429) are retried, with exponential backoff.
+  failures (transport, 5xx, 408, 429) are retried, with exponential backoff. The HTTP
+  client carries an explicit `Transport` cloned from `DefaultTransport` (whose
+  `MaxIdleConnsPerHost` of 2 throttles keep-alive under concurrency) and drains every
+  response body before closing, bounded by a byte cap **and** the request context.
+  `--vote` fans its per-photo calls out `defaultVoteWorkers`=2 wide — not wider,
+  because a vote's timeout starts when its goroutine does, so with Ollama serialising
+  per model a 4-wide fan-out makes the last vote time out for the same wall-clock.
 - See `docs/architecture.md` for detailed design decisions.
 
 ## Development Commands
@@ -218,7 +240,40 @@ task check-before-commit   # lint + test + snapshot
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #19** — free-space preflight (split out of #13). New
+Latest change: **issue #9** — parallelising the serial tail, in four commits
+(issue-driven, no `specs/` dir). Everything after clustering used to run on one
+goroutine.
+
+1. **I/O efficiency** (`perf(io)`): `rawpreview.Extract` asked for its three preview
+   tags one `exec.Command` at a time; all three now go out in a single `-json -b`
+   call and the winner is base64-decoded from the reply (0.147s against 0.345s on a
+   real DNG, byte-identical output). That also fixes a latent bug — `Timeout` was
+   **per invocation**, so a three-tag probe could take 3× the bound and overrun the
+   classifier's own 60s budget. `internal/exiftooltest` had to change with it: its
+   stub kept the *last* recognised tag, so one call passing all three would always
+   have resolved to `ThumbnailImage`. Plus the Ollama transport/drain fix and pooled
+   copy/hash buffers (1092 MB/s against 1012 MB/s on a 40 MB file).
+2. **Concurrent classification** (`perf(classify)`): `labelAhead` pipelines the model
+   round-trip for event N+1 against the copy I/O of event N, and `--vote` fans out.
+   15.20s → 13.03s on 6 events against a 2s-latency stub.
+3. **Parallel copy** (`perf(organize)!`): the two-phase `Place` above. 1.89s → 0.79s
+   (2.4×) on 302 MB / 150 photos; `--jobs 1` costs ~3.5% for the planning pass.
+   Corrects a pre-existing `--dry-run` defect where an intra-run byte-identical
+   duplicate previewed as `renamed` while the real run reported `skipped-identical`.
+4. **`fix(diskspace)`**: `TestAvailableWalksUpToAnExistingAncestor` required two
+   `statfs` readings of a live filesystem to be *equal*. Reproduced on `main` under
+   write load; now compared within 1%.
+
+**The issue's premise was partly stale.** Its "stream SHA-256 through the copy" item
+had already landed with `--move` (`copy.go`, `io.MultiWriter`), and its "both use
+io.Copy's 32 KiB default" claim was wrong for `contenthash.Equal`, which already read
+in 64 KiB chunks — the fix there was pooling, not sizing. Its prescribed
+retry-on-EEXIST for `uniqueName` was **deliberately not implemented**: resolving names
+serially makes it unnecessary *and* preserves the determinism a retry would destroy.
+Three of its five "concurrency hazards" dissolve the same way. **#9 stays open** only
+if the author wants the untouched items (the dedup re-read, base64 double-buffering).
+
+Previous change: **issue #19** — free-space preflight (split out of #13). New
 `internal/diskspace`: `Available(path)` over `syscall.Statfs`, build-tagged `unix` with
 a `!unix` stub so the tree still builds on Windows, and — the part that matters — it
 answers for the **nearest existing ancestor**, since the destination root is created on
@@ -233,7 +288,7 @@ debug line, not a warning per run. No new flag, no stdout-contract change. Verif
 a 1 MB DMG: the warning fired before any write, the run continued and copied 2 of 3
 with the third an ENOSPC per-photo error.
 
-Previous change: **issue #12** — the feature backlog, four independently shippable
+Before that: **issue #12** — the feature backlog, four independently shippable
 items in four commits (issue-driven, no `specs/` dir). **#12 stays open**: its title
 also mentions video, which the body never turned into a checklist item and which
 `scan` still deliberately ignores.
@@ -338,7 +393,7 @@ Sort pipeline: scan → EXIF (`--jobs` workers, default one per CPU) → tempora
 
 006 changes (domain placement only; transport surface gains one flag): companion placement
 lives in `internal/organize` (new `sidecar.go` — `matchCompanion`/`companionTargetName`/
-`placeCompanions`), reusing the existing `copyFile`/`sameContent`/`uniqueName`/`placeOne`
+`planCompanions`, then named `placeCompanions`), reusing `copyFile`/`sameContent`/`uniqueName`/`resolveOne`
 primitives (copy-only, `O_EXCL`, skip-identical, ` (N)` suffix). `Organizer` gains
 `Sidecars bool`, an injected `IsPrimary func(string) bool` (excludes scanned images from
 companion copying — keeps `organize` decoupled from `scan`), and a lazy per-source-dir

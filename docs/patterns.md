@@ -101,7 +101,7 @@ not count those — nothing failed, nothing was attempted.
 - `safeJoin()` rejects path traversal in destination subdirectories.
 - **Companion (sidecar) files** reuse the same primitives: a companion of `IMG.jpg`
   is a same-directory regular file named `IMG.jpg<suffix>` (appended) or
-  `IMG.<other-ext>` (same base name); it is placed via `placeOne()` so it inherits
+  `IMG.<other-ext>` (same base name); it is resolved via `resolveOne()` so it inherits
   skip-identical / ` (N)`-suffix / no-overwrite. Its name tracks the photo's final
   placed name (`IMG (1).jpg.xmp`). `clean` removes companions through the same
   content-identity match it uses for photos (never by name).
