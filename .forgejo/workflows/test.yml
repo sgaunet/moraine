@@ -18,3 +18,4 @@ jobs:
           key: mise-${{ hashFiles('mise.toml') }}
       - run: mise install
       - run: mise exec -- task test
+      - run: mise exec -- task vuln

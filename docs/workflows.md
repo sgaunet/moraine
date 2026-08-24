@@ -51,12 +51,16 @@ gofmt -l .                                   # must print nothing
 go vet ./...
 CGO_ENABLED=1 go test ./... -race -count=1
 golangci-lint run
+govulncheck ./...                            # or: task vuln
 ```
 
 ## Release Process
 
-- CI (GitHub Actions, mirrored under `.forgejo/`): `test.yml` runs `task test`,
-  `linter.yml` runs `task lint`, `snapshot.yml` runs `task snapshot` on `main`.
+- CI (GitHub Actions, mirrored under `.forgejo/`): `test.yml` runs `task test`
+  then `task vuln`, `linter.yml` runs `task lint`, `snapshot.yml` runs
+  `task snapshot` on `main`. `task vuln` fails the build on any advisory
+  govulncheck finds *reachable* from our code, so an unreachable advisory in a
+  dependency does not block a release.
 - `release.yml` fires on a `v*` tag and runs `task release` (GoReleaser), which
   builds linux/darwin x amd64/arm64 `.tar.gz` archives plus checksums, publishes
   the GitHub release, and pushes `Casks/moraine.rb` to the `sgaunet/homebrew-tools`

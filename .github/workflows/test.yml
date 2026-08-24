@@ -13,3 +13,4 @@ jobs:
           install: true
           cache: true
       - run: task test
+      - run: task vuln
