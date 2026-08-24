@@ -59,6 +59,11 @@ the logs.
   as copied (matching size and modification time instead of re-reading both files) and
   reuses each known event's theme, so a re-import over a large library asks the model
   nothing and re-reads nothing.
+- **Free-space preflight**: after the scan, the destination filesystem is asked how
+  much room it has, and a run that will not fit says so once up front instead of
+  reporting the same full disk once per photo. It **warns, never refuses** — the
+  estimate cannot see sidecars, and it counts photos an `--incremental` re-run will
+  skip, so it is deliberately not allowed to block a run that would have succeeded.
 - **Dry run**: `--dry-run` reports exactly what would be copied, skipped or renamed —
   including the ` (1)` renames — and writes nothing at all, not even a folder.
 - **Pipe-safe output**: the run result goes to **stdout** (`--output=text|json`), logs

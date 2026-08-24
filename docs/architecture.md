@@ -83,6 +83,12 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   SHA-256) for indexing many files, used by `clean` to match originals to copies, and
   `Equal(a, b) → bool` (streaming byte compare, short-circuiting on the first
   difference) for the one-pair question `organize` asks when deduping a copy.
+- **`internal/diskspace`** — how many bytes are free on the filesystem holding a
+  path, over `statfs(2)`. Build-tagged per platform (`unix` plus a `!unix` stub, so the
+  tree still builds where the syscall does not exist), with the portable file holding
+  the one piece of real logic: a walk up to the nearest ancestor that exists, because
+  the destination root is created on first use and so is usually absent when the
+  question is asked.
 - **`internal/manifest`** — the record of what a run placed: one JSON Lines file per
   run under `<dest>/.moraine/runs/`, a header line plus one record per placed file
   (photo or companion) carrying its destination and the size/mtime it was left with.
@@ -223,6 +229,19 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
     (`method=manifest`), instead of asking the model again. That is not only cheaper:
     it keeps a photo added to an old event filed *with* that event, which classifying
     the newcomer on its own would not guarantee.
+
+13. **The free-space preflight warns, never aborts** — after the scan, `app` compares
+    the bytes it found against `diskspace.Available(destRoot)` and logs one warning
+    when they do not fit. Without it a full disk announces itself as one
+    `placement failed` per photo, with nothing in the run naming the disk as the cause.
+    Aborting on the comparison would be wrong, because the estimate is an upper bound
+    in two directions: it cannot see companion files, which `organize` only discovers
+    per source directory, and it counts every photo even though an incremental re-run
+    skips the ones already placed byte-identically. On a nearly-full destination
+    holding an already-complete archive, a size-based abort would refuse a run that
+    writes nothing at all. So the run proceeds and decides photo by photo — and a
+    platform that cannot answer at all degrades to one debug line, not a warning per
+    run.
 
 ## Integration Points
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"log/slog"
@@ -230,6 +231,62 @@ func TestOrganizeLoggingContract(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The free-space preflight has to be right about two things: the byte total it
+// estimates, and its silence when the destination is fine. A signed/unsigned slip in
+// the comparison would nag every user on every run, which is why the absence of the
+// warning is asserted as firmly as the figure is.
+func TestOrganizeFreeSpacePreflight(t *testing.T) {
+	src, dest := t.TempDir(), t.TempDir()
+	var want int64
+	for _, name := range []string{"a.png", "b.png"} {
+		path := filepath.Join(src, name)
+		makePNG(t, path)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want += info.Size()
+	}
+
+	buf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	// The estimate has to be the scan's own byte total: proof that Found.Size is
+	// summed, and that statfs answered for a destination directory that exists.
+	if wantLine := fmt.Sprintf("msg=space needed_bytes=%d", want); !strings.Contains(out, wantLine) {
+		t.Errorf("debug log missing %q\n---\n%s", wantLine, out)
+	}
+	if !strings.Contains(out, "available_bytes=") {
+		t.Errorf("space line reports no available_bytes\n---\n%s", out)
+	}
+	if strings.Contains(out, "too small") {
+		t.Errorf("a temp directory warned about free space\n---\n%s", out)
+	}
+}
+
+// A destination that does not exist yet is the normal first run: organize creates it
+// on first use, so the preflight must answer for the filesystem that will host it
+// rather than give up.
+func TestOrganizeFreeSpacePreflightOnUncreatedDestination(t *testing.T) {
+	src := t.TempDir()
+	dest := filepath.Join(t.TempDir(), "sorted", "library") // neither level exists
+	makePNG(t, filepath.Join(src, "a.png"))
+
+	buf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "msg=space") || strings.Contains(out, "free space unknown") {
+		t.Errorf("preflight gave up on a not-yet-created destination\n---\n%s", out)
+	}
 }
 
 func TestOrganizeOllamaUnreachableWarnsAndFallsBack(t *testing.T) {

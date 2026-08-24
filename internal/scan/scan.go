@@ -23,6 +23,10 @@ import (
 type Found struct {
 	Path   string
 	Format photo.Format
+	// Size is the file's size in bytes, 0 when the walk could not stat it. It feeds
+	// the run's free-space estimate; nothing in the pipeline depends on it being
+	// exact, which is why an unstattable file is still reported rather than dropped.
+	Size int64
 }
 
 // Scan recursively walks source and returns the recognised image files
@@ -63,7 +67,16 @@ func Scan(source, destRoot string, logger *slog.Logger) ([]Found, error) {
 			}
 			return nil
 		}
-		found = append(found, Found{Path: path, Format: format})
+		// One extra lstat per recognised file. It is invisible next to the full open
+		// and EXIF read every one of these files gets a moment later, and it buys the
+		// run its only chance to notice a too-small destination before writing.
+		var size int64
+		if info, ierr := d.Info(); ierr == nil {
+			size = info.Size()
+		} else {
+			logger.Debug("size unknown", "path", path, "err", ierr)
+		}
+		found = append(found, Found{Path: path, Format: format, Size: size})
 		return nil
 	})
 	if err != nil {
