@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -50,8 +50,8 @@ func Files(destRoot string) ([]string, error) {
 	// '-' sorts before '.', so ordering whole names would put the *newer* run first
 	// and hand `undo` the wrong one. Stems put the plain id ahead of its suffixed
 	// variants, which is the order the runs happened in.
-	sort.Slice(names, func(i, j int) bool {
-		return runID(names[i]) < runID(names[j])
+	slices.SortFunc(names, func(a, b string) int {
+		return strings.Compare(runID(a), runID(b))
 	})
 	files := make([]string, 0, len(names))
 	for _, n := range names {
