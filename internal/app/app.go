@@ -108,9 +108,11 @@ func Organize(
 		onResult = func(organize.Result) {}
 	}
 
-	in, err := buildClusters(cfg, logger)
+	in, err := buildClusters(ctx, cfg, logger)
 	if err != nil {
-		return Summary{}, err
+		// An interrupted scan or EXIF stage still reports what it managed to take in.
+		// On any other error `in` is zero, so this is the Summary{} it always was.
+		return Summary{Scanned: in.scanned, Unreadable: in.unreadable}, err
 	}
 
 	opts := classify.Options{
@@ -354,7 +356,12 @@ type input struct {
 
 // buildClusters runs the scan and EXIF stages. A directory source yields many
 // clusters; a single file yields exactly one and a one-element primary set.
-func buildClusters(cfg config.Config, logger *slog.Logger) (input, error) {
+//
+// Both stages honour ctx. Together they are frequently the longest phase of a large
+// run, and until they did, a Ctrl-C aimed at the wrong folder had no effect until the
+// whole library had been walked and read. A cancelled run returns the context error
+// with the counts it had reached, so the caller can still report what it took in.
+func buildClusters(ctx context.Context, cfg config.Config, logger *slog.Logger) (input, error) {
 	if !cfg.SourceIsDir {
 		clusters, err := singleCluster(cfg, logger)
 		if err != nil {
@@ -369,7 +376,7 @@ func buildClusters(cfg config.Config, logger *slog.Logger) (input, error) {
 		}, nil
 	}
 
-	found, err := scan.Scan(cfg.Source, cfg.DestRoot, logger)
+	found, err := scan.Scan(ctx, cfg.Source, cfg.DestRoot, logger)
 	if err != nil {
 		return input{}, err
 	}
@@ -383,19 +390,24 @@ func buildClusters(cfg config.Config, logger *slog.Logger) (input, error) {
 	}
 	checkFreeSpace(cfg.DestRoot, needed, logger)
 
-	photos := readMeta(found, cfg.Jobs, logger)
+	photos, unreadable := readMeta(ctx, found, cfg.Jobs, logger)
 	logger.Info("exif", "read", len(photos), "of", len(found), "raw", countRAW(photos))
 
-	clusters := cluster.Cluster(photos, cfg.Gap)
-	logger.Info("cluster", "photos", len(photos), "groups", len(clusters), "gap", cfg.Gap.String())
-	// readMeta drops exactly the files it could not read, so the shortfall is the
-	// unreadable count — no second tally to keep in step with it.
-	return input{
-		clusters:   clusters,
-		primaries:  primaries,
-		scanned:    len(found),
-		unreadable: len(found) - len(photos),
-	}, nil
+	// readMeta reports its own failures rather than leaving them to be derived from
+	// the shortfall: once it can stop early, len(found)-len(photos) also counts every
+	// file the cancellation never reached, which would report an interrupted run as a
+	// library full of unreadable photos — the mistake notAttempted exists to avoid.
+	in := input{primaries: primaries, scanned: len(found), unreadable: unreadable}
+	if err := ctx.Err(); err != nil {
+		// Returned here rather than left to the label loop: buildClassifier's Ollama
+		// preflight sits between the two, and a Ctrl-C should not be answered with a
+		// warning that Ollama is unreachable on the way out.
+		return in, err
+	}
+
+	in.clusters = cluster.Cluster(photos, cfg.Gap)
+	logger.Info("cluster", "photos", len(photos), "groups", len(in.clusters), "gap", cfg.Gap.String())
+	return in, nil
 }
 
 // checkFreeSpace compares what the scan found against what the destination filesystem
@@ -461,8 +473,14 @@ func singleCluster(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, err
 // readMeta reads EXIF metadata for every file using a bounded worker pool of jobs
 // workers, or one per GOMAXPROCS when jobs is 0. Turning it down throttles a network
 // drive; turning it up can pay off on fast local storage. Files whose metadata
-// cannot be read are skipped with a warning (FR-012).
-func readMeta(found []scan.Found, jobs int, logger *slog.Logger) []photo.Photo {
+// cannot be read are skipped with a warning (FR-012) and counted in the second
+// return value.
+//
+// Cancelling ctx stops the pool from taking on new files; the workers already running
+// finish theirs, which is bounded by a single EXIF read each.
+func readMeta(
+	ctx context.Context, found []scan.Found, jobs int, logger *slog.Logger,
+) ([]photo.Photo, int) {
 	workers := jobs
 	if workers < 1 {
 		workers = runtime.GOMAXPROCS(0)
@@ -472,11 +490,17 @@ func readMeta(found []scan.Found, jobs int, logger *slog.Logger) []photo.Photo {
 	}
 	sem := make(chan struct{}, workers)
 	var (
-		wg     sync.WaitGroup
-		mu     sync.Mutex
-		photos = make([]photo.Photo, 0, len(found))
+		wg         sync.WaitGroup
+		mu         sync.Mutex
+		photos     = make([]photo.Photo, 0, len(found))
+		unreadable int
 	)
 	for _, f := range found {
+		// Checked before the semaphore, which blocks: the same shape organize.execute
+		// uses, so a cancellation costs at most the files already in flight.
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(f scan.Found) {
@@ -492,6 +516,9 @@ func readMeta(found []scan.Found, jobs int, logger *slog.Logger) []photo.Photo {
 					"file", f.Path, "err", err)
 			case err != nil:
 				logger.Warn("file skipped", "file", f.Path, "err", err)
+				mu.Lock()
+				unreadable++
+				mu.Unlock()
 				return
 			}
 			mu.Lock()
@@ -505,5 +532,5 @@ func readMeta(found []scan.Found, jobs int, logger *slog.Logger) []photo.Photo {
 	// capture time anyway; keeping the pipeline's own data in a fixed order is what
 	// makes the logs and the per-file stdout records reproducible too.
 	slices.SortFunc(photos, func(a, b photo.Photo) int { return strings.Compare(a.Path, b.Path) })
-	return photos
+	return photos, unreadable
 }

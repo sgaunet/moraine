@@ -26,7 +26,10 @@ Per-photo failures are **non-fatal**: they are recorded in `Result.Err` and
 tallied into the run `Summary.Errors` (see `internal/app/app.go`) rather than
 aborting the whole run. A *cancelled* run is the exception: `organize.Place` records
 the context error against every photo it never reached, and `tally` deliberately does
-not count those — nothing failed, nothing was attempted.
+not count those — nothing failed, nothing was attempted. The same rule shapes the
+intake stages: `readMeta` counts the files it actually failed to read rather than
+letting the caller derive them from the shortfall, so a cancellation cannot inflate
+`unreadable` with files it never opened.
 
 ## Output Contract (stdout is data)
 

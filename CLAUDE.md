@@ -100,7 +100,9 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   counted as errors. `--dry-run` writes nothing at all, not even a directory.
 - **Procedural pipeline** in `app.Organize`: `scan → exifmeta` (worker pool sized by
   `--jobs`, default `GOMAXPROCS`) `→ cluster → classify → organize.Place`, tallying a
-  `Summary`. Between scan and exifmeta, `checkFreeSpace` compares the scanned bytes
+  `Summary`. Every stage honours the run's context: `scan` stops at the next directory
+  entry, `readMeta` stops taking on new files, and neither counts what it never
+  reached. Between scan and exifmeta, `checkFreeSpace` compares the scanned bytes
   against `diskspace.Available(destRoot)` and warns — never aborts — when they do not
   fit. **Three stages are concurrent, the tallies are not**: `readMeta`, `labelAhead`
   (one producer classifying up to `lookAhead`=2 events ahead of the one being placed)
@@ -242,7 +244,42 @@ task check-before-commit   # lint + test + snapshot + vuln
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #32** — panic and allocation boundaries around untrusted
+Latest change: **issue #30** — honouring SIGINT during the intake stages
+(issue-driven, no `specs/` dir). `sort` wired a `signal.NotifyContext` all the way
+down and then consulted it for the first time in the label loop, so on a large
+library Ctrl-C did nothing until the scan and EXIF read had finished on their own —
+frequently the longest phase of the run, and exactly when a user realises they
+pointed at the wrong folder.
+
+1. **`fix(scan)`**: `Scan` takes a `ctx` and checks it at the top of the `WalkDir`
+   callback, the shape `clean.Cleaner.Run` already used. A cancellation comes back
+   bare rather than wrapped as `walking source directory`, and with no partial list.
+2. **`fix(app)`**: `buildClusters` and `readMeta` take it too. `readMeta` checks
+   before the blocking `sem <- struct{}{}`, so an interrupt costs at most the files
+   already in flight (one EXIF read each), and `buildClusters` returns straight after
+   — ahead of `buildClassifier`, so a Ctrl-C is not answered with "Ollama
+   unreachable" on the way out. `Organize` reports the partial counts and
+   `internal/cli` needed no change at all: `isInterrupt` already routes
+   `context.Canceled` to the summary, then `interrupted: …`, then exit 1.
+3. **The tally had to change with it.** `unreadable` was derived as
+   `len(found) - len(photos)`; once the stage can stop early, that arithmetic also
+   counts every file the interrupt never reached, so an interrupted run would
+   announce itself as a library full of unreadable photos — the exact mistake
+   `notAttempted` exists to avoid on the copy side. `readMeta` now returns its own
+   failure count.
+
+**Tests are deterministic rather than timed.** A `slog.Handler` that cancels on the
+first record proves the walk stops at the *next* entry (one record logged, not five);
+it fails against a check-after-the-walk implementation, which returns the right error
+having done all the work anyway. A second one cancels on the `scan` line and pins
+`read=0 of=3`, `scanned=3`, `unreadable=0` and an untouched destination.
+
+**Deliberately out of scope**: `copyFile`/`writeTemp` still take no context — the
+issue itself calls that not worth fixing, bounded as it is by one file's size — and
+`clean.indexDestination` hashes the whole destination before its own cancellable
+walk, which is the same gap in a different command and wants its own issue.
+
+Previous change: **issue #32** — panic and allocation boundaries around untrusted
 image data (issue-driven, no `specs/` dir). Two stages parsed camera-card bytes on
 goroutines nobody could recover from, and the tree contained **no `recover()` at
 all**, contradicting the repo's own "per-photo failures are non-fatal" contract.
@@ -276,7 +313,7 @@ leads with. A 2m30s fuzz (12.7M execs) over `imagemeta.Decode` found no crashing
 input, so the EXIF boundary is defence in depth rather than a fix for a reproducible
 crash; the classify one is not — the bomb is trivially reproducible, above.
 
-Previous change: **issue #9** — parallelising the serial tail, in four commits
+Before that: **issue #9** — parallelising the serial tail, in four commits
 (issue-driven, no `specs/` dir). Everything after clustering used to run on one
 goroutine.
 
@@ -309,7 +346,7 @@ serially makes it unnecessary *and* preserves the determinism a retry would dest
 Three of its five "concurrency hazards" dissolve the same way. **#9 stays open** only
 if the author wants the untouched items (the dedup re-read, base64 double-buffering).
 
-Before that: **issue #19** — free-space preflight (split out of #13). New
+Preceding it: **issue #19** — free-space preflight (split out of #13). New
 `internal/diskspace`: `Available(path)` over `syscall.Statfs`, build-tagged `unix` with
 a `!unix` stub so the tree still builds on Windows, and — the part that matters — it
 answers for the **nearest existing ancestor**, since the destination root is created on

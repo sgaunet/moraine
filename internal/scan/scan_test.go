@@ -2,6 +2,8 @@ package scan_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,6 +18,27 @@ import (
 
 // discard is a logger for the tests that do not assert on log output.
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// cancelOnFirstLog cancels a context the first time the walk logs anything, and
+// counts the records it saw. filepath.WalkDir calls back on one goroutine, so the
+// count needs no lock — and it is what turns "the walk stops promptly" into an exact
+// assertion instead of a stopwatch.
+type cancelOnFirstLog struct {
+	cancel context.CancelFunc
+	n      int
+}
+
+func (h *cancelOnFirstLog) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *cancelOnFirstLog) Handle(context.Context, slog.Record) error {
+	h.n++
+	h.cancel()
+	return nil
+}
+
+func (h *cancelOnFirstLog) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *cancelOnFirstLog) WithGroup(string) slog.Handler { return h }
 
 func write(t *testing.T, path string) {
 	t.Helper()
@@ -41,7 +64,7 @@ func TestScanRecursiveAndFilters(t *testing.T) {
 
 	dest := filepath.Join(src, "_sorted")
 
-	found, err := scan.Scan(src, dest, discard())
+	found, err := scan.Scan(context.Background(), src, dest, discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +85,7 @@ func TestScanReportsFileSize(t *testing.T) {
 	}
 	write(t, filepath.Join(src, "sub", "b.png")) // one byte
 
-	found, err := scan.Scan(src, filepath.Join(src, "_sorted"), discard())
+	found, err := scan.Scan(context.Background(), src, filepath.Join(src, "_sorted"), discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +110,7 @@ func TestScanExcludesDestRootUnderSource(t *testing.T) {
 	write(t, filepath.Join(dest, "trip", "old1.jpg"))
 	write(t, filepath.Join(dest, "old2.png"))
 
-	found, err := scan.Scan(src, dest, discard())
+	found, err := scan.Scan(context.Background(), src, dest, discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +123,7 @@ func TestScanExcludesDestRootUnderSource(t *testing.T) {
 func TestScanFormatsClassified(t *testing.T) {
 	src := t.TempDir()
 	write(t, filepath.Join(src, "p.heic"))
-	found, err := scan.Scan(src, filepath.Join(src, "_sorted"), discard())
+	found, err := scan.Scan(context.Background(), src, filepath.Join(src, "_sorted"), discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +149,7 @@ func TestScanSkipsUnreadableSubdirWithoutAborting(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	found, err := scan.Scan(src, filepath.Join(src, "_sorted"), logger)
+	found, err := scan.Scan(context.Background(), src, filepath.Join(src, "_sorted"), logger)
 	if err != nil {
 		t.Fatalf("one unreadable directory must not abort the scan: %v", err)
 	}
@@ -150,7 +173,7 @@ func TestScanUnreadableSourceRootIsFatal(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(src, 0o755) })
 
-	if _, err := scan.Scan(src, filepath.Join(src, "_sorted"), discard()); err == nil {
+	if _, err := scan.Scan(context.Background(), src, filepath.Join(src, "_sorted"), discard()); err == nil {
 		t.Fatal("an unreadable source root must still be an error")
 	}
 }
@@ -201,7 +224,7 @@ func TestScanExcludesDestReachedThroughSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	found, err := scan.Scan(src, link, discard())
+	found, err := scan.Scan(context.Background(), src, link, discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +257,7 @@ func TestScanSymlinkHandling(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	found, err := scan.Scan(src, filepath.Join(src, "_sorted"), logger)
+	found, err := scan.Scan(context.Background(), src, filepath.Join(src, "_sorted"), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,5 +267,60 @@ func TestScanSymlinkHandling(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "symlink not followed") {
 		t.Errorf("the skipped directory symlink must be logged; got:\n%s", logs.String())
+	}
+}
+
+// TestScanStopsPromptlyOnCancel is why the walk consults the context at all: on a
+// large library the scan is often the longest phase of the whole run, and it is
+// exactly when a user realises they pointed at the wrong folder and hits Ctrl-C.
+// Every entry in this tree logs exactly one record, so cancelling on the first one
+// turns "stops promptly" into an exact count of entries visited.
+func TestScanStopsPromptlyOnCancel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need elevation on windows")
+	}
+	src := t.TempDir()
+	target := filepath.Join(t.TempDir(), "target.jpg")
+	write(t, target)
+	// Symlinked files with an unrecognised extension: one "symlink not followed"
+	// debug record each, and nothing else in the walk logs.
+	for _, n := range []string{"a.txt", "b.txt", "c.txt", "d.txt", "e.txt"} {
+		if err := os.Symlink(target, filepath.Join(src, n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := &cancelOnFirstLog{cancel: cancel}
+
+	found, err := scan.Scan(ctx, src, filepath.Join(src, "_sorted"), slog.New(h))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if h.n != 1 {
+		t.Errorf("the walk visited %d entries after the cancellation; it must stop at the next one", h.n-1)
+	}
+	if found != nil {
+		t.Errorf("a cancelled scan must not return a partial list; got %d files", len(found))
+	}
+}
+
+// TestScanCancelledBeforeTheWalkReturnsNoFiles covers the run cancelled before the
+// scan starts: nothing was discovered, so there is nothing to report but the reason.
+func TestScanCancelledBeforeTheWalkReturnsNoFiles(t *testing.T) {
+	src := t.TempDir()
+	write(t, filepath.Join(src, "a.jpg"))
+	write(t, filepath.Join(src, "sub", "b.png"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	found, err := scan.Scan(ctx, src, filepath.Join(src, "_sorted"), discard())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if found != nil {
+		t.Errorf("want no partial list; got %d files", len(found))
 	}
 }

@@ -44,6 +44,35 @@ func (s *safeBuffer) String() string {
 	return s.b.String()
 }
 
+// cancelOnMessage wraps a handler and cancels a context the first time a record
+// carries msg, then passes the record on. It aims an interrupt at one named pipeline
+// stage without a timer, so a test can assert what a cancellation there reports —
+// and read the stage logs that follow it — instead of racing a stopwatch.
+type cancelOnMessage struct {
+	msg    string
+	cancel context.CancelFunc
+	inner  slog.Handler
+}
+
+func (h *cancelOnMessage) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.inner.Enabled(ctx, l)
+}
+
+func (h *cancelOnMessage) Handle(ctx context.Context, r slog.Record) error {
+	if r.Message == h.msg {
+		h.cancel()
+	}
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *cancelOnMessage) WithAttrs(as []slog.Attr) slog.Handler {
+	return &cancelOnMessage{msg: h.msg, cancel: h.cancel, inner: h.inner.WithAttrs(as)}
+}
+
+func (h *cancelOnMessage) WithGroup(name string) slog.Handler {
+	return &cancelOnMessage{msg: h.msg, cancel: h.cancel, inner: h.inner.WithGroup(name)}
+}
+
 var modTime = time.Date(2025, 8, 12, 12, 0, 0, 0, time.UTC)
 
 func makePNG(t *testing.T, path string) {
@@ -682,7 +711,9 @@ func TestOrganizeJobs(t *testing.T) {
 // TestOrganizeInterruptDoesNotInflateErrors is the regression test for the interrupt
 // defect: organize.Place records the context error against every photo it never reached,
 // and those used to be tallied as placement failures — so a Ctrl-C on a large library
-// reported thousands of "errors" for photos that were simply never attempted.
+// reported thousands of "errors" for photos that were simply never attempted. A context
+// already cancelled now stops the run at the scan, so this also pins that nothing
+// downstream reports a failure on the way out.
 func TestOrganizeInterruptDoesNotInflateErrors(t *testing.T) {
 	src, dest := t.TempDir(), t.TempDir()
 	for _, n := range []string{"a.png", "b.png", "c.png", "d.png", "e.png"} {
@@ -930,5 +961,49 @@ func TestOrganizeEventsReportTheManifestMethodOnAReRun(t *testing.T) {
 	}
 	if ev.BytesCopied != 0 || ev.BytesSkipped <= 0 {
 		t.Errorf("event volume copied/skipped = %d/%d; want 0/>0", ev.BytesCopied, ev.BytesSkipped)
+	}
+}
+
+// TestOrganizeCancelledDuringEXIFReportsWhatTheScanFound aims the interrupt at the
+// EXIF stage — with the scan, the longest phase of a large run, and so the one a
+// Ctrl-C actually lands in. The scan itself completed, so the run must still say what
+// it was given; nothing was attempted, so nothing is unreadable and nothing is written.
+func TestOrganizeCancelledDuringEXIFReportsWhatTheScanFound(t *testing.T) {
+	src, dest := t.TempDir(), t.TempDir()
+	for _, n := range []string{"a.png", "b.png", "c.png"} {
+		makePNG(t, filepath.Join(src, n))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// "scan" is logged once the walk is done, before the first EXIF read.
+	logs := &safeBuffer{}
+	inner := slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})
+	logger := slog.New(&cancelOnMessage{msg: "scan", cancel: cancel, inner: inner})
+
+	sum, err := app.Organize(ctx, baseCfg(src, dest, true), logger, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	// The stage's own line is the evidence that it stopped rather than finished: the
+	// cancellation landed before the pool took on its first file.
+	if !strings.Contains(logs.String(), "read=0 of=3") {
+		t.Errorf("the EXIF stage kept reading after the cancellation:\n%s", logs.String())
+	}
+	if sum.Scanned != 3 {
+		t.Errorf("Scanned = %d, want 3: the scan finished, so the run knows what it was given", sum.Scanned)
+	}
+	if sum.Unreadable != 0 {
+		t.Errorf("Unreadable = %d, want 0: a photo the interrupt never reached did not fail to be read", sum.Unreadable)
+	}
+	if sum.Groups != 0 || sum.Copied != 0 {
+		t.Errorf("a run cancelled before clustering placed something: %+v", sum)
+	}
+	entries, readErr := os.ReadDir(dest)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the destination must be untouched; got %d entries", len(entries))
 	}
 }

@@ -221,7 +221,17 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 10. **Interrupt is a report, not a crash** — `organize.Place` records the context error
    against every photo it never reached; `app.tally` excludes those from the error count
    (nothing failed — nothing was attempted), and the transport prints the partial summary
-   before returning `interrupted: copied N, …` with exit 1.
+   before returning `interrupted: copied N, …` with exit 1. Every stage honours the same
+   context, the intake ones included: `scan.Scan` stops at the next directory entry and
+   returns the context error bare rather than a partial list, and `readMeta` stops taking
+   on new files (the workers already running finish theirs — one EXIF read each). On a
+   large library those two are frequently the longest phase of the run, and so the phase a
+   Ctrl-C actually lands in. Cancelling there returns the counts the run had reached —
+   `scanned` from a completed walk, `unreadable` only for files genuinely read and
+   rejected. That last one is why `readMeta` reports its own failures instead of leaving
+   them to be derived from `len(found) - len(photos)`: once the stage can stop early, the
+   shortfall also counts everything the interrupt never reached, and an interrupted run
+   would announce itself as a library full of unreadable photos.
 
 11. **The manifest is a shortcut, never an authority** — an incremental run trusts a
     record only while *both* ends still match it: the source must have the recorded
