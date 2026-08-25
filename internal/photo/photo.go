@@ -115,8 +115,8 @@ type LatLng struct {
 	Lng float64
 }
 
-// Photo is the raw result of scanning a file and reading its metadata, before
-// the server-side state (store) is built.
+// Photo is one scanned file plus the metadata read from it: the output of the
+// scan and exifmeta stages, and the input to clustering.
 type Photo struct {
 	Path     string    // absolute path within the source tree
 	Name     string    // filepath.Base(Path)
