@@ -247,7 +247,36 @@ task check-before-commit   # lint + test + snapshot + vuln
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #35** — three low-priority items from a codebase audit
+Latest change: **issue #34** — documentation drift, three items (issue-driven, no
+`specs/` dir). Documentation only: the one Go file touched is a doc comment.
+
+1. **`docs/patterns.md`**: the Error Handling section showed
+   `errors.Is(err, config.ErrHelp)` attributed to `main.go`. **`config.ErrHelp` never
+   existed** — the symbol's only occurrence in the repository was that doc line — and
+   `main.go` is nothing but `os.Exit(cli.Execute(…))`; the fragment predates the Cobra
+   exit-code redesign. Replaced with the real `internal/cli/exit.go` mechanism
+   (`asRuntime` wraps post-parse failures in an unexported `runtimeError`; `classify`
+   maps nil→0, `*runtimeError`→1, everything else→2), plus the sentinel inventory
+   beside it: a reader following the old example would have added a fourth sentinel to
+   a package that has none.
+2. **`internal/photo/photo.go`**: `Photo` was "the raw result of scanning a file and
+   reading its metadata, before the server-side state (store) is built" — copy-paste
+   from a web service, in a single-binary CLI with no server and no store. Now says
+   what it is here: the output of scan and exifmeta, the input to clustering.
+3. **`README.md`**: `--move`'s read-back cost, stated for someone sizing a run.
+   **The issue's premise was partly stale** — `docs/patterns.md` and
+   `docs/architecture.md` already carried "two full reads, where re-reading the source
+   would cost three", but as a *design justification* answering "why not three?".
+   Neither answers "what will this cost me?", so the README's `--move` section now
+   says a move reads every photo twice where a copy reads it once, with the page-cache
+   caveat. `--help` and the flag table were deliberately left alone (author's call):
+   the flag help already says "once its copy has been read back and verified", and the
+   dedicated section is where a sizing decision gets made.
+
+**No code change and no contract change**: `verifyCopy`'s re-read is the correct design
+and stays — nothing is deleted on the strength of "the write returned no error".
+
+Previous change: **issue #35** — three low-priority items from a codebase audit
 (issue-driven, no `specs/` dir), in three commits.
 
 1. **`fix(exec)`**: `rawpreview` and `heicpreview` handed the photo path to the
@@ -285,7 +314,7 @@ item. **#35 stays open** for those.
 against a freshly written shell stub, on a machine where each stub exec already
 costs ~0.5s. Wants its own issue.
 
-Previous change: **issue #31** — the constitution's configuration-precedence rule
+Prior to that: **issue #31** — the constitution's configuration-precedence rule
 (documentation only, issue-driven, no `specs/` dir). Principle V (**NON-NEGOTIABLE**)
 mandated **flags > environment > config file > defaults**; the tool has implemented
 three tiers ever since the config file landed, and the missing one was not among the
@@ -312,7 +341,7 @@ README now also states that the absent environment tier is deliberate. Note that
 tree only; the commit carries the tracked docs (`README.md`, `docs/workflows.md`, this
 file).
 
-Prior to that: **issue #30** — honouring SIGINT during the intake stages
+Before that: **issue #30** — honouring SIGINT during the intake stages
 (issue-driven, no `specs/` dir). `sort` wired a `signal.NotifyContext` all the way
 down and then consulted it for the first time in the label loop, so on a large
 library Ctrl-C did nothing until the scan and EXIF read had finished on their own —
@@ -347,7 +376,7 @@ issue itself calls that not worth fixing, bounded as it is by one file's size �
 `clean.indexDestination` hashes the whole destination before its own cancellable
 walk, which is the same gap in a different command and wants its own issue.
 
-Before those: **issue #32** — panic and allocation boundaries around untrusted
+Before them: **issue #32** — panic and allocation boundaries around untrusted
 image data (issue-driven, no `specs/` dir). Two stages parsed camera-card bytes on
 goroutines nobody could recover from, and the tree contained **no `recover()` at
 all**, contradicting the repo's own "per-photo failures are non-fatal" contract.

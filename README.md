@@ -219,6 +219,14 @@ two disagree the **destination** is removed and the source is kept, because a pr
 wrong file sitting on a canonical name is the one outcome the atomic copy exists to
 prevent.
 
+**Budget for the read-back.** That verification costs a second pass over the bytes: a
+`--move` run reads every photo twice, once on the way out and once back from the
+published file, where a plain copy reads it once. Moving 200 GB over a slow
+disk or a network share therefore reads about 400 GB, so plan for roughly twice the read
+time of the same run without `--move`, not the same run minus a delete. On a machine with
+RAM to spare the read-back is often served from the page cache and costs much less than
+that arithmetic suggests; on a full disk or a remote share it is not.
+
 **Nothing else removes a source.** Not a skipped photo — one already in your library is
 left alone, since a skip verifies nothing during that run (and with `--incremental` it
 never even reads the bytes). Not a failed copy, not an interrupted run, and not
