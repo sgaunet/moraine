@@ -48,7 +48,7 @@ func applySortFile(cmd *cobra.Command, opts *config.Options, f *configfile.File)
 	o.set("gap", s.Gap != nil, func() { opts.Gap = s.Gap.Duration })
 	o.set("sample", s.Sample != nil, func() { opts.Sample = *s.Sample })
 	o.set("ollama-url", s.OllamaURL != nil, func() { opts.OllamaURL = *s.OllamaURL })
-	// A YAML list reads better than an embedded comma string; config.parseThemes
+	// A YAML list reads better than an embedded comma string; config.ParseThemes
 	// still owns what a valid theme is.
 	o.set("themes", s.Themes != nil, func() { opts.Themes = strings.Join(s.Themes, ",") })
 	o.set("fallback-theme", s.FallbackTheme != nil, func() { opts.Fallback = *s.FallbackTheme })

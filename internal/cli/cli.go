@@ -7,6 +7,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 )
 
 // Execute builds the command tree, runs it against args (os.Args[1:]), and returns
@@ -21,8 +22,17 @@ import (
 // error and progress line goes to stderr, so moraine is safe in a pipe
 // (Constitution Principle V).
 func Execute(version string, args []string, stdout, stderr io.Writer) int {
+	return execute(version, args, os.Stdin, stdout, stderr)
+}
+
+// execute is Execute with standard input as a parameter. Only `config edit` reads it,
+// and only to ask questions; every other command reads files and flags. Keeping it a
+// parameter rather than a package variable is what lets a test drive the form without
+// a terminal and without shared state (see export_test.go).
+func execute(version string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	root := newRootCmd(version, stdout, stderr)
 	root.SetArgs(args)
+	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 

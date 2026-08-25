@@ -144,7 +144,7 @@ func New(o Options) (Config, error) {
 		return Config{}, err
 	}
 
-	themeList, err := parseThemes(o.Themes, o.Fallback)
+	themeList, err := ParseThemes(o.Themes, o.Fallback)
 	if err != nil {
 		return Config{}, err
 	}
@@ -218,10 +218,14 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// parseThemes splits a comma-separated slug list, validating each slug and the
+// ParseThemes splits a comma-separated slug list, validating each slug and the
 // fallback, and rejecting empties, duplicates, and a fallback that collides
 // with a theme.
-func parseThemes(list, fallback string) ([]string, error) {
+//
+// It is exported so that the interactive `moraine config edit` form can reject a
+// theme list as the user types it, using the rule sort itself applies rather than a
+// second copy of the slug pattern.
+func ParseThemes(list, fallback string) ([]string, error) {
 	fallback = strings.TrimSpace(fallback)
 	if !slugPattern.MatchString(fallback) {
 		return nil, fmt.Errorf("invalid --fallback-theme %q: expected [a-z0-9-]", fallback)

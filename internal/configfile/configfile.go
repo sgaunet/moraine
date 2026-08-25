@@ -7,8 +7,11 @@
 // file" is distinguishable from "present and equal to the default". That is what lets
 // a flag win over a file without this package knowing a single flag default.
 //
-// Note what is deliberately *not* configurable: --dry-run, --delete, --incremental
-// and the positional source. Those select what a single invocation does, and
+// The write half lives in document.go, and is what `moraine config` edits a file
+// with; it goes through the YAML node tree so that a user's comments survive.
+//
+// Note what is deliberately *not* configurable: --dry-run, --delete, --incremental,
+// --move and the positional source. Those select what a single invocation does, and
 // Constitution Principle V exists so that "a mistyped command cannot delete
 // anything" — a file that turns `clean` destructive by default would subvert exactly
 // that, and a file that made every `sort` a silent no-op would be worse. --quiet and
@@ -166,13 +169,16 @@ func fillShared(dst *Shared, src Shared) {
 // implicit locations are optional by nature: not having a configuration file is how
 // most runs work.
 func Load(explicit string) (*File, string, error) {
-	path, required := locate(explicit)
-	if path == "" {
+	loc, named, err := candidate(explicit)
+	if err != nil {
+		// Nowhere to read from is not a failure for a run: it is the same as having
+		// no configuration file. Only a writer (Target) needs to report it.
 		return nil, "", nil
 	}
+	path := loc.Path
 	f, err := read(path)
 	if err != nil {
-		if !required && errors.Is(err, fs.ErrNotExist) {
+		if !named && errors.Is(err, fs.ErrNotExist) {
 			return nil, "", nil
 		}
 		return nil, "", err
@@ -180,39 +186,90 @@ func Load(explicit string) (*File, string, error) {
 	return f, path, nil
 }
 
-// locate resolves which file to read, and whether the user asked for it by name (in
-// which case a missing file is an error rather than "no configuration"). It cannot
-// fail: every way of not finding a file is simply "no file".
-func locate(explicit string) (path string, required bool) {
+// Location names the configuration file this environment designates, and why that
+// one. The reason is worth carrying: "which file is moraine reading?" is the first
+// question asked when a setting appears to have done nothing.
+type Location struct {
+	Path   string
+	Source string
+}
+
+// The reasons one file rather than another is in effect, in precedence order.
+const (
+	SourceFlag = "--config"
+	SourceEnv  = EnvVar
+	SourceXDG  = "XDG_CONFIG_HOME"
+	SourceHome = "home"
+)
+
+// candidate resolves which file this environment designates, and whether the user
+// named it on purpose. The two ways there is no file at all — MORAINE_CONFIG set to
+// the empty string, and no home directory to look in — come back as an error, since
+// they mean "no configuration" to a reader but "nowhere to write" to a writer, and
+// only the writer can say anything useful about it.
+//
+// This is the single definition of the search order; Load and Target both use it.
+func candidate(explicit string) (loc Location, named bool, err error) {
 	if explicit != "" {
-		return explicit, true
+		return Location{Path: explicit, Source: SourceFlag}, true, nil
 	}
 	if env, ok := os.LookupEnv(EnvVar); ok {
 		if env == "" {
-			return "", false // explicitly disabled
+			return Location{}, false, fmt.Errorf(
+				"%s is set to the empty string, which turns the configuration file off; "+
+					"unset it, or name a file with --config", EnvVar)
 		}
-		return env, true
+		return Location{Path: env, Source: SourceEnv}, true, nil
 	}
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, baseName), false
+		return Location{Path: filepath.Join(xdg, baseName), Source: SourceXDG}, false, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// No home directory is not a failure: it just means no implicit file. Note
-		// os.UserConfigDir is deliberately not used — on macOS it points at
+		// Note os.UserConfigDir is deliberately not used — on macOS it points at
 		// ~/Library/Application Support, and moraine documents ~/.config.
-		return "", false
+		return Location{}, false, fmt.Errorf(
+			"no home directory to hold %s (name a file with --config): %w", baseName, err)
 	}
-	return filepath.Join(home, ".config", baseName), false
+	return Location{Path: filepath.Join(home, ".config", baseName), Source: SourceHome}, false, nil
 }
 
-// read decodes one file. Decoding is strict: an unrecognised key is an error, because
-// a typo that silently does nothing is the worst thing a configuration file can do.
+// Read decodes the file at path, or reports an empty configuration when there is no
+// file there.
+//
+// It is what `moraine config` reads with. A run is stricter — Load makes a file named
+// by --config or MORAINE_CONFIG mandatory, so a typo cannot silently apply nothing —
+// but for the config commands "not created yet" is the ordinary state before the
+// first `config set`, and the state `config path` reports as exists=false.
+func Read(path string) (*File, error) {
+	f, err := read(path)
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		return &File{}, nil
+	}
+	return f, err
+}
+
+// read decodes one file.
 func read(path string) (*File, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config file %q: %w", path, err)
 	}
+	f, err := Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("config file %q: %w", path, err)
+	}
+	return f, nil
+}
+
+// Parse decodes a configuration document held in memory. Decoding is strict: an
+// unrecognised key is an error, because a typo that silently does nothing is the
+// worst thing a configuration file can do.
+//
+// It is exported so that `moraine config` can check a file it is about to write with
+// exactly the strictness the next run will read it with, rather than a second
+// implementation that could disagree.
+func Parse(data []byte) (*File, error) {
 	var f File
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -220,7 +277,7 @@ func read(path string) (*File, error) {
 		if errors.Is(err, io.EOF) {
 			return &File{}, nil // an empty file is a valid one that sets nothing
 		}
-		return nil, fmt.Errorf("config file %q: %w", path, err)
+		return nil, err
 	}
 	return &f, nil
 }

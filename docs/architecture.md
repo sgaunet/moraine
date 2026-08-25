@@ -2,14 +2,16 @@
 
 ## System Overview
 
-`moraine` is a layered, single-binary CLI with four subcommands (`sort`, `clean`,
-`undo`, `version`). The `sort` pipeline (`scan → exifmeta → cluster → classify → organize`)
+`moraine` is a layered, single-binary CLI with five subcommands (`sort`, `clean`,
+`undo`, `config`, `version`). The `sort` pipeline (`scan → exifmeta → cluster → classify → organize`)
 is wired exclusively behind the exported `internal/app.Organize()` function
 (Constitution Principle III). The `clean` subcommand (delete originals already copied)
 is wired behind `internal/app.Clean()`, backed by the pure-logic `internal/clean`
 package, and the `undo` subcommand (remove the copies the last run made) behind
 `internal/app.Undo()`, backed by `internal/undo` and the run manifest
-(`internal/manifest`). The CLI transport lives in `internal/cli` (a **Cobra** command
+(`internal/manifest`). The `config` subcommand tree is the one part of moraine that
+*writes* the configuration file, backed by `internal/configfile`'s node-tree editor and
+`internal/configform`'s interactive form. The CLI transport lives in `internal/cli` (a **Cobra** command
 tree): it binds flags, builds the typed config, runs the matching `app` function, and
 maps the outcome to the exit code. `main.go` is a shim that injects the build version
 and calls `cli.Execute`, holding no domain logic itself. Each stage is a distinct
@@ -19,7 +21,7 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 ## Components
 
 - **`internal/cli`** — the CLI transport: a Cobra command tree (root + `sort`/
-  `clean`/`undo`/`version`, plus Cobra's built-in `completion`) that binds flags into
+  `clean`/`undo`/`config`/`version`, plus Cobra's built-in `completion`) that binds flags into
   `config.Options`/`CleanOptions`/`UndoOptions`, calls the config constructors and `app`
   orchestrators, and maps execution to exit codes 0/1/2 via a `runtimeError`
   marker. The only package that imports Cobra. `completion.go` holds the shell
@@ -106,6 +108,19 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   originals whose byte-identical copy exists under the destination, matching by
   content (never filename) and never touching the destination tree. Depends only on
   the filesystem and `contenthash` (no classifier/Ollama/exiftool).
+- **`internal/configfile`** — the configuration file, in both directions.
+  `configfile.go` reads it: every setting is a pointer, so "absent" is distinguishable
+  from "present and equal to the default", which is what lets a flag beat a file
+  without this package knowing a single flag default. `document.go` writes it, as a
+  `yaml.Node` tree rather than by decoding into `File` and marshalling back — see
+  decision 16. `candidate` is the single definition of the search order, used by
+  `Load` (which tolerates having no file) and `Target` (which must name one to write).
+- **`internal/configform`** — the interactive form behind `config edit`, built on
+  `github.com/charmbracelet/huh`. It knows nothing about moraine's settings, flags or
+  defaults: the transport hands it fully-resolved fields (a title, a help line, a kind,
+  and the value to start from) and gets them back holding the answers. That is what
+  keeps the terminal out of `internal/cli` and lets the package be tested without one
+  (Principle III), through huh's accessible mode over a `strings.Reader`.
 - **`internal/app`** — orchestrates the sort pipeline (`Organize`), the clean run
   (`Clean`) and the undo run (`Undo`), tallying each run's summary. `manifest.go` is
   the seam between the pipeline and the manifest in both directions: it records every
@@ -297,6 +312,79 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
     raised, so a second concurrent classification would queue server-side and win
     nothing, while blocking inside `warmOnce.Do` for the whole cold load of a vision
     model. What is bought here is pipelining, not parallel inference.
+
+16. **The configuration file is edited as a node tree, not re-serialised** — a
+    `moraine.yaml` is hand-maintained, and the comments in it are the part moraine did
+    not write. `configfile.Document` therefore edits the parsed `yaml.Node` tree in
+    place: comments, key order and any key this version does not know about all
+    survive a `config set`. An existing value is rewritten *in place* rather than
+    replaced, because a trailing comment (`gap: 6h  # a long day`) attaches to the
+    value node — swapping that node is precisely how such a comment would be lost.
+    What is not preserved: yaml.v3 does not record blank lines between plain keys and
+    re-emits with its own layout, so the first write normalises spacing and indent
+    (to two spaces) and every write after that is stable. `Save` publishes atomically
+    (temp file, fsync, rename, fsync the parent) — the discipline `organize` uses for a
+    copy, with `os.Rename` rather than `os.Link` because replacing the file is the
+    point here.
+
+17. **`moraine config` restates no defaults and no help text** — `configkeys.go` holds
+    one table of settable values (flag name, YAML key, kind), and everything else is
+    read back from the real commands. Defaults come from
+    `registerSortFlags`/`registerCleanFlags`/`registerUndoFlags`, which pflag writes
+    into the bound `Options` merely by registering them, so `config show` reports
+    exactly what `--help` prints — including the defaults that are literals at the flag
+    rather than `config.Default*` constants. Help text is the flag's own `Usage`.
+    Origins come from the existing `applySortFile` overlayer (`pflag.Changed` answers
+    `false` for a name a flag set does not have, so passing a command that registers
+    none of them yields exactly "which keys did the file supply"), so the precedence
+    rule has one implementation, not two. `configkeys_test.go` fails the suite if a
+    flag of `sort`, `clean` or `undo` is neither in that table nor in the
+    `unconfigurable` list.
+
+18. **A candidate file is validated through the run's own path before it is saved** —
+    `writeSettings` renders the edited document, decodes it with the same strict
+    decoder a run uses, overlays it onto default options with the same `applyXxxFile`
+    functions the real commands call, and runs the result through `config.New` /
+    `NewClean` / `NewUndo`. A value no run would accept — a confidence above 1, a theme
+    colliding with the fallback theme — is refused with the file untouched, rather than
+    written and discovered at the start of the next run. The interactive form validates
+    each typed answer the same way (`checkValues`), so it refuses at the question
+    instead of at the end of a session.
+
+19. **The form draws on stderr and needs a real terminal** — stdout carries the
+    resulting settings (Principle V), so `config edit --output=json > settings.json`
+    works while the questions are on screen. Whether a terminal exists is asked of the
+    terminal driver (`charmbracelet/x/term`, already in the graph via huh) rather than
+    inferred from `os.ModeCharDevice`, which `/dev/null` also has —
+    `moraine config edit < /dev/null` would otherwise open a form nobody can answer.
+    Without a terminal the command fails with exit 1 and names the two ways forward:
+    `--accessible` (plain prompts, also the screen-reader mode) or `config set`.
+
+20. **`config edit` writes only what changed** — a form prefilled with defaults that
+    wrote every answer would stamp today's defaults into the file, freezing that user
+    at them so a later change to a default never reached them. Each answer is compared
+    with the value the question started from: changed ⇒ set, changed back to the
+    default ⇒ unset, untouched ⇒ left exactly as it was, which is also what preserves
+    the comment on a line nobody edited.
+
+21. **`config edit` asks which settings before asking their values** — huh binds
+    "submit" to enter and enables it only on a form's *last* field, so the first
+    version, which asked about every setting in one form, could only be saved by
+    pressing enter through two dozen questions. Asking first *which* settings to change
+    makes the picker a single field — submittable at once — and the second form as long
+    as the change rather than as long as the settings list. The picker doubles as a
+    finder: it shows each setting's effective value and marks the ones the file sets.
+    Answers still map back through `applyAnswers`, which compares each one with what
+    its question started from.
+
+22. **Nothing between huh and the reader may buffer** — huh's accessible prompts build
+    a fresh `bufio.Scanner` per field over one reader, and a scanner reads ahead by up
+    to 64 KiB, so the first question would swallow every later answer.
+    `configform.lineReader` limits each read to a single byte, which makes each scanner
+    stop at the newline it was after. It also holds no buffer of its own, which is the
+    other half: `config edit` runs two forms in sequence over one standard input, and
+    anything read ahead by the first would be lost when it returned. Both halves have a
+    test that fails without them.
 
 ## Integration Points
 

@@ -36,6 +36,7 @@ Commands:
   sort      organize photos into dated, themed folders
   clean     delete source originals already copied to the destination
   undo      remove the copies made by the last sort run
+  config    view and update the configuration file
   version   print the version
   completion  generate the shell completion script
 
@@ -50,6 +51,7 @@ Configuration file:
   the file, and the file always beats the built-in default. Mode flags — --dry-run,
   --delete and --incremental — are deliberately not configurable: they choose what a
   single invocation does. Set MORAINE_CONFIG= (empty) to ignore the file entirely.
+  Use "moraine config" to see, write and remove those settings without an editor.
 
 Exit codes:
   0  success
@@ -80,6 +82,7 @@ Run "moraine <command> --help" for command-specific options and examples.`,
 	root.AddCommand(newSortCmd(stdout, stderr, &output, &configPath))
 	root.AddCommand(newCleanCmd(stdout, stderr, &output, &configPath))
 	root.AddCommand(newUndoCmd(stdout, stderr, &output, &configPath))
+	root.AddCommand(newConfigCmd(stdout, stderr, &output, &configPath))
 	root.AddCommand(newVersionCmd(build, stdout, &output))
 
 	return root

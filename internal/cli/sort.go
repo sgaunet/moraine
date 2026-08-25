@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/sgaunet/moraine/internal/app"
 	"github.com/sgaunet/moraine/internal/config"
@@ -173,7 +174,32 @@ Exit codes:
 		},
 	}
 
-	f := cmd.Flags()
+	registerSortFlags(cmd.Flags(), &opts)
+
+	registerVerbosityFlags(cmd, &opts.Quiet, &opts.Verbose)
+	registerSharedCompletions(cmd)
+	_ = cmd.RegisterFlagCompletionFunc("jobs", completeFixed())
+	_ = cmd.RegisterFlagCompletionFunc("themes", completeThemeList)
+	_ = cmd.RegisterFlagCompletionFunc("path-template", completeFixed(pathTemplates...))
+	_ = cmd.RegisterFlagCompletionFunc("fallback-theme", completeFixed(append(defaultThemes(), config.DefaultFallback)...))
+	_ = cmd.RegisterFlagCompletionFunc("gap", completeFixed(gapDurations...))
+	_ = cmd.RegisterFlagCompletionFunc("mountain-altitude", completeFixed(altitudeMetres...))
+	_ = cmd.RegisterFlagCompletionFunc("min-confidence", completeFixed(confidenceThresholds...))
+	// Scalar flags with no knowable value set: suppress the filename fallback.
+	_ = cmd.RegisterFlagCompletionFunc("sample", completeFixed())
+	_ = cmd.RegisterFlagCompletionFunc("model", completeFixed(config.DefaultModel))
+	_ = cmd.RegisterFlagCompletionFunc("ollama-url", completeFixed(config.DefaultOllamaURL))
+
+	return cmd
+}
+
+// registerSortFlags declares every value flag of `sort` on f, bound to opts.
+//
+// It is a function rather than a block inside newSortCmd so that the flag defaults
+// have exactly one definition and one reachable copy: registering a flag writes its
+// default straight into the bound field, which is how `moraine config` learns what a
+// setting falls back to without restating any of it (see configkeys.go).
+func registerSortFlags(f *pflag.FlagSet, opts *config.Options) {
 	f.StringVarP(&opts.Dest, "dest", "d", "", "destination root (default <source>/_sorted; excluded from the scan)")
 	f.DurationVarP(&opts.Gap, "gap", "g", config.DefaultGap, "max time gap within an event (e.g. 30m, 2h)")
 	f.IntVarP(&opts.Sample, "sample", "s", config.DefaultSample, "photos sampled per large group (0 disables the model)")
@@ -203,20 +229,4 @@ Exit codes:
 	f.BoolVar(&opts.Vote, "vote", false,
 		"classify each sampled photo of a large group separately and take the majority "+
 			"(one model call per sampled photo; the vote margin becomes the confidence)")
-
-	registerVerbosityFlags(cmd, &opts.Quiet, &opts.Verbose)
-	registerSharedCompletions(cmd)
-	_ = cmd.RegisterFlagCompletionFunc("jobs", completeFixed())
-	_ = cmd.RegisterFlagCompletionFunc("themes", completeThemeList)
-	_ = cmd.RegisterFlagCompletionFunc("path-template", completeFixed(pathTemplates...))
-	_ = cmd.RegisterFlagCompletionFunc("fallback-theme", completeFixed(append(defaultThemes(), config.DefaultFallback)...))
-	_ = cmd.RegisterFlagCompletionFunc("gap", completeFixed(gapDurations...))
-	_ = cmd.RegisterFlagCompletionFunc("mountain-altitude", completeFixed(altitudeMetres...))
-	_ = cmd.RegisterFlagCompletionFunc("min-confidence", completeFixed(confidenceThresholds...))
-	// Scalar flags with no knowable value set: suppress the filename fallback.
-	_ = cmd.RegisterFlagCompletionFunc("sample", completeFixed())
-	_ = cmd.RegisterFlagCompletionFunc("model", completeFixed(config.DefaultModel))
-	_ = cmd.RegisterFlagCompletionFunc("ollama-url", completeFixed(config.DefaultOllamaURL))
-
-	return cmd
 }

@@ -420,3 +420,80 @@ func (v versionReport) emit(format config.OutputFormat, stdout io.Writer) error 
 	}
 	return nil
 }
+
+// configReport is the stdout document of `config show`, and of `config set`, `unset`
+// and `edit` once they have decided what the file should hold. Every command in the
+// config tree reports the same shape, so a script never has to know which one ran.
+type configReport struct {
+	Command  string          `json:"command"`
+	Path     string          `json:"path"`
+	Exists   bool            `json:"exists"`
+	Written  bool            `json:"written"`
+	DryRun   bool            `json:"dry_run"`
+	Settings []configSetting `json:"settings"`
+}
+
+// configSetting is one effective setting: the value a run would use, where it came
+// from, and what it would fall back to.
+type configSetting struct {
+	Key     string `json:"key"`
+	Value   string `json:"value"`
+	Origin  string `json:"origin"`
+	Default string `json:"default"`
+}
+
+// The two places a setting's value can come from. There is deliberately no third:
+// environment variables select which file is read, never what a setting is
+// (Constitution Principle V).
+const (
+	originDefault = "default"
+	originFile    = "file"
+)
+
+// emit writes the configuration document. The text rendering is one record per line
+// in the same key=value shape as every other summary this tool prints, with the
+// origin as a second pair so that "where did this come from?" is answered without a
+// second command; --origins=false drops it for a bare listing.
+func (c configReport) emit(format config.OutputFormat, origins bool, stdout io.Writer) error {
+	if format == config.OutputJSON {
+		if err := json.NewEncoder(stdout).Encode(c); err != nil {
+			return fmt.Errorf("encoding json output: %w", err)
+		}
+		return nil
+	}
+	var b []byte
+	for _, s := range c.Settings {
+		if origins {
+			b = fmt.Appendf(b, "%s=%s origin=%s\n", s.Key, s.Value, s.Origin)
+			continue
+		}
+		b = fmt.Appendf(b, "%s=%s\n", s.Key, s.Value)
+	}
+	if _, err := stdout.Write(b); err != nil {
+		return fmt.Errorf("writing configuration: %w", err)
+	}
+	return nil
+}
+
+// pathReport is the stdout document of `config path`: which file is in effect, and
+// why that one. It answers "why did my setting not apply?" without guesswork.
+type pathReport struct {
+	Command string `json:"command"`
+	Path    string `json:"path"`
+	Exists  bool   `json:"exists"`
+	Source  string `json:"source"`
+}
+
+// emit writes the path document.
+func (p pathReport) emit(format config.OutputFormat, stdout io.Writer) error {
+	if format == config.OutputJSON {
+		if err := json.NewEncoder(stdout).Encode(p); err != nil {
+			return fmt.Errorf("encoding json output: %w", err)
+		}
+		return nil
+	}
+	if _, err := fmt.Fprintf(stdout, "path=%s exists=%t source=%s\n", p.Path, p.Exists, p.Source); err != nil {
+		return fmt.Errorf("writing configuration path: %w", err)
+	}
+	return nil
+}

@@ -41,7 +41,10 @@ the logs.
   copy and matching it byte for byte. Never on a skip, an error, an interrupt or a
   dry run — and a moved run is deliberately **not** undoable.
 - **Configuration file**: `~/.config/moraine.yaml` (or `--config`) supplies flag
-  defaults; a flag always wins, and mode flags are never configurable.
+  defaults; a flag always wins, and mode flags are never configurable. Manage it with
+  `moraine config` — `show` reports every effective setting and where it came from,
+  `set`/`unset` write it with the same flags the real commands take, and `edit` fills
+  in a form prefilled with the values already in effect. Your comments survive.
 - **Companion (sidecar) files** (on by default): files other software leaves next to a
   photo are copied into the same folder — both appended sidecars (`IMG.jpg.xmp`,
   `IMG.jpg.json`) and same-base-name sidecars (`IMG.xmp`). They follow the photo's final
@@ -156,6 +159,11 @@ and `moraine <command> --help` for command-specific options and examples.
 # Take back what the last sort copied — dry-run by default, then commit
 ./moraine undo ~/Photos/sorted                              # preview (removes nothing)
 ./moraine undo --delete ~/Photos/sorted                     # actually remove
+
+# See, and change, the configuration file
+moraine config show                       # every effective setting + where it came from
+moraine config set sort --gap 8h --jobs 4 # write settings
+moraine config edit sort                  # or fill in a form
 
 # Help and version
 ./moraine --help
@@ -475,11 +483,110 @@ Keys are named after the flags, in `snake_case` (`--path-template` → `path_tem
 setting that silently does nothing, and the message names the file and the line.
 
 **Mode flags are deliberately not configurable** — `--dry-run`, `--delete`,
-`--incremental`, `--quiet` and `--verbose`. The first three choose what a single
-invocation *does*: a file that made `clean` delete by default would defeat the whole
-point of `clean` being dry-run until you ask, and one that made every `sort` a no-op
-would be worse. `--quiet`/`--verbose` are shorthands over `log_level`, so set
+`--incremental`, `--move`, `--quiet` and `--verbose`. The first four choose what a
+single invocation *does*: a file that made `clean` delete by default would defeat the
+whole point of `clean` being dry-run until you ask, and one that made every `sort` a
+no-op would be worse. `--quiet`/`--verbose` are shorthands over `log_level`, so set
 `log_level` directly.
+
+### Managing the file: `moraine config`
+
+You never have to open the file yourself.
+
+```bash
+moraine config path                        # which file is in effect, and why
+moraine config show                        # every effective setting + its origin
+moraine config show sort --output=json     # just sort's, machine-readable
+
+moraine config set sort --gap 8h --jobs 4  # write settings
+moraine config set shared --log-level warn # write them at the top level
+moraine config unset sort gap              # take one back
+moraine config edit sort                   # or answer a form instead
+```
+
+**`config show` answers "what will this run actually use?"** — the file's value where
+the file sets one, the built-in default everywhere else, each tagged with which it was:
+
+```console
+$ moraine config show sort
+sort.log_level=info origin=default
+sort.gap=8h origin=file
+sort.themes=mountain,special-events,cook,family origin=default
+...
+```
+
+`--origins=false` drops the second pair for a bare `key=value` listing; `--output=json`
+gives each setting a `value`, `origin` and `default`.
+
+**`config set <section>` takes the flags of the command that section configures** —
+`--gap` here is sort's `--gap`, with the same parsing, the same error messages and the
+same shorthands. Only the flags you actually type are written; a flag you leave out is
+left alone. Writing a value that happens to equal the default still writes it, because
+typing it means you want it pinned.
+
+**`config unset <section> <setting>...`** removes settings so they fall back to the
+default. A setting can be named either way round (`path-template` or `path_template`),
+and removing the last setting of a section removes the section with it.
+
+**`config edit [section]`** ([huh][huh]) asks in two steps: **pick the settings you
+want to change** from a list, then answer a question for each.
+
+```
+Which settings do you want to change?
+space picks, enter moves on — picking nothing changes nothing
+
+ > • sort.gap                6h
+   • sort.themes             mountain,special-events,cook,family
+   • sort.jobs               4  ←
+
+x toggle • ↑ up • ↓ down • / filter • enter submit
+```
+
+Picking first is what keeps the form short: it is as long as your change and never
+longer, and **enter saves from the very first screen**. The list shows each setting's
+current value and marks with `←` the ones your file already sets, so it doubles as a
+way to find the setting you were after; `/` filters it.
+
+Each question is then **prefilled with the value in effect** — the file's, or the
+default where the file is silent — ready to edit (`ctrl+u` clears it if you would
+rather type a fresh one). Only answers you actually change are written, so a setting
+you look at and accept is not written, and filling in a form does not pin today's
+defaults into your file and freeze you at them. Answering a question with the default
+*removes* the setting, which is what `config unset` does.
+
+The form draws on **stderr**, so `moraine config edit --output=json > settings.json`
+works while the questions are still on screen. `--accessible` swaps the full-screen
+form for plain numbered prompts — for a screen reader, and the only mode that works
+when stdin is not a terminal.
+
+[huh]: https://github.com/charmbracelet/huh
+
+**Your comments are kept.** Writing goes through the file's YAML structure rather than
+re-serialising it, so comments, key order and any key moraine did not touch all
+survive:
+
+```console
+$ moraine config set sort --gap 12h && cat ~/.config/moraine.yaml
+# my library
+log_level: warn # keep it quiet
+sort:
+  # a day out is one event
+  gap: 12h
+  themes: [mountain, cook]
+```
+
+Two caveats, both one-off: blank-line spacing and indentation width are **normalised
+the first time moraine writes the file** (to two spaces), and stable from then on — a
+second write of the same settings does not touch the file at all. And the result is
+checked before it is saved: a value no run could use is refused with the file left
+exactly as it was.
+
+`--dry-run` on `set`, `unset` and `edit` reports what would result and writes nothing.
+
+> On `config set`, `--output` names the **setting** to write, since it is one of the
+> settings the commands accept — it does not change how `config set` reports its own
+> result. Using it says so on stderr. For a machine-readable view, use
+> `moraine config show --output=json`.
 
 ### `sort` flags
 
@@ -540,6 +647,22 @@ successful `--delete` pass that run's manifest is kept as an audit trail and mar
 `.undone`, so running `undo` again steps back to the run before it. A run that copied
 nothing (an unchanged re-run) has nothing to give back and says so.
 
+### `config` flags
+
+| Command | Argument | Flags | Role |
+|---------|----------|-------|------|
+| `config show` | `[section]` | `--origins` (bool, `true`), `--output`, `--config` | print the effective settings and where each came from |
+| `config path` | — | `--output`, `--config` | print which configuration file is in effect, and why |
+| `config set <section>` | — | every flag of the command that section configures, plus `--dry-run` (`-n`) | write settings |
+| `config unset <section>` | `<setting>...` | `--dry-run` (`-n`), `--output`, `--config` | remove settings |
+| `config edit` | `[section]` | `--accessible`, `--dry-run` (`-n`), `--output`, `--config` | answer a prefilled form |
+
+`<section>` is `shared`, `sort`, `clean` or `undo`; `show` and `edit` cover every
+section when it is omitted. **Exit codes**: `0` success, `1` runtime failure (nowhere
+to write, an unwritable file, no terminal for the form, an aborted form), `2` usage
+error (unknown section or setting, an invalid value, or a value no run could use — in
+which case nothing is written).
+
 `moraine version` reports the build's identity — version, commit, build time, Go
 version and platform — and honours `--output=json`; `moraine --version` prints just
 its first line. **Exit codes**: `0` success, `1` runtime error (including an
@@ -568,6 +691,8 @@ Beyond command and flag names, completion knows the values:
 | `--fallback-theme` | the built-in themes plus `other` |
 | `--gap` | common durations (`30m`, `1h`, `6h`, `12h`, `24h`) |
 | `--mountain-altitude` | common altitudes (`800`, `1000`, `1500`, `2000`, `2500`) |
+| `config` section arguments | `shared` \| `sort` \| `clean` \| `undo` |
+| `config unset` setting names | the settings that section has, minus the ones already typed |
 
 The candidate lists are derived from the same constants the parser uses
 (`config.DefaultThemes`, `photo.Extensions`), so they cannot drift from what
@@ -609,10 +734,13 @@ Business logic in pure Go packages, decoupled from transport (Constitution, Prin
 ```
 main.go                 inject build version → cli.Execute → exit codes
 internal/
-  cli/      Cobra command tree (sort/clean/undo/version), flag binding, exit-code mapping
+  cli/      Cobra command tree (sort/clean/undo/config/version), flag binding, exit-code mapping
   config/   centralized typed configuration + validation (slugs, file/directory source)
   app/      testable orchestration: scan → exif → cluster → classify → organize + logs
-  configfile/ optional YAML config file (flag > file > default)
+  configfile/ optional YAML config file (flag > file > default); reads it, and edits it
+            as a YAML node tree so `moraine config` keeps the comments in it
+  configform/ the interactive form behind `moraine config edit` (huh); knows no flags,
+            so it stays testable without a terminal
   photo/    domain types (Photo, Cluster, Format)
   scan/     recursive walk, format filter, EXCLUDES destRoot
   exifmeta/ EXIF extraction (date, GPS, altitude); date falls back to the file name, then mtime

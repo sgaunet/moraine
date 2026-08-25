@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/sgaunet/moraine/internal/app"
 	"github.com/sgaunet/moraine/internal/config"
@@ -100,13 +101,18 @@ Exit codes:
 		},
 	}
 
-	f := cmd.Flags()
-	f.BoolVar(&opts.Delete, "delete", false, "actually remove the recorded copies (default: dry-run, removes nothing)")
-	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
+	registerUndoFlags(cmd.Flags(), &opts)
 
 	registerVerbosityFlags(cmd, &opts.Quiet, &opts.Verbose)
 	cmd.ValidArgsFunction = completeDestRoot
 	_ = cmd.RegisterFlagCompletionFunc("log-level", completeFixed(logLevels...))
 
 	return cmd
+}
+
+// registerUndoFlags declares every value flag of `undo` on f, bound to opts. See
+// registerSortFlags for why the registration is reachable on its own.
+func registerUndoFlags(f *pflag.FlagSet, opts *config.UndoOptions) {
+	f.BoolVar(&opts.Delete, "delete", false, "actually remove the recorded copies (default: dry-run, removes nothing)")
+	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
 }

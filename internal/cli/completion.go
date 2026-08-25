@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -137,4 +138,40 @@ func registerVerbosityFlags(cmd *cobra.Command, quiet, verbose *bool) {
 	f.BoolVarP(quiet, "quiet", "q", false, "log errors only (same as --log-level error)")
 	f.BoolVarP(verbose, "verbose", "v", false, "log every file (same as --log-level debug)")
 	cmd.MarkFlagsMutuallyExclusive("quiet", "verbose", "log-level")
+}
+
+// completeUnset completes `config unset <section> <setting>...`: the sections first,
+// then the settings that section has, minus the ones already named on the line.
+func completeUnset(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		return sections, cobra.ShellCompDirectiveNoFileComp
+	}
+	named := args[1:]
+	out := make([]string, 0, len(settingsFor(args[0])))
+	for _, s := range settingsFor(args[0]) {
+		if slices.Contains(named, s.YAML) || !strings.HasPrefix(s.YAML, toComplete) {
+			continue
+		}
+		out = append(out, s.YAML)
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// registerSettingCompletions wires the completions a `config set <section>` command
+// shares with the real command it configures, so the same suggestions appear in both.
+func registerSettingCompletions(cmd *cobra.Command, section string) {
+	_ = cmd.MarkFlagDirname("dest")
+	if section != sectionSort {
+		return
+	}
+	_ = cmd.RegisterFlagCompletionFunc("themes", completeThemeList)
+	_ = cmd.RegisterFlagCompletionFunc("path-template", completeFixed(pathTemplates...))
+	_ = cmd.RegisterFlagCompletionFunc("fallback-theme", completeFixed(append(defaultThemes(), config.DefaultFallback)...))
+	_ = cmd.RegisterFlagCompletionFunc("gap", completeFixed(gapDurations...))
+	_ = cmd.RegisterFlagCompletionFunc("mountain-altitude", completeFixed(altitudeMetres...))
+	_ = cmd.RegisterFlagCompletionFunc("min-confidence", completeFixed(confidenceThresholds...))
+	_ = cmd.RegisterFlagCompletionFunc("sample", completeFixed())
+	_ = cmd.RegisterFlagCompletionFunc("jobs", completeFixed())
+	_ = cmd.RegisterFlagCompletionFunc("model", completeFixed(config.DefaultModel))
+	_ = cmd.RegisterFlagCompletionFunc("ollama-url", completeFixed(config.DefaultOllamaURL))
 }
