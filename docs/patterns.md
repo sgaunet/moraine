@@ -69,6 +69,12 @@ letting the caller derive them from the shortfall, so a cancellation cannot infl
 - Key names are snake_case in both renderings, matching the slog attribute keys the
   tool has always emitted (`companions_copied`, `would_delete`). `.golangci.yml`
   configures `tagliatelle` accordingly.
+- The `config` tree reports the same document from every command that changes
+  something (`configReport`), so a script never has to know whether `set`, `unset` or
+  `edit` ran. Its text rendering is one record per line — `sort.gap=8h origin=file` —
+  which keeps the house `key=value` shape while answering the question a settings
+  listing exists to answer. `config edit` draws its form on **stderr** for the same
+  reason every log line goes there: stdout is the document.
 
 ## Testing Patterns
 
@@ -81,7 +87,50 @@ letting the caller derive them from the shortfall, so a cancellation cannot infl
 - **Style**: table-driven cases with `t.Run` subtests.
 - **Fakes**: real `net/http/httptest` servers for Ollama; the `Classifier`
   interface allows a `fakeClassifier` in tests — no mock framework.
+- **Terminals**: `configform` is driven through huh's accessible mode over a
+  `strings.Reader`, which is line-based and therefore deterministic; `internal/cli`
+  reaches `config edit` through `ExecuteWithStdin`, the one `export_test.go` seam that
+  supplies a standard input. No test needs a PTY.
+- **Isolation**: `internal/cli`'s `TestMain` sets `MORAINE_CONFIG=""`, which turns the
+  configuration file *off* for the package. Every `config` test therefore has to
+  `t.Setenv` a path of its own — which is also the guarantee that no test can reach the
+  real `~/.config/moraine.yaml` of whoever runs the suite. A test that forgets fails
+  loudly rather than writing somewhere it should not.
+- **Drift guards**: where two lists must agree, a test says so rather than a comment.
+  `configkeys_test.go` walks the flags `sort`, `clean` and `undo` register and fails if
+  one is neither settable through `moraine config` nor named in the `unconfigurable`
+  list, so a new flag cannot quietly become unconfigurable.
 - **Race**: CI runs `-race -count=1` (`CGO_ENABLED=1`).
+
+## Editing a File a Human Wrote
+
+`internal/configfile/document.go` is the pattern for changing a file that somebody
+else maintains — here `moraine.yaml`, edited by `moraine config`.
+
+- **Edit the parsed tree, not the decoded struct.** Decoding into `configfile.File`
+  and marshalling back would silently delete every comment in the file, along with any
+  key this version does not know about. Editing the `yaml.Node` tree keeps both, and
+  keeps the keys in the order the user wrote them.
+- **Rewrite a value node in place; never replace it.** In yaml.v3 the comment on
+  `gap: 6h  # a long day` attaches to the *value* node, so swapping that node for a
+  fresh one is exactly how such a comment is lost. `Set` assigns `Kind`/`Tag`/`Value`/
+  `Style`/`Content` onto the node already there.
+- **Set every tag explicitly.** A theme named `true`, or a template spelled `null`,
+  would otherwise be written unquoted and read back as something else entirely.
+- **Say what is *not* preserved.** yaml.v3 does not record blank lines between plain
+  keys and re-emits with its own layout, so the first write normalises spacing and
+  indentation. The property to test is that it then *settles*: a second write of the
+  same settings is byte-identical, so a file moraine has written once is never
+  rewritten for looking at it.
+- **A no-op must not touch the file.** `Document.Changed` compares the rendered
+  document against the bytes read, so a command that changes nothing neither creates a
+  file nor bumps a modification time.
+- **Publish atomically, as any other write.** Temp file in the same directory, fsync,
+  rename, fsync the parent, mode `0600` — `organize`'s discipline, with `os.Rename`
+  rather than `os.Link` because replacing the file *is* the intent here.
+- **Test it byte for byte.** `TestSetPreservesCommentsAndEveryUntouchedKey` asserts the
+  whole file against a literal. It is the test that fails against a
+  decode-and-re-marshal implementation, which is the entire point of the design.
 
 ## Safety Invariants (copy by default; `--move` verifies before removing)
 

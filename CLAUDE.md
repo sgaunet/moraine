@@ -83,7 +83,7 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
 ## Architecture
 
 - **Three layers**: `main.go` (injects the build version, nothing else) →
-  `internal/cli` (Cobra transport: `sort`/`clean`/`undo`/`version` + built-in
+  `internal/cli` (Cobra transport: `sort`/`clean`/`undo`/`config`/`version` + built-in
   `completion`, flags, exit codes, and `output.go` — the stdout contract) →
   `internal/app` (single testable orchestrator; `Organize`/`Clean`/`Undo` take an
   `onResult func(Result)` so the transport, not the domain, renders output) →
@@ -117,11 +117,32 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   `~/.config/moraine.yaml` (**not** `os.UserConfigDir()` — on macOS that is
   `~/Library/Application Support`). Precedence is **flag > file > default**, decided
   by `cmd.Flags().Changed`, never by comparing against a default. Strict decoding, so
-  an unknown key is exit 2. `--dry-run`/`--delete`/`--incremental`/`--quiet`/
+  an unknown key is exit 2. `--dry-run`/`--delete`/`--incremental`/`--move`/`--quiet`/
   `--verbose` and the positional source are deliberately **not** configurable (mode
-  flags stay per-invocation; Principle V). `MORAINE_CONFIG=` (empty) disables the file
+  flags stay per-invocation; Principle V) — the list lives in `cli.unconfigurable`, and
+  `configkeys_test.go` fails if a new flag joins neither it nor the settable table. `MORAINE_CONFIG=` (empty) disables the file
   — which is how `internal/cli`'s `TestMain` keeps the suite off a developer's real
   config.
+- **`moraine config`** (`internal/cli/config*.go`, `internal/configfile/document.go`,
+  `internal/configform`): `show [section]` (effective settings + `origin=default|file`,
+  `--origins=false` for bare `key=value`), `path`, `set <section>` (one subcommand per
+  section, each registering the *real* pflag types of the command it configures, so
+  parsing/errors/shorthands match; only `Flags().Changed` ones are written),
+  `unset <section> <setting>...`, `edit [section]` (**huh**, two steps: a MultiSelect
+  picker — *which* settings — then one prefilled question each, writing **only what
+  changed**; accepting a default must not pin it, and answering the default unsets). Writes edit the **`yaml.Node` tree**, so comments, key order and unknown keys
+  survive; indentation/blank lines normalise once then settle, and `Document.Changed`
+  makes a no-op touch nothing. Every candidate is re-decoded strictly and run through
+  `config.New`/`NewClean`/`NewUndo` before saving — a bad value is exit 2 with the file
+  untouched. **No defaults or help text are restated**: they come from
+  `registerSortFlags`/`registerCleanFlags`/`registerUndoFlags` (pflag writes a default
+  into the bound field at registration) and the flag's own `Usage`; origins reuse
+  `applySortFile`'s `used` list. `configkeys_test.go` fails if a `sort`/`clean`/`undo`
+  flag is neither settable nor in `unconfigurable`. The form draws on **stderr**;
+  without a real terminal (asked of `charmbracelet/x/term`, not `os.ModeCharDevice` —
+  `/dev/null` has that) it is exit 1 naming `--accessible` and `config set`.
+  **Wart, deliberate**: on `config set`, `--output` names the *setting* (it shadows the
+  root's persistent flag) and says so on stderr — neither reading may be silent.
 - **`--move` (opt-in, verified)**: the only thing that removes a source, and only
   after `verifyCopy` re-reads the published file and matches it against the SHA-256
   `copyFile` accumulated while writing (an `io.MultiWriter` — hashing the stream keeps
@@ -233,8 +254,8 @@ task check-before-commit   # lint + test + snapshot + vuln
 
 - **Entrypoint**: `main.go` → **Transport**: `internal/cli` → **Orchestration**:
   `internal/app`
-- **Domain**: `internal/{config,scan,exifmeta,cluster,classify,organize,clean,undo,
-  manifest,photo,contenthash,rawpreview,diskspace}`; fake-exec test helper in `internal/exiftooltest`
+- **Domain**: `internal/{config,configfile,configform,scan,exifmeta,cluster,classify,
+  organize,clean,undo,manifest,photo,contenthash,rawpreview,diskspace}`; fake-exec test helper in `internal/exiftooltest`
 - **Tests**: co-located `internal/**/*_test.go`
 - **Specs**: `specs/00N-*/` · **Constitution**: `.specify/memory/constitution.md`
 - **Config**: `.golangci.yml`, `Taskfile.yml`, `mise.toml`, `.goreleaser.yml`
@@ -247,7 +268,64 @@ task check-before-commit   # lint + test + snapshot + vuln
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #34** — documentation drift, three items (issue-driven, no
+Latest change: **`moraine config`** — a command tree that views and updates the
+configuration file (feature request, no `specs/` dir). The YAML file existed but was
+read-only from the tool's side, so the only ways to answer "what is my effective gap?"
+or change a setting were an editor plus `--help`, and strict decoding made a typo an
+exit-2 failure of the *next real run*.
+
+`show` / `path` / `set <section>` / `unset <section> <setting>...` / `edit [section]`;
+see the architecture bullet above for the mechanism. Four points worth carrying:
+
+1. **Writes edit the `yaml.Node` tree**, not a decode-and-re-marshal. A `moraine.yaml`
+   is hand-maintained and the comments in it are the part moraine did not write. An
+   existing value is rewritten *in place*, because a trailing comment attaches to the
+   **value** node — replacing that node is exactly how it would be lost. **The plan
+   overclaimed "byte-for-byte"**: yaml.v3 does not record blank lines between plain
+   keys and re-emits with its own layout, so the first write normalises spacing and
+   indent (2 spaces) and every write after that is stable. Documented as such.
+2. **Nothing is restated.** Defaults come from the flag registrations
+   (`registerSortFlags` &c., factored out of `newSortCmd` — pflag writes a default into
+   the bound field merely by registering it), help text from the flag's `Usage`, and
+   origins from the existing `applySortFile` overlayer, since `pflag.Changed` answers
+   `false` for a name a flag set does not have. `configkeys_test.go` is the guard.
+3. **A candidate is validated through the run's own path** before saving — strict
+   decode, then `applyXxxFile` onto default options, then `config.New`/`NewClean`/
+   `NewUndo`. The form validates each answer the same way (`checkValues`), so a bad
+   value is refused at the question rather than after a whole session.
+4. **`config edit` writes only what changed.** A form prefilled with defaults that
+   wrote every answer would pin today's defaults and freeze that user at them.
+   Answering the default *removes* the key.
+5. **It asks *which* settings first.** huh enables "submit" only on a form's last
+   field, so the first version — one form over every setting — could only be saved by
+   pressing enter through 24 questions. **The author reported exactly that.** Now a
+   MultiSelect picker (one field ⇒ submittable at once, `/` filters, shows each
+   value and marks the ones the file sets) precedes a second form as long as the
+   change. Prefilled inputs *append*, so the help says `ctrl+u` clears.
+
+**New dependency**: `github.com/charmbracelet/huh` v1.0.0 (MIT, requested by the
+author) plus `github.com/charmbracelet/x/term` (MIT, already in huh's graph, used for
+the terminal check). ~30 modules, all pure Go; binary 15 MB → 18 MB; `govulncheck`
+clean; windows/linux/darwin × amd64/arm64 all build under `CGO_ENABLED=0`.
+
+**Three bugs found and fixed while building it**, all worth remembering:
+
+- huh's accessible prompts build a **fresh `bufio.Scanner` per field over one reader**,
+  and a scanner reads ahead 64 KiB, so the first question swallows every later answer.
+  `configform.lineReader` limits each read to one byte.
+- **`lineReader` must also hold no buffer of its own** — the two-step `config edit`
+  runs two forms over one stdin, and anything the first read ahead was lost when it
+  returned. Both halves have a test that fails without them.
+- `os.ModeCharDevice` is **true for `/dev/null`**, so the first terminal check let
+  `config edit < /dev/null` open a form nobody could answer; it now asks
+  `charmbracelet/x/term`.
+
+**The TUI is verified through a PTY harness**, not by hand: `pty.fork` plus replies to
+the OSC 11 / DSR 6n capability queries bubbletea sends at startup. Without those
+replies it blocks before drawing and the screen looks empty — which is what made the
+first attempts at checking it look like a failure.
+
+Previous change: **issue #34** — documentation drift, three items (issue-driven, no
 `specs/` dir). Documentation only: the one Go file touched is a doc comment.
 
 1. **`docs/patterns.md`**: the Error Handling section showed
@@ -276,7 +354,7 @@ Latest change: **issue #34** — documentation drift, three items (issue-driven,
 **No code change and no contract change**: `verifyCopy`'s re-read is the correct design
 and stays — nothing is deleted on the strength of "the write returned no error".
 
-Previous change: **issue #35** — three low-priority items from a codebase audit
+Before that: **issue #35** — three low-priority items from a codebase audit
 (issue-driven, no `specs/` dir), in three commits.
 
 1. **`fix(exec)`**: `rawpreview` and `heicpreview` handed the photo path to the

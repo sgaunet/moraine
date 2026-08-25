@@ -44,7 +44,7 @@ func TestExecuteBareShowsHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("bare exit = %d, want 0", code)
 	}
-	for _, w := range []string{"sort", "clean", "undo", "version"} {
+	for _, w := range []string{"sort", "clean", "undo", "config", "version"} {
 		if !strings.Contains(out.String(), w) {
 			t.Errorf("bare help missing subcommand %q; got: %s", w, out.String())
 		}

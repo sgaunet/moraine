@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/sgaunet/moraine/internal/app"
 	"github.com/sgaunet/moraine/internal/config"
@@ -94,13 +95,18 @@ Exit codes:
 		},
 	}
 
-	f := cmd.Flags()
-	f.StringVarP(&opts.Dest, "dest", "d", "", "destination root holding the copies (default <source>/_sorted; never deleted from)")
-	f.BoolVar(&opts.Delete, "delete", false, "actually delete matched originals (default: dry-run, deletes nothing)")
-	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
+	registerCleanFlags(cmd.Flags(), &opts)
 
 	registerVerbosityFlags(cmd, &opts.Quiet, &opts.Verbose)
 	registerSharedCompletions(cmd)
 
 	return cmd
+}
+
+// registerCleanFlags declares every value flag of `clean` on f, bound to opts. See
+// registerSortFlags for why the registration is reachable on its own.
+func registerCleanFlags(f *pflag.FlagSet, opts *config.CleanOptions) {
+	f.StringVarP(&opts.Dest, "dest", "d", "", "destination root holding the copies (default <source>/_sorted; never deleted from)")
+	f.BoolVar(&opts.Delete, "delete", false, "actually delete matched originals (default: dry-run, deletes nothing)")
+	f.StringVarP(&opts.LogLevel, "log-level", "l", config.DefaultLogLevel, "log verbosity: debug|info|warn|error")
 }
