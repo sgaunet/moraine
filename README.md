@@ -417,7 +417,9 @@ run did not finish what was asked.
 ### Configuration file
 
 Settings you always pass can live in a YAML file instead. A **command-line flag always
-beats the file, and the file always beats the built-in default.**
+beats the file, and the file always beats the built-in default.** There is no
+environment tier: `$MORAINE_CONFIG` and `$XDG_CONFIG_HOME` pick *which file* is read,
+and no `MORAINE_GAP`-style variable sets an individual setting.
 
 moraine reads the first of these that exists:
 
