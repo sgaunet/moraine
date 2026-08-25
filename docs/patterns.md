@@ -6,14 +6,29 @@ Wrap errors with context using `%w` so the full chain is preserved; expose
 typed sentinels for conditions callers must test programmatically.
 
 ```go
-// internal/organize/path.go
+// internal/organize/path.go — a sentinel, for a condition a caller must branch on
 return "", fmt.Errorf("%w: %s", ErrInvalidDestSubdir, rel)
 
-// main.go — sentinel drives exit code, not string matching
-if errors.Is(err, config.ErrHelp) {
-    os.Exit(0)
-}
+// internal/cli/exit.go — a wrapper type drives the exit code, not string matching
+return asRuntime(cfg.Validate())          // a post-parse failure → exit 1
+...
+case errors.As(err, new(*runtimeError)):  // classify(err)
+	return exitRuntime                    // anything left unwrapped is a usage error (2)
 ```
+
+Exactly three *exported* sentinels exist in the whole tree —
+`rawpreview.ErrNoPreview`, `organize.ErrInvalidDestSubdir` and
+`exifmeta.ErrEXIFPanic` — and each has a caller in another package that must branch
+on it. (`classify.errTransient` is the one unexported sentinel, and it never leaves
+its retry loop.) Everything else is wrapped context, so add a fourth only when some
+caller genuinely has to tell that condition apart.
+
+`main.go` decides nothing: it is `os.Exit(cli.Execute(...))`. `internal/cli/exit.go`
+owns the 0/1/2 mapping, and which side of it an error lands on is decided by whether
+the CLI wrapped it — post-parse failures (filesystem validation, the exiftool
+preflight, the run itself) go through `asRuntime`; flag-parse errors, unknown
+commands and the config constructors' cross-field checks are left alone and classify
+as usage errors.
 
 A panic in a third-party parser is caught where the untrusted bytes are handed
 over — `exifmeta.decodeEXIF`, `classify.shrink` — and never at a goroutine
