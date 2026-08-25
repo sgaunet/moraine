@@ -10,6 +10,8 @@
 package scan
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -36,12 +38,20 @@ type Found struct {
 // An unreadable subdirectory, or a file that vanishes mid-walk, is logged and
 // skipped rather than aborting the walk: a single bad entry must not cost the
 // whole run (FR-012). Only an unreadable source root is fatal.
-func Scan(source, destRoot string, logger *slog.Logger) ([]Found, error) {
+//
+// Cancelling ctx stops the walk at the next entry and returns the context error on
+// its own, with no partial list: on a large library this stage is often the longest
+// of the whole run, and it is precisely when a user notices they pointed at the
+// wrong folder (Constitution Principle VIII).
+func Scan(ctx context.Context, source, destRoot string, logger *slog.Logger) ([]Found, error) {
 	cleanSource := filepath.Clean(source)
 	isDest := destMatcher(destRoot)
 	var found []Found
 
 	err := filepath.WalkDir(source, func(path string, d fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr // stop promptly on cancellation
+		}
 		if err != nil {
 			if filepath.Clean(path) == cleanSource {
 				return err // the source root itself is unreadable: fatal
@@ -80,6 +90,11 @@ func Scan(source, destRoot string, logger *slog.Logger) ([]Found, error) {
 		return nil
 	})
 	if err != nil {
+		// A cancellation is not a walk failure: return it bare, so callers match it
+		// with errors.Is and report the interrupt rather than an unreadable source.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("walking source directory %q: %w", source, err)
 	}
 	return found, nil
