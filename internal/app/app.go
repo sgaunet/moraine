@@ -444,7 +444,15 @@ func singleCluster(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, err
 	}
 	p, err := exifmeta.Read(cfg.Source, format)
 	if err != nil {
-		return nil, fmt.Errorf("reading %q: %w", cfg.Source, err)
+		// A crash in the EXIF parser still leaves a usable photo, dated by the file
+		// name or its mtime, and a single-photo run has exactly one file to organize:
+		// dropping it here would turn a third-party parser bug into "moraine did
+		// nothing". Say what happened and carry on with what the fallback tiers gave.
+		if !errors.Is(err, exifmeta.ErrEXIFPanic) {
+			return nil, fmt.Errorf("reading %q: %w", cfg.Source, err)
+		}
+		logger.Warn("exif parser crashed on this file: dating it by name or mtime instead",
+			"file", cfg.Source, "err", err)
 	}
 	logger.Info("single photo", "file", cfg.Source, "date", p.Taken.Format("2006-01-02"))
 	return []photo.Cluster{{Photos: []photo.Photo{p}, Start: p.Taken, End: p.Taken}}, nil
@@ -475,7 +483,14 @@ func readMeta(found []scan.Found, jobs int, logger *slog.Logger) []photo.Photo {
 			defer wg.Done()
 			defer func() { <-sem }()
 			p, err := exifmeta.Read(f.Path, f.Format)
-			if err != nil {
+			switch {
+			case errors.Is(err, exifmeta.ErrEXIFPanic):
+				// The parser crashed, not the file: the photo is still there and still
+				// datable from its name or its mtime, so keep it and name it in the logs.
+				// Counting it as unreadable would drop a file the run was asked to copy.
+				logger.Warn("exif parser crashed on this file: dating it by name or mtime instead",
+					"file", f.Path, "err", err)
+			case err != nil:
 				logger.Warn("file skipped", "file", f.Path, "err", err)
 				return
 			}

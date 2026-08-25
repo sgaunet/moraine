@@ -16,7 +16,9 @@
 package exifmeta
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,10 +27,22 @@ import (
 	"github.com/sgaunet/moraine/internal/photo"
 )
 
+// ErrEXIFPanic reports that the EXIF parser crashed on a file's metadata rather
+// than returning an error for it. Read recovers the panic and returns a usable
+// photo alongside this sentinel, so a caller can keep the file — a crash inside a
+// metadata parser is no reason to leave a photo unorganised — and still say out
+// loud which file provoked it.
+var ErrEXIFPanic = errors.New("exif parser panicked")
+
 // Read builds a photo.Photo for the file at path. A read error on the file
 // itself is fatal; a missing/unparsable EXIF block is not (the date falls back to
 // the file name, then to mtime; GPS/altitude stay nil). The returned Taken is
 // always UTC-naive wall clock (see the package doc).
+//
+// A parser panic sits between the two. The photo comes back usable, dated by the
+// same fallback tiers as any other unreadable EXIF block, but the error wraps
+// ErrEXIFPanic: a caller that wants to keep the file can, and one that treats every
+// error as fatal is no worse off than before. Both callers in internal/app keep it.
 func Read(path string, format photo.Format) (photo.Photo, error) {
 	p := photo.Photo{
 		Path:   path,
@@ -47,25 +61,65 @@ func Read(path string, format photo.Format) (photo.Photo, error) {
 		mtime = info.ModTime()
 	}
 
-	ex, err := imagemeta.Decode(f)
+	d, err := decodeEXIF(f)
 	if err != nil {
 		// No / unreadable EXIF — fall back to the file name, then the mtime.
 		p.Taken = wallClockUTC(fallbackDate(p.Name, mtime))
+		if errors.Is(err, ErrEXIFPanic) {
+			return p, fmt.Errorf("reading exif of %q: %w", path, err)
+		}
 		return p, nil
 	}
 
-	taken := ex.SelectedDate()
+	taken := d.taken
 	if taken.IsZero() {
 		taken = fallbackDate(p.Name, mtime)
 	}
 	p.Taken = wallClockUTC(taken)
-
-	if lat, lng := ex.GPS.Latitude(), ex.GPS.Longitude(); lat != 0 || lng != 0 {
-		p.GPS = &photo.LatLng{Lat: lat, Lng: lng}
-		alt := float64(ex.GPS.Altitude())
-		p.Altitude = &alt
-	}
+	p.GPS, p.Altitude = d.gps, d.altitude
 	return p, nil
+}
+
+// exifData is the part of a file's EXIF block that Read has any use for.
+type exifData struct {
+	taken    time.Time
+	gps      *photo.LatLng
+	altitude *float64
+}
+
+// decodeEXIF parses r's EXIF block, turning a panic in the third-party parser into
+// an ErrEXIFPanic error instead of letting it take the process down.
+//
+// The boundary belongs here, at the point where moraine hands untrusted bytes to
+// code it does not own, because the caller cannot supply one: Read runs on a worker
+// pool (internal/app.readMeta), and a panic on a goroutine is not the spawner's to
+// recover. imagemeta guards its own JPEG scanner (meta/jpeg/scanner.go), but only
+// that one: the TIFF/DNG/NEF/CR2/ARW, HEIC/HEIF and PNG branches of imagemeta.Decode
+// — and the imagetype sniff that runs ahead of all of them — read whatever came off
+// the camera card unprotected. Without this, one malformed file ends a sort that may
+// have been copying for many minutes.
+//
+// Reading the decoded value belongs inside the boundary too: those accessors walk
+// parser state, so a malformed file can crash there just as easily as in Decode.
+func decodeEXIF(r io.ReadSeeker) (d exifData, err error) {
+	defer func() {
+		if state := recover(); state != nil {
+			d, err = exifData{}, fmt.Errorf("%w: %v", ErrEXIFPanic, state)
+		}
+	}()
+
+	ex, err := imagemeta.Decode(r)
+	if err != nil {
+		return exifData{}, fmt.Errorf("decoding exif: %w", err)
+	}
+
+	d.taken = ex.SelectedDate()
+	if lat, lng := ex.GPS.Latitude(), ex.GPS.Longitude(); lat != 0 || lng != 0 {
+		d.gps = &photo.LatLng{Lat: lat, Lng: lng}
+		alt := float64(ex.GPS.Altitude())
+		d.altitude = &alt
+	}
+	return d, nil
 }
 
 // fallbackDate returns the date to use when EXIF carries none: the date encoded in

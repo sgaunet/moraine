@@ -712,7 +712,15 @@ func (o *OllamaClassifier) sampleImages(ctx context.Context, c photo.Cluster) []
 			o.log().Warn("skipping photo for model input", "file", p.Path, "err", err)
 			continue
 		}
-		sent := shrink(data)
+		sent, ok := shrink(data)
+		if !ok {
+			// An image bomb or one that crashed a decoder. It is still scanned, dated,
+			// clustered and copied like any other photo; only its vote on the theme is
+			// lost, which the rest of the sample covers for.
+			o.log().Warn("skipping photo for model input: image cannot be decoded safely",
+				"file", p.Path, "bytes", len(data))
+			continue
+		}
 		o.log().Debug("model input", "file", p.Path,
 			"bytes_before", len(data), "bytes_sent", len(sent))
 		images = append(images, base64.StdEncoding.EncodeToString(sent))

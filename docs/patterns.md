@@ -15,6 +15,13 @@ if errors.Is(err, config.ErrHelp) {
 }
 ```
 
+A panic in a third-party parser is caught where the untrusted bytes are handed
+over — `exifmeta.decodeEXIF`, `classify.shrink` — and never at a goroutine
+boundary. Those two are the only `recover()`s in the tree, and the distinction is
+deliberate: a recover next to the parse turns a hostile file into one skipped
+step, while a catch-all around `readMeta` or `labelAhead` would turn moraine's own
+bugs into quietly degraded runs.
+
 Per-photo failures are **non-fatal**: they are recorded in `Result.Err` and
 tallied into the run `Summary.Errors` (see `internal/app/app.go`) rather than
 aborting the whole run. A *cancelled* run is the exception: `organize.Place` records

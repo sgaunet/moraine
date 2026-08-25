@@ -51,7 +51,10 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   extension is listed like any other photo.
 - **`internal/exifmeta`** — reads EXIF, turns `Found` into `[]photo.Photo`. The
   capture date resolves in three tiers: EXIF, then a date encoded in the file name
-  (`filename.go`), then the file mtime.
+  (`filename.go`), then the file mtime. `decodeEXIF` is a panic boundary: the
+  third-party parser runs on a worker goroutine over bytes off a camera card, so a
+  crash there is converted into `ErrEXIFPanic` and the photo falls through the same
+  tiers as one with no EXIF at all, rather than taking the process with it.
 - **`internal/photo`** — core domain types (`Photo`, `Cluster`).
 - **`internal/cluster`** — groups photos into events by capture-time `-gap`.
 - **`internal/classify`** — assigns a theme to each cluster via the
@@ -162,7 +165,12 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
 6. **Cheap, stable model calls** — `internal/classify` keeps what reaches Ollama
    small and what comes back meaningful. Images are downscaled to 1024 px on the
    long side before base64 (a vision model tiles its input, so the dimensions —
-   not the file size — set the inference cost); a RAW or HEIC shot alongside its
+   not the file size — set the inference cost). `shrink` reads the header with
+   `image.DecodeConfig` first and refuses anything declaring more than 128 MP: the
+   decoders size their buffers from what the file says about itself, so a few
+   hundred KB claiming gigapixel dimensions is an out-of-memory kill dressed as a
+   photo. A decoder that panics is refused the same way. Either costs that photo its
+   place in the sample and nothing else — it is still copied. A RAW or HEIC shot alongside its
    own JPEG is recognised by directory + base name and sent once; the cluster's
    capture span, highest altitude and location ride along as text. The model is
    loaded once per run by an empty-message `/api/chat` warm-up, issued outside any
