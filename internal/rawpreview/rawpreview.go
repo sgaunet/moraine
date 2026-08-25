@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -69,12 +70,17 @@ func NewExtractor(path string, timeout time.Duration) *Extractor {
 // budget. Base64 inflates the transfer by a third, which is a good trade against two
 // Perl interpreter startups.
 func (e *Extractor) Extract(ctx context.Context, rawPath string) ([]byte, error) {
-	args := make([]string, 0, len(previewTags)+3)
+	args := make([]string, 0, len(previewTags)+4)
 	args = append(args, "-json", "-b")
 	for _, tag := range previewTags {
 		args = append(args, "-"+tag)
 	}
-	args = append(args, rawPath)
+	// "--" is exiftool's documented end-of-options marker and operand() makes the
+	// path unmistakable on its own; both are here because exiftool carries
+	// write-capable options (-@, -o, -tagsFromFile) and this is the only argv the
+	// tool ever hands it. rawPath itself, not the operand form, stays in the
+	// messages below, so logs name the file the caller asked about.
+	args = append(args, "--", operand(rawPath))
 
 	out, err := e.run(ctx, args...)
 	if err != nil {
@@ -144,6 +150,22 @@ func (e *Extractor) log() *slog.Logger {
 // possibly a non-zero exit), which is reported as empty bytes — not an error; only a
 // failure to start the process or a timeout is a hard error. Because Extract now
 // makes a single call, e.Timeout bounds the whole extraction rather than one tag.
+// operand returns path in the one form no option parser can mistake for a flag.
+// An explicit "./" is the only neutraliser every external tool this repo shells
+// out to accepts: exiftool and heif-convert honour a "--" terminator, sips rejects
+// "--" outright and ffmpeg misreads the "-i" that would follow it. filepath.Join
+// cannot be used — it cleans the "./" straight back off.
+//
+// Today every path reaching here is absolute, because config.Config.Validate runs
+// filepath.Abs on the source root. This does not depend on that: the guard belongs
+// next to the exec call, not several packages away.
+func operand(path string) string {
+	if strings.HasPrefix(path, "-") {
+		return "." + string(filepath.Separator) + path
+	}
+	return path
+}
+
 func (e *Extractor) run(ctx context.Context, args ...string) ([]byte, error) {
 	cctx := ctx
 	if e.Timeout > 0 {

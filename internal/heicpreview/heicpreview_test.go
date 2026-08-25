@@ -191,3 +191,96 @@ func slicesContains(hay []string, needle string) bool {
 	}
 	return false
 }
+
+// argvScript builds a converter stub that records the argument vector it was
+// handed, one argument per line, into log. It then produces its JPEG the way the
+// real tool would: on stdout, or in the file it was told to write — the argument
+// after --out for sips, the last one for heif-convert.
+func argvScript(log string, stdout bool) string {
+	record := `printf '%s\n' "$@" > ` + log + "\n"
+	if stdout {
+		return record + `printf 'JPEGBYTES'`
+	}
+	return record + `
+out=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--out" ]; then out="$2"; fi
+  last="$1"
+  shift
+done
+[ -n "$out" ] || out="$last"
+printf 'JPEGBYTES' > "$out"
+`
+}
+
+func recordedArgs(t *testing.T, log string) []string {
+	t.Helper()
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("reading the stub's argument log: %v", err)
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+}
+
+// TestExtractPassesTheSourceAsALiteralOperand is the regression test for issue
+// #35's argv item: the HEIC path used to be a bare positional argument, so a name
+// starting with '-' would have been read as an option. Every converter is covered
+// because each takes the source in a different position, and a "--" terminator is
+// not an option here — sips rejects it and ffmpeg misreads the "-i" that follows.
+func TestExtractPassesTheSourceAsALiteralOperand(t *testing.T) {
+	const dashed = "-o.heic"
+	tests := []struct {
+		tool   string
+		stdout bool
+	}{
+		{"sips", false},
+		{"heif-convert", false},
+		{"ffmpeg", true},
+		{"magick", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tool, func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "argv")
+			stubTool(t, tt.tool, argvScript(log, tt.stdout))
+
+			conv := heicpreview.Detect(5 * time.Second)
+			if conv == nil {
+				t.Fatalf("Detect returned nil; want the stubbed %s", tt.tool)
+			}
+			if _, err := conv.Extract(context.Background(), dashed); err != nil {
+				t.Fatalf("Extract: %v", err)
+			}
+
+			args := recordedArgs(t, log)
+			if !slicesContains(args, "./"+dashed) {
+				t.Errorf("%s argv %q carries no neutralised source; want %q", tt.tool, args, "./"+dashed)
+			}
+			if slicesContains(args, dashed) {
+				t.Errorf("%s argv %q hands over the bare %q, which it would parse as an option",
+					tt.tool, args, dashed)
+			}
+		})
+	}
+}
+
+// TestExtractLeavesAnOrdinaryPathAlone pins the other half of the rule: only a
+// name that could be read as an option is rewritten, so the paths a real run
+// produces reach the converter — and its error messages — unchanged.
+func TestExtractLeavesAnOrdinaryPathAlone(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "argv")
+	stubTool(t, "ffmpeg", argvScript(log, true))
+
+	conv := heicpreview.Detect(5 * time.Second)
+	if conv == nil {
+		t.Fatal("Detect returned nil; want the stubbed ffmpeg")
+	}
+	src := heicFile(t)
+	if _, err := conv.Extract(context.Background(), src); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	args := recordedArgs(t, log)
+	if !slicesContains(args, src) {
+		t.Errorf("ffmpeg argv %q does not carry %q verbatim", args, src)
+	}
+}

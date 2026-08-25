@@ -138,7 +138,9 @@ func (c *Converter) convert(ctx context.Context, src string) ([]byte, error) {
 		defer func() { _ = os.Remove(dst) }()
 	}
 
-	cmd := exec.CommandContext(ctx, c.path, c.tool.args(src, dst)...)
+	// Normalised here rather than in each tool's args func, so a converter added
+	// later inherits the guard. dst is always an os.CreateTemp path and needs none.
+	cmd := exec.CommandContext(ctx, c.path, c.tool.args(operand(src), dst)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -160,6 +162,22 @@ func (c *Converter) convert(ctx context.Context, src string) ([]byte, error) {
 		return nil, fmt.Errorf("reading what %s wrote for %q: %w", c.tool.name, filepath.Base(src), err)
 	}
 	return data, nil
+}
+
+// operand returns src in the one form no option parser can mistake for a flag. An
+// explicit "./" is the only neutraliser all four converters accept: heif-convert
+// honours a "--" terminator, sips answers `unknown function "--"`, and ffmpeg reads
+// the "-i" after it as an output name. filepath.Join cannot be used — it cleans the
+// "./" straight back off.
+//
+// Today every path reaching here is absolute, because config.Config.Validate runs
+// filepath.Abs on the source root. This does not depend on that: the guard belongs
+// next to the exec call, not several packages away.
+func operand(src string) string {
+	if strings.HasPrefix(src, "-") {
+		return "." + string(filepath.Separator) + src
+	}
+	return src
 }
 
 func (c *Converter) log() *slog.Logger {

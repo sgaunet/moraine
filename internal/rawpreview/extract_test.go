@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -184,5 +185,44 @@ func TestExtractWritesNoTempFiles(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("temp dir not empty after Extract: %v (previews must stay in memory)", entries)
+	}
+}
+
+// TestExtractPassesThePathAsALiteralOperand is the regression test for issue #35's
+// argv item: the photo path used to be the bare trailing argument, so a name
+// starting with '-' would have been read as an option rather than a file. exiftool
+// carries write-capable options (-@, -o, -tagsFromFile), which is why this argv in
+// particular is worth pinning.
+//
+// Both guards are asserted: the "--" end-of-options marker exiftool documents, and
+// the "./" prefix that makes the operand unmistakable even to a parser without one.
+func TestExtractPassesThePathAsALiteralOperand(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string // how the path must reach exiftool
+	}{
+		{"a dash-leading name is neutralised", "-tagsFromFile.dng", "./-tagsFromFile.dng"},
+		{"an ordinary relative path is untouched", "shot.dng", "shot.dng"},
+		{"an absolute path is untouched", "/photos/shot.dng", "/photos/shot.dng"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ex, dir := stubExtractorIn(t, exiftooltest.Options{Previews: map[string][]byte{
+				"JpgFromRaw": []byte("FULL"),
+			}})
+			if _, err := ex.Extract(context.Background(), tt.path); err != nil {
+				t.Fatalf("Extract: %v", err)
+			}
+
+			got, err := exiftooltest.Args(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"-json", "-b", "-JpgFromRaw", "-PreviewImage", "-ThumbnailImage", "--", tt.want}
+			if !slices.Equal(got, want) {
+				t.Errorf("exiftool argv =\n  %q\nwant\n  %q", got, want)
+			}
+		})
 	}
 }
