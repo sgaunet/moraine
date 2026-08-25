@@ -12,6 +12,7 @@ var (
 	NormaliseTheme = normaliseTheme
 	Shrink         = shrink
 	MaxImageDim    = maxImageDim
+	MaxImagePixels = maxImagePixels
 	TallyVotes     = tallyVotes
 )
 

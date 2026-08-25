@@ -219,8 +219,8 @@ task check-before-commit   # lint + test + snapshot + vuln
 - Black-box tests (`package foo_test`); `export_test.go` is the only escape hatch to
   internals. Table-driven with `t.Run`. Fakes, not mock frameworks: `httptest` for
   Ollama, `internal/exiftooltest` (writes a fake `exiftool`) for the exec path.
-- Wrap errors with `fmt.Errorf("context: %w", err)`. Only two sentinels exist:
-  `rawpreview.ErrNoPreview`, `organize.ErrInvalidDestSubdir`.
+- Wrap errors with `fmt.Errorf("context: %w", err)`. Only three sentinels exist:
+  `rawpreview.ErrNoPreview`, `organize.ErrInvalidDestSubdir`, `exifmeta.ErrEXIFPanic`.
 - Per-photo failures are non-fatal — recorded in the run `Summary`, never abort.
 - Destructive actions require an explicit flag (`clean` is dry-run until `--delete`).
 
@@ -242,7 +242,41 @@ task check-before-commit   # lint + test + snapshot + vuln
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #9** — parallelising the serial tail, in four commits
+Latest change: **issue #32** — panic and allocation boundaries around untrusted
+image data (issue-driven, no `specs/` dir). Two stages parsed camera-card bytes on
+goroutines nobody could recover from, and the tree contained **no `recover()` at
+all**, contradicting the repo's own "per-photo failures are non-fatal" contract.
+
+1. **`fix(exifmeta)`**: `decodeEXIF` is a panic boundary around `imagemeta.Decode`
+   *and* around every read of what it returns (those accessors walk parser state
+   too). A recovered panic becomes `ErrEXIFPanic`, and `Read` hands back a photo
+   dated by the same filename → mtime tiers it already used for an unparsable EXIF
+   block: **the photo is kept, not dropped**. `readMeta` and `singleCluster` warn
+   with the path and carry on, so `Summary.unreadable` is untouched. Losing a file
+   because a third-party parser crashed on its metadata would be the worse bug.
+2. **`fix(classify)`**: `shrink` reads the header with `image.DecodeConfig` before
+   decoding and refuses anything over `maxImagePixels` (128 MP — above every
+   consumer sensor, ~512 MB as RGBA), and recovers a decoder panic. It now returns
+   `(out []byte, ok bool)`; `sampleImages` skips `!ok` with a warn, reusing the path
+   it already had for unreadable photos. The photo is still scanned, dated and
+   copied — only its vote on the theme is lost. Reading dimensions from the header
+   also lets an already-small image skip decoding entirely.
+
+**Measured**, on a 408 KB PNG declaring 20000×7000, with a stub Ollama: peak RSS
+**812 MB on `main` against 21 MB** after, with identical output trees. The same
+trick at 65535×65535 — which `image.DecodeConfig` reports without complaint, as the
+tests assert — is ~17 GB, i.e. the OOM.
+
+**The issue's premise was partly stale.** imagemeta v1.0.0 *does* recover, in
+`meta/jpeg/scanner.go`, and every JPEG path funnels through it — so JPEG EXIF was
+already guarded upstream. Unprotected: the TIFF/DNG/NEF/CR2/ARW, HEIC/HEIF and PNG
+branches of `imagemeta.Decode`, plus the `imagetype` sniff ahead of all of them. The
+exposure is real but is a **RAW/HEIC** risk, not the WhatsApp-JPEG one the issue
+leads with. A 2m30s fuzz (12.7M execs) over `imagemeta.Decode` found no crashing
+input, so the EXIF boundary is defence in depth rather than a fix for a reproducible
+crash; the classify one is not — the bomb is trivially reproducible, above.
+
+Previous change: **issue #9** — parallelising the serial tail, in four commits
 (issue-driven, no `specs/` dir). Everything after clustering used to run on one
 goroutine.
 
@@ -275,7 +309,7 @@ serially makes it unnecessary *and* preserves the determinism a retry would dest
 Three of its five "concurrency hazards" dissolve the same way. **#9 stays open** only
 if the author wants the untouched items (the dedup re-read, base64 double-buffering).
 
-Previous change: **issue #19** — free-space preflight (split out of #13). New
+Before that: **issue #19** — free-space preflight (split out of #13). New
 `internal/diskspace`: `Available(path)` over `syscall.Statfs`, build-tagged `unix` with
 a `!unix` stub so the tree still builds on Windows, and — the part that matters — it
 answers for the **nearest existing ancestor**, since the destination root is created on
@@ -290,7 +324,7 @@ debug line, not a warning per run. No new flag, no stdout-contract change. Verif
 a 1 MB DMG: the warning fired before any write, the run continued and copied 2 of 3
 with the third an ENOSPC per-photo error.
 
-Before that: **issue #12** — the feature backlog, four independently shippable
+And before that: **issue #12** — the feature backlog, four independently shippable
 items in four commits (issue-driven, no `specs/` dir). **#12 stays open**: its title
 also mentions video, which the body never turned into a checklist item and which
 `scan` still deliberately ignores.
