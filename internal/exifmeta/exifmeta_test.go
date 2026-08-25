@@ -2,6 +2,7 @@ package exifmeta_test
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -170,5 +171,56 @@ func TestReadPrefersEXIFDateOverFilenameDate(t *testing.T) {
 	}
 	if got, want := p.Taken.Format(wallClock), "2023-08-15 12:00:00"; got != want {
 		t.Errorf("Taken = %s; want the EXIF date %s, not the date in the file name", got, want)
+	}
+}
+
+// panicReader crashes the instant anything reads it, standing in for a
+// third-party parser crashing on a malformed file. Driving the boundary this way
+// is deterministic: a real crashing blob would pin the test to one version of
+// imagemeta still having one particular bug.
+type panicReader struct{}
+
+func (panicReader) Read([]byte) (int, error) {
+	panic("parser blew up on a malformed file")
+}
+
+func (panicReader) Seek(int64, int) (int64, error) { return 0, nil }
+
+func TestDecodeEXIFTurnsAParserPanicIntoAnError(t *testing.T) {
+	// Nothing here is caught by imagemeta's own recover: that one guards its JPEG
+	// scanner, while the format sniff runs first and unprotected. Without the
+	// boundary in decodeEXIF this call takes the test binary down with it.
+	_, err := exifmeta.DecodeEXIF(panicReader{})
+	if err == nil {
+		t.Fatal("DecodeEXIF returned no error after the parser panicked")
+	}
+	if !errors.Is(err, exifmeta.ErrEXIFPanic) {
+		t.Errorf("err = %v; want it to wrap ErrEXIFPanic", err)
+	}
+}
+
+func TestReadKeepsAMalformedFileAndDatesItFromMtime(t *testing.T) {
+	// A file whose metadata cannot be parsed is still a photo the user asked to
+	// organize. It falls back through the same tiers as a photo with no EXIF at
+	// all, and Read reports no error for it.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "garbage.dng")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{0xDE, 0xAD, 0xBE, 0xEF}, 512), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Date(2019, 11, 12, 13, 14, 15, 0, time.UTC)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := exifmeta.Read(path, photo.RAW)
+	if err != nil {
+		t.Fatalf("Read on a malformed file: %v", err)
+	}
+	if got, want := p.Taken.Format(wallClock), mtimeWallClock(t, path); got != want {
+		t.Errorf("Taken = %s; want the mtime %s", got, want)
+	}
+	if p.GPS != nil {
+		t.Errorf("GPS = %+v; want nil for a file with no readable EXIF", p.GPS)
 	}
 }
