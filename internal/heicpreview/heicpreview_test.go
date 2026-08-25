@@ -41,8 +41,12 @@ func heicFile(t *testing.T) string {
 
 func TestDetectFindsNothingOnAnEmptyPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	if got := heicpreview.Detect(time.Second); got != nil {
-		t.Fatalf("Detect found %q on an empty PATH; want nil", got.Name())
+	got, ok := heicpreview.Detect(time.Second)
+	if ok {
+		t.Fatalf("Detect found %q on an empty PATH; want none", got.Name())
+	}
+	if got != nil {
+		t.Errorf("Detect returned %v alongside ok=false; want nil", got)
 	}
 }
 
@@ -50,8 +54,8 @@ func TestExtractFromAStdoutConverter(t *testing.T) {
 	// ffmpeg and magick write the JPEG to stdout; nothing touches the disk.
 	stubTool(t, "ffmpeg", `printf 'JPEGBYTES'`)
 
-	conv := heicpreview.Detect(5 * time.Second)
-	if conv == nil {
+	conv, ok := heicpreview.Detect(5 * time.Second)
+	if !ok {
 		t.Fatal("Detect returned nil; want the stubbed ffmpeg")
 	}
 	if conv.Name() != "ffmpeg" {
@@ -77,8 +81,8 @@ done
 printf 'FROMFILE' > "$out"
 `)
 
-	conv := heicpreview.Detect(5 * time.Second)
-	if conv == nil {
+	conv, ok := heicpreview.Detect(5 * time.Second)
+	if !ok {
 		t.Fatal("Detect returned nil; want the stubbed sips")
 	}
 	got, err := conv.Extract(context.Background(), heicFile(t))
@@ -101,8 +105,8 @@ done
 printf '%s' "$out" > "$out"
 `)
 
-	conv := heicpreview.Detect(5 * time.Second)
-	if conv == nil {
+	conv, ok := heicpreview.Detect(5 * time.Second)
+	if !ok {
 		t.Fatal("Detect returned nil")
 	}
 	got, err := conv.Extract(context.Background(), heicFile(t))
@@ -117,8 +121,8 @@ printf '%s' "$out" > "$out"
 func TestExtractReportsAFailingConverter(t *testing.T) {
 	stubTool(t, "ffmpeg", `echo "unsupported codec" >&2; exit 1`)
 
-	conv := heicpreview.Detect(5 * time.Second)
-	if conv == nil {
+	conv, ok := heicpreview.Detect(5 * time.Second)
+	if !ok {
 		t.Fatal("Detect returned nil")
 	}
 	_, err := conv.Extract(context.Background(), heicFile(t))
@@ -134,8 +138,8 @@ func TestExtractReportsAnEmptyResult(t *testing.T) {
 	// Exit 0 with no output is a failure too: there is no image to send.
 	stubTool(t, "ffmpeg", `exit 0`)
 
-	conv := heicpreview.Detect(5 * time.Second)
-	if conv == nil {
+	conv, ok := heicpreview.Detect(5 * time.Second)
+	if !ok {
 		t.Fatal("Detect returned nil")
 	}
 	if _, err := conv.Extract(context.Background(), heicFile(t)); err == nil {
@@ -146,8 +150,8 @@ func TestExtractReportsAnEmptyResult(t *testing.T) {
 func TestExtractHonoursTheTimeout(t *testing.T) {
 	stubTool(t, "ffmpeg", `sleep 5`)
 
-	conv := heicpreview.Detect(50 * time.Millisecond)
-	if conv == nil {
+	conv, ok := heicpreview.Detect(50 * time.Millisecond)
+	if !ok {
 		t.Fatal("Detect returned nil")
 	}
 	start := time.Now()
@@ -243,8 +247,8 @@ func TestExtractPassesTheSourceAsALiteralOperand(t *testing.T) {
 			log := filepath.Join(t.TempDir(), "argv")
 			stubTool(t, tt.tool, argvScript(log, tt.stdout))
 
-			conv := heicpreview.Detect(5 * time.Second)
-			if conv == nil {
+			conv, ok := heicpreview.Detect(5 * time.Second)
+			if !ok {
 				t.Fatalf("Detect returned nil; want the stubbed %s", tt.tool)
 			}
 			if _, err := conv.Extract(context.Background(), dashed); err != nil {
@@ -270,8 +274,8 @@ func TestExtractLeavesAnOrdinaryPathAlone(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "argv")
 	stubTool(t, "ffmpeg", argvScript(log, true))
 
-	conv := heicpreview.Detect(5 * time.Second)
-	if conv == nil {
+	conv, ok := heicpreview.Detect(5 * time.Second)
+	if !ok {
 		t.Fatal("Detect returned nil; want the stubbed ffmpeg")
 	}
 	src := heicFile(t)

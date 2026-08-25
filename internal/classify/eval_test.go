@@ -197,7 +197,7 @@ func evalClassifier(t *testing.T, set evalSettings, themes []string) *classify.O
 	oc.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	oc.Vote = set.vote
 	oc.RawPreview = rawpreview.NewExtractor("exiftool", evalRawTimeout)
-	if conv := heicpreview.Detect(evalHEICTimeout); conv != nil {
+	if conv, ok := heicpreview.Detect(evalHEICTimeout); ok {
 		oc.HEICPreview = conv
 	}
 	if status := oc.Preflight(context.Background()); status != classify.StatusReady {
