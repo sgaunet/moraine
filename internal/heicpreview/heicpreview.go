@@ -10,8 +10,8 @@
 //
 // The converter is entirely optional, unlike exiftool: when none is installed,
 // HEIC photos are still scanned, dated, organised and copied — they simply reach
-// no model, exactly as before this package existed. That is why Detect returns
-// nil rather than an error.
+// no model, exactly as before this package existed. That is why Detect reports
+// "none installed" rather than returning an error.
 //
 // Output is captured from stdout where the tool supports it and via a temporary
 // file where it does not; the temporary file is removed before Extract returns.
@@ -76,19 +76,23 @@ type Converter struct {
 	Logger  *slog.Logger
 }
 
-// Detect returns a Converter for the first supported program found on PATH, or
-// nil when none is installed. Callers must check for nil before assigning the
-// result to an interface, or they will store a non-nil interface holding a nil
-// pointer.
-func Detect(timeout time.Duration) *Converter {
+// Detect returns a Converter for the first supported program found on PATH, and
+// reports whether one was found at all.
+//
+// The second result is the point: a *Converter assigned into an interface — which
+// is exactly what the one production caller does with classify.PreviewExtractor —
+// yields a non-nil interface holding a nil pointer, and reads as "configured"
+// everywhere downstream. Answering with a bool puts that check in the signature
+// instead of in a doc comment nobody is obliged to read.
+func Detect(timeout time.Duration) (*Converter, bool) {
 	for _, t := range tools {
 		path, err := exec.LookPath(t.name)
 		if err != nil {
 			continue
 		}
-		return &Converter{tool: t, path: path, Timeout: timeout, Logger: slog.Default()}
+		return &Converter{tool: t, path: path, Timeout: timeout, Logger: slog.Default()}, true
 	}
-	return nil
+	return nil, false
 }
 
 // Name reports which converter was found, for the run logs.
@@ -138,7 +142,9 @@ func (c *Converter) convert(ctx context.Context, src string) ([]byte, error) {
 		defer func() { _ = os.Remove(dst) }()
 	}
 
-	cmd := exec.CommandContext(ctx, c.path, c.tool.args(src, dst)...)
+	// Normalised here rather than in each tool's args func, so a converter added
+	// later inherits the guard. dst is always an os.CreateTemp path and needs none.
+	cmd := exec.CommandContext(ctx, c.path, c.tool.args(operand(src), dst)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -160,6 +166,22 @@ func (c *Converter) convert(ctx context.Context, src string) ([]byte, error) {
 		return nil, fmt.Errorf("reading what %s wrote for %q: %w", c.tool.name, filepath.Base(src), err)
 	}
 	return data, nil
+}
+
+// operand returns src in the one form no option parser can mistake for a flag. An
+// explicit "./" is the only neutraliser all four converters accept: heif-convert
+// honours a "--" terminator, sips answers `unknown function "--"`, and ffmpeg reads
+// the "-i" after it as an output name. filepath.Join cannot be used — it cleans the
+// "./" straight back off.
+//
+// Today every path reaching here is absolute, because config.Config.Validate runs
+// filepath.Abs on the source root. This does not depend on that: the guard belongs
+// next to the exec call, not several packages away.
+func operand(src string) string {
+	if strings.HasPrefix(src, "-") {
+		return "." + string(filepath.Separator) + src
+	}
+	return src
 }
 
 func (c *Converter) log() *slog.Logger {

@@ -232,15 +232,15 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 // required: without one, HEIC photos are still scanned, dated and copied, and only
 // their classification falls back, so this is a log line rather than an error.
 func attachHEICConverter(oc *classify.OllamaClassifier, logger *slog.Logger) {
-	conv := heicpreview.Detect(heicConvertTimeout)
-	if conv == nil {
+	conv, ok := heicpreview.Detect(heicConvertTimeout)
+	if !ok {
 		logger.Info("no HEIC converter found: HEIC groups fall back to the heuristic or fallback theme",
 			"install_one_of", strings.Join(heicpreview.Installable(), ", "))
 		return
 	}
 	conv.Logger = logger
-	// Assigned only when non-nil: a nil *Converter in the interface would read as
-	// "configured" everywhere downstream.
+	// Assigned only when one was found: a nil *Converter in the interface would
+	// read as "configured" everywhere downstream.
 	oc.HEICPreview = conv
 	logger.Info("HEIC converter", "tool", conv.Name())
 }

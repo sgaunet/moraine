@@ -169,9 +169,12 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   `scan`), and two `classify.PreviewExtractor` seams: `rawpreview.Extractor`
   (`RawPreview`, exiftool, **mandatory**) and `heicpreview.Converter` (`HEICPreview`,
   the first of sips/heif-convert/ffmpeg/magick on PATH, **optional** — `Detect`
-  returns nil when none is installed, and a nil must never be assigned into the
-  interface). A HEIC embeds no JPEG preview for exiftool to copy out (its derived
-  images are HEVC), which is why the two are separate. A failed Ollama preflight
+  returns `(*Converter, bool)`, and only a `true` may be assigned into the
+  interface: a nil `*Converter` in there reads as "configured"). Both seams hand
+  the external program its path through an `operand()` that neutralises a leading
+  `-` with an explicit `./`; exiftool additionally gets its documented `--`. A HEIC
+  embeds no JPEG preview for exiftool to copy out (its derived images are HEVC),
+  which is why the two are separate. A failed Ollama preflight
   degrades to the altitude heuristic, then the fallback theme.
 - **Model-call economy** (`internal/classify`): images are downscaled to 1024 px on
   the long side (`downscale.go`, `golang.org/x/image/draw`) before base64; a RAW or
@@ -244,7 +247,45 @@ task check-before-commit   # lint + test + snapshot + vuln
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #31** — the constitution's configuration-precedence rule
+Latest change: **issue #35** — three low-priority items from a codebase audit
+(issue-driven, no `specs/` dir), in three commits.
+
+1. **`fix(exec)`**: `rawpreview` and `heicpreview` handed the photo path to the
+   external program as a bare positional argument, so a name starting with `-`
+   would have been parsed as an option — and exiftool carries write-capable ones
+   (`-@`, `-o`, `-tagsFromFile`). Unreachable today, since `config.Config.Validate`
+   runs `filepath.Abs` on the source root, but the guard now sits next to the
+   `exec` call instead of several packages away. **The issue's prescribed fix was
+   wrong for two of the five tools**: probed against the real programs, `sips`
+   answers `unknown function "--"` and `ffmpeg` reads the `-i` after a `--` as an
+   output name, while exiftool documents `--` as end-of-options and heif-convert
+   honours it. An explicit `./` prefix is the one form all five accept, so that is
+   the mechanism; exiftool additionally gets its `--`. Regression tests assert the
+   argv itself and fail against the previous construction; `exiftooltest` gains
+   `Args(dir)` beside its invocation counter.
+2. **`refactor`**: `sort.Slice` → `slices.SortFunc` in `cluster` and (not named in
+   the issue, same one-liner) `manifest.Files`, matching `readMeta`'s sibling sort.
+   Both comparators are total orders with no ties, so the documented determinism is
+   unchanged.
+3. **`refactor(heicpreview)`**: `Detect` returns `(*Converter, bool)`. The invariant
+   used to live in a doc comment, while `extractorFor` trusts a plain `== nil` on
+   the interface that a direct assignment would defeat. The nil-receiver guards on
+   `Name`/`Extract` stay — they are why a slip degrades to a per-photo error rather
+   than a panic.
+
+**Deliberately not done**: the issue's section 4 (`manifest.Index.Load` re-parsing
+archive history, `uniqueName`'s O(m²) collision walk) is marked "no action now" by
+the issue itself, and the benchmarks its closing note suggests are not a checklist
+item. **#35 stays open** for those.
+
+**Unrelated pre-existing flake**, found while running the gate and reproduced on
+`main`: under the full `-count=2 -race` suite,
+`cli.TestSortCompanionsDefaultAndOptOut/default_copies_companions` fails at exactly
+5.00s with `exiftool … signal: killed` — `rawpreview.EnsureAvailable`'s `verTimeout`
+against a freshly written shell stub, on a machine where each stub exec already
+costs ~0.5s. Wants its own issue.
+
+Previous change: **issue #31** — the constitution's configuration-precedence rule
 (documentation only, issue-driven, no `specs/` dir). Principle V (**NON-NEGOTIABLE**)
 mandated **flags > environment > config file > defaults**; the tool has implemented
 three tiers ever since the config file landed, and the missing one was not among the
@@ -271,7 +312,7 @@ README now also states that the absent environment tier is deliberate. Note that
 tree only; the commit carries the tracked docs (`README.md`, `docs/workflows.md`, this
 file).
 
-Previous change: **issue #30** — honouring SIGINT during the intake stages
+Prior to that: **issue #30** — honouring SIGINT during the intake stages
 (issue-driven, no `specs/` dir). `sort` wired a `signal.NotifyContext` all the way
 down and then consulted it for the first time in the label loop, so on a large
 library Ctrl-C did nothing until the scan and EXIF read had finished on their own —
@@ -306,7 +347,7 @@ issue itself calls that not worth fixing, bounded as it is by one file's size �
 `clean.indexDestination` hashes the whole destination before its own cancellable
 walk, which is the same gap in a different command and wants its own issue.
 
-Prior to that: **issue #32** — panic and allocation boundaries around untrusted
+Before those: **issue #32** — panic and allocation boundaries around untrusted
 image data (issue-driven, no `specs/` dir). Two stages parsed camera-card bytes on
 goroutines nobody could recover from, and the tree contained **no `recover()` at
 all**, contradicting the repo's own "per-photo failures are non-fatal" contract.

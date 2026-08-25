@@ -17,6 +17,12 @@ import (
 // can assert how many exiftool processes an Extract actually cost.
 const invocationsFile = "invocations"
 
+// argvFile is where the stub records the argument vector it was handed, one
+// argument per line, so a test can assert how a path reached exiftool. It is
+// rewritten by each extraction rather than appended to, so it always holds the
+// most recent call.
+const argvFile = "argv"
+
 // Options configures the stub's behavior.
 type Options struct {
 	// Version is printed in response to `-ver` (default "13.55").
@@ -75,6 +81,7 @@ func Stub(dir string, opts Options) (string, error) {
 		"  if [ \"$a\" = \"-ver\" ]; then " + verCmd + "; exit 0; fi\n" +
 		"done\n" +
 		"printf 'x\\n' >> \"$DIR/" + invocationsFile + "\"\n" +
+		"printf '%s\\n' \"$@\" > \"$DIR/" + argvFile + "\"\n" +
 		sleep +
 		"printf '[{\\n  \"SourceFile\": \"stub\"'\n" +
 		"for a in \"$@\"; do\n" +
@@ -109,6 +116,22 @@ func Invocations(dir string) (int, error) {
 		return 0, fmt.Errorf("reading the stub's invocation log: %w", err)
 	}
 	return strings.Count(string(data), "\n"), nil
+}
+
+// Args reports the argument vector the stub in dir was handed by the most recent
+// extraction, one element per entry. `-ver` probes are not recorded: they exit
+// before the tally, so a caller measuring how Extract builds its command line sees
+// only the extraction. An argument containing a newline would be split across
+// entries; none of the callers passes one.
+func Args(dir string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, argvFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the stub's argument log: %w", err)
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"), nil
 }
 
 // dashed prefixes each tag with the '-' that names it on an exiftool command line.

@@ -155,9 +155,11 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
    HEIF container — so `internal/heicpreview` decodes it with the first of `sips`,
    `heif-convert`, `ffmpeg` or `magick` found on PATH, reading the JPEG from stdout
    where the tool allows and from a scratch file (removed before returning) where
-   it does not. That converter is **optional** and `Detect` returns nil rather than
-   an error when none exists: a HEIC photo is still scanned, dated, organized and
-   copied, and only its group's classification falls back. `classify` keeps the two
+   it does not. That converter is **optional** and `Detect` reports "none installed"
+   with a second, boolean result rather than returning an error: a HEIC photo is
+   still scanned, dated, organized and copied, and only its group's classification
+   falls back. The bool is what keeps a nil `*Converter` out of the
+   `PreviewExtractor` interface, where it would read as "configured". `classify` keeps the two
    seams separate (`RawPreview`, `HEICPreview`) precisely because having one says
    nothing about having the other. Small events send every eligible photo (previews
    included); large events prefer JPEG/PNG and fill the sample with extracted

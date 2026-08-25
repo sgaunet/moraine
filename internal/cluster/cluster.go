@@ -4,7 +4,8 @@
 package cluster
 
 import (
-	"sort"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/sgaunet/moraine/internal/photo"
@@ -24,11 +25,11 @@ func Cluster(photos []photo.Photo, gap time.Duration) []photo.Cluster {
 
 	sorted := make([]photo.Photo, len(photos))
 	copy(sorted, photos)
-	sort.Slice(sorted, func(i, j int) bool {
-		if !sorted[i].Taken.Equal(sorted[j].Taken) {
-			return sorted[i].Taken.Before(sorted[j].Taken)
+	slices.SortFunc(sorted, func(a, b photo.Photo) int {
+		if c := a.Taken.Compare(b.Taken); c != 0 {
+			return c
 		}
-		return sorted[i].Path < sorted[j].Path
+		return strings.Compare(a.Path, b.Path)
 	})
 
 	var clusters []photo.Cluster
