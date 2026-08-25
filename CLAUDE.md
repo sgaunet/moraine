@@ -244,7 +244,34 @@ task check-before-commit   # lint + test + snapshot + vuln
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **issue #30** — honouring SIGINT during the intake stages
+Latest change: **issue #31** — the constitution's configuration-precedence rule
+(documentation only, issue-driven, no `specs/` dir). Principle V (**NON-NEGOTIABLE**)
+mandated **flags > environment > config file > defaults**; the tool has implemented
+three tiers ever since the config file landed, and the missing one was not among the
+Sync Impact Report's deferred items either — so it read as an unmet non-negotiable
+rather than the design choice it is.
+
+Of the issue's two options — implement `MORAINE_GAP`/`MORAINE_JOBS`/… or amend the
+document — **the author chose to amend**: moraine is an interactive, local, single-shot
+CLI, not a containerised service, and a third configuration source costs tests and docs
+on a surface deliberately kept small. Principle V now reads **flags > config file >
+defaults** and says outright that environment variables select *which file* is read,
+never what a setting is, so introducing the tier later requires an amendment.
+Constitution **v2.0.0 → v2.1.0** — MINOR: a normative MUST is removed, but nothing that
+ever complied stops complying, since the tier was never built. The amendment and its
+rationale are recorded in a new `AMENDMENTS` section of the Sync Impact Report.
+Principle IX's "configuration comes from the environment" clause was reworded to cover
+credential material only — a flag is visible in `ps`, which is why that is the one
+exception to the chain.
+
+**No code change, and `--help` was never wrong**: `internal/cli/root.go:48-51` and
+README already documented the real three-layer precedence, as the issue itself grants.
+README now also states that the absent environment tier is deliberate. Note that
+`.specify/` and `specs/` are **gitignored** here, so the amendment lives in the working
+tree only; the commit carries the tracked docs (`README.md`, `docs/workflows.md`, this
+file).
+
+Previous change: **issue #30** — honouring SIGINT during the intake stages
 (issue-driven, no `specs/` dir). `sort` wired a `signal.NotifyContext` all the way
 down and then consulted it for the first time in the label loop, so on a large
 library Ctrl-C did nothing until the scan and EXIF read had finished on their own —
@@ -279,7 +306,7 @@ issue itself calls that not worth fixing, bounded as it is by one file's size �
 `clean.indexDestination` hashes the whole destination before its own cancellable
 walk, which is the same gap in a different command and wants its own issue.
 
-Previous change: **issue #32** — panic and allocation boundaries around untrusted
+Prior to that: **issue #32** — panic and allocation boundaries around untrusted
 image data (issue-driven, no `specs/` dir). Two stages parsed camera-card bytes on
 goroutines nobody could recover from, and the tree contained **no `recover()` at
 all**, contradicting the repo's own "per-photo failures are non-fatal" contract.
@@ -477,7 +504,7 @@ companions distinctly. `config.Config`/`Options` add `Sidecars bool` (default tr
 SHA-256 content identity, so copied companions are already removed (proven by new tests;
 never deletes an un-archived companion).
 
-Project constitution: `.specify/memory/constitution.md` (**v2.0.0**, 9 principles).
+Project constitution: `.specify/memory/constitution.md` (**v2.1.0**, 9 principles).
 Key constraints: single purpose, pipe-composable; reproducible static binary
 (`CGO_ENABLED=0` + `-trimpath`, pinned toolchain, goreleaser v2 with checksums +
 SBOM); thin cobra commands over domain packages that import no CLI package (no

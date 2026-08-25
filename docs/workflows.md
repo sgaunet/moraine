@@ -15,7 +15,7 @@ This repo uses a Spec-Kit driven flow (`specs/<feature>/`):
 
 - All changes go through a PR; automated checks (`.github/workflows/ci.yml`)
   must pass.
-- Honor the project constitution (`.specify/memory/constitution.md`, v2.0.0):
+- Honor the project constitution (`.specify/memory/constitution.md`, v2.1.0):
   single purpose; reproducible static binary (`CGO_ENABLED=0`, `-trimpath`);
   thin commands over domain packages; concrete idiomatic Go; pipe-safe UX
   (data-only stdout, logs on stderr, documented exit codes 0/1/2); interruptible
