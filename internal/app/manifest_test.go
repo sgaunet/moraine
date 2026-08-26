@@ -55,7 +55,7 @@ func TestOrganizeRecordsEveryPlacement(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sidecars = true
-	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil); err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestOrganizeDryRunRecordsNothing(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.DryRun = true
-	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil); err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestOrganizeIncrementalSkipsWithoutAskingTheModel(t *testing.T) {
 	cfg.Model = stubModel
 	cfg.OllamaURL = srv.URL
 
-	first, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	first, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestOrganizeIncrementalSkipsWithoutAskingTheModel(t *testing.T) {
 
 	callsBefore := chats
 	cfg.Incremental = true
-	second, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	second, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("incremental run: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestOrganizeIncrementalKeepsANewPhotoWithItsEvent(t *testing.T) {
 	cfg.Sample = 3
 	cfg.Model = stubModel
 	cfg.OllamaURL = srv.URL
-	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	srv.Close()
@@ -187,7 +187,7 @@ func TestOrganizeIncrementalKeepsANewPhotoWithItsEvent(t *testing.T) {
 	cfg.Incremental = true
 
 	makePNG(t, filepath.Join(src, "b.png")) // same event: same capture time, same gap
-	second, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	second, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("incremental run: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestOrganizeIncrementalRefusesToTrustAChangedSource(t *testing.T) {
 	makePNG(t, photoPath)
 
 	cfg := baseCfg(src, dest, true)
-	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestOrganizeIncrementalRefusesToTrustAChangedSource(t *testing.T) {
 	makeWiderPNG(t, photoPath, modTime.Add(time.Hour))
 
 	cfg.Incremental = true
-	second, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	second, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("incremental run: %v", err)
 	}

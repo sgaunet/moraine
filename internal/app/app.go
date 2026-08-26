@@ -101,14 +101,22 @@ type Event struct {
 // the transport uses to render the run's machine-readable stdout, mirroring
 // clean.Cleaner.Run. A cancelled context stops the run and is returned alongside
 // the partial Summary, so the caller can report what was done before the interrupt.
+//
+// prog, when non-nil, receives the run's progress so the transport can draw it. It
+// is reported from several goroutines and is the one seam here that must be safe for
+// concurrent use; see Progress.
 func Organize(
 	ctx context.Context, cfg config.Config, logger *slog.Logger, onResult func(organize.Result),
+	prog Progress,
 ) (Summary, error) {
 	if onResult == nil {
 		onResult = func(organize.Result) {}
 	}
+	if prog == nil {
+		prog = noProgress{}
+	}
 
-	in, err := buildClusters(ctx, cfg, logger)
+	in, err := buildClusters(ctx, cfg, logger, prog)
 	if err != nil {
 		// An interrupted scan or EXIF stage still reports what it managed to take in.
 		// On any other error `in` is zero, so this is the Summary{} it always was.
@@ -146,8 +154,16 @@ func Organize(
 	// stream — the stdout contract — identical to a serial run. The only visible
 	// difference is in the debug log, where the model lines for the next event now
 	// interleave with the copy lines for this one.
-	labels, stopAhead := labelAhead(ctx, in.clusters, opts, cfg, placed)
+	labels, stopAhead := labelAhead(ctx, in.clusters, opts, cfg, placed, prog)
 	defer stopAhead()
+
+	// Opened after the classifier so the two phases are reported in pipeline order,
+	// and once for the whole run rather than per event: the total is known here (the
+	// clusters are built), and a count that restarted at every event would say
+	// nothing about how much of the library is left.
+	copies := prog.Begin(PhaseCopy, countPhotos(in.clusters))
+	defer copies.Close()
+	org.OnUnitDone = copies.Inc
 
 	// Set before the loop: an interrupted run must still report what it was given.
 	sum := Summary{Scanned: in.scanned, Unreadable: in.unreadable}
@@ -361,7 +377,9 @@ type input struct {
 // run, and until they did, a Ctrl-C aimed at the wrong folder had no effect until the
 // whole library had been walked and read. A cancelled run returns the context error
 // with the counts it had reached, so the caller can still report what it took in.
-func buildClusters(ctx context.Context, cfg config.Config, logger *slog.Logger) (input, error) {
+func buildClusters(
+	ctx context.Context, cfg config.Config, logger *slog.Logger, prog Progress,
+) (input, error) {
 	if !cfg.SourceIsDir {
 		clusters, err := singleCluster(cfg, logger)
 		if err != nil {
@@ -390,7 +408,7 @@ func buildClusters(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	}
 	checkFreeSpace(cfg.DestRoot, needed, logger)
 
-	photos, unreadable := readMeta(ctx, found, cfg.Jobs, logger)
+	photos, unreadable := readMeta(ctx, found, cfg.Jobs, logger, prog)
 	logger.Info("exif", "read", len(photos), "of", len(found), "raw", countRAW(photos))
 
 	// readMeta reports its own failures rather than leaving them to be derived from
@@ -437,6 +455,18 @@ func checkFreeSpace(destRoot string, needed int64, logger *slog.Logger) {
 	}
 }
 
+// countPhotos totals the photos the clusters hold, which is what the copy phase
+// will place. Companions are deliberately not counted: they are discovered per
+// source directory during placement, so their number is not knowable here, and each
+// one rides along with the photo it belongs to.
+func countPhotos(clusters []photo.Cluster) int {
+	n := 0
+	for _, c := range clusters {
+		n += len(c.Photos)
+	}
+	return n
+}
+
 // countRAW reports how many photos are RAW, for the run logs (FR-010).
 func countRAW(photos []photo.Photo) int {
 	n := 0
@@ -479,7 +509,7 @@ func singleCluster(cfg config.Config, logger *slog.Logger) ([]photo.Cluster, err
 // Cancelling ctx stops the pool from taking on new files; the workers already running
 // finish theirs, which is bounded by a single EXIF read each.
 func readMeta(
-	ctx context.Context, found []scan.Found, jobs int, logger *slog.Logger,
+	ctx context.Context, found []scan.Found, jobs int, logger *slog.Logger, prog Progress,
 ) ([]photo.Photo, int) {
 	workers := jobs
 	if workers < 1 {
@@ -488,6 +518,11 @@ func readMeta(
 	if workers < 1 {
 		workers = 1
 	}
+	// Every file counts as one unit whether its metadata read succeeds or not: the
+	// bar measures the work done, and a file skipped for being unreadable is work.
+	bar := prog.Begin(PhaseEXIF, len(found))
+	defer bar.Close()
+
 	sem := make(chan struct{}, workers)
 	var (
 		wg         sync.WaitGroup
@@ -506,6 +541,7 @@ func readMeta(
 		go func(f scan.Found) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer bar.Inc()
 			p, err := exifmeta.Read(f.Path, f.Format)
 			switch {
 			case errors.Is(err, exifmeta.ErrEXIFPanic):

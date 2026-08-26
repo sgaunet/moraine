@@ -18,12 +18,18 @@ import (
 // cancellation is returned with the partial summary.
 //
 // onResult, when non-nil, receives every per-file Result, which is how the
-// transport renders the machine-readable plan on stdout.
+// transport renders the machine-readable plan on stdout. prog, when non-nil,
+// receives the run's progress; unlike Organize's, every call here is on this
+// goroutine, since the unwinder is serial.
 func Undo(
 	ctx context.Context, cfg config.UndoConfig, logger *slog.Logger, onResult func(undo.Result),
+	prog Progress,
 ) (undo.Summary, error) {
 	if onResult == nil {
 		onResult = func(undo.Result) {}
+	}
+	if prog == nil {
+		prog = noProgress{}
 	}
 
 	path, err := manifest.Latest(cfg.DestRoot)
@@ -56,10 +62,16 @@ func Undo(
 	}
 
 	u := &undo.Undoer{DestRoot: cfg.DestRoot, Delete: cfg.Delete}
+	// Counted over the records that placed a file, not over every record: the
+	// unwinder skips the rest without a word, and a bar totalling them would stop
+	// short of the end on a run that had failures.
+	bar := prog.Begin(PhaseUndo, countPlaced(run))
 	sum, err := u.Run(ctx, run, func(r undo.Result) {
 		logUndo(logger, r)
 		onResult(r)
+		bar.Inc()
 	})
+	bar.Close()
 
 	if err == nil && sum.Removed+sum.WouldRemove == 0 {
 		// A re-run that only recognised existing copies has nothing to give back.
@@ -73,6 +85,18 @@ func Undo(
 		"removed", sum.Removed, "would_remove", sum.WouldRemove,
 		"kept", sum.Kept, "errors", sum.Errors, "dirs_pruned", sum.DirsPruned)
 	return sum, err
+}
+
+// countPlaced totals the records that put a file on disk, which is exactly the set
+// undo.Undoer.Run will report on.
+func countPlaced(run manifest.Run) int {
+	n := 0
+	for _, rec := range run.Records {
+		if rec.Placed() {
+			n++
+		}
+	}
+	return n
 }
 
 // logUndo writes one structured line per evaluated file. Like clean's, these stay

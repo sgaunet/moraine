@@ -91,6 +91,18 @@ type Organizer struct {
 	// throttles a slow drive at either end of the copy, turning it up pays off on
 	// fast local storage.
 	Jobs int
+	// OnUnitDone, when set, is called once for every photo Place actually reached —
+	// copied, skipped, renamed or failed — so a caller can report progress. The unit
+	// is the photo together with its companions, matching the unit of concurrent work,
+	// so a photo with four sidecars still counts once.
+	//
+	// A photo a cancellation beat is NOT reported: it was never attempted, and a
+	// progress report is no more entitled to count it than Summary is.
+	//
+	// It is called from the copy workers, so it MUST be safe for concurrent use, and
+	// it is advisory only: the Results this returns keep the deterministic order a
+	// serial run produced, which is what the stdout contract rests on.
+	OnUnitDone func()
 	// dirEntries caches one os.ReadDir result per source directory so companion
 	// discovery stays linear (one listing per directory). Companion discovery happens
 	// in Place's planning phase, which is sequential, so no synchronisation is needed.
@@ -232,6 +244,16 @@ func (o *Organizer) execute(ctx context.Context, units []photoPlan, results []Re
 	for i := range units {
 		u := &units[i]
 		if u.idle() {
+			// Nothing to write, but the unit is done: an --incremental re-run that
+			// skips everything must still advance a caller's progress to the end.
+			//
+			// Not after a cancellation, though. plan records a photo it never reached
+			// as an idle unit too, and counting those would let an interrupted run
+			// report a full bar — the mistake notAttempted exists to avoid in the
+			// tally, which a progress report is no more entitled to make.
+			if ctx.Err() == nil {
+				o.unitDone()
+			}
 			continue
 		}
 		wg.Add(1)
@@ -245,17 +267,28 @@ func (o *Organizer) execute(ctx context.Context, units []photoPlan, results []Re
 	wg.Wait()
 }
 
+// unitDone reports one finished unit, if anyone is listening.
+func (o *Organizer) unitDone() {
+	if o.OnUnitDone != nil {
+		o.OnUnitDone()
+	}
+}
+
 // executeUnit writes one photo and then its companions. A photo that could not be
 // written places no companions: the run reports the photo's failure once rather than
 // once more per sidecar that was never going to be written.
 func (o *Organizer) executeUnit(ctx context.Context, u *photoPlan, results []Result) {
 	if err := ctx.Err(); err != nil {
 		// Recorded exactly as the planning phase records a photo it never reached:
-		// source, theme and date, and no placement detail at all.
+		// source, theme and date, and no placement detail at all. Deliberately not
+		// counted as progress — see the idle branch in execute.
 		results[u.base] = unreached(u.photo.res, err)
 		u.n = 1
 		return
 	}
+	// Counted here rather than around the call, so a unit the cancellation reached
+	// first advances nothing: it was never attempted.
+	defer o.unitDone()
 	if u.photo.write {
 		results[u.base] = o.executeOne(u.photo)
 		if results[u.base].Err != nil {

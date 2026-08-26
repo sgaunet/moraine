@@ -23,6 +23,12 @@ var logLevels = []string{"debug", "info", "warn", "error"}
 // config.OutputFormat constants.
 var outputFormats = []string{string(config.OutputText), string(config.OutputJSON)}
 
+// progressModes are the values accepted by --progress, kept in step with the
+// config.ProgressMode constants.
+var progressModes = []string{
+	string(config.ProgressAuto), string(config.ProgressAlways), string(config.ProgressNever),
+}
+
 // gapDurations are common --gap values. The flag accepts any Go duration; these
 // are suggestions, so the list stays short rather than exhaustive.
 var gapDurations = []string{"30m", "1h", "6h", "12h", "24h"}

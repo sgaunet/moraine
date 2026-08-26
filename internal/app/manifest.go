@@ -160,15 +160,21 @@ type labelled struct {
 // since cancelling aborts an in-flight model call instead of waiting it out.
 func labelAhead(
 	ctx context.Context, clusters []photo.Cluster,
-	opts classify.Options, cfg config.Config, idx *manifest.Index,
+	opts classify.Options, cfg config.Config, idx *manifest.Index, prog Progress,
 ) (<-chan labelled, func()) {
 	ahead, cancel := context.WithCancel(ctx)
 	out := make(chan labelled, lookAhead-1)
 	done := make(chan struct{})
 
+	// Counted here, in the producer, rather than where Organize consumes a label:
+	// consumption is paced by the copy I/O, so a bar ticked there would track the
+	// copy rather than the model and never show the look-ahead working.
+	bar := prog.Begin(PhaseClassify, len(clusters))
+
 	go func() {
 		defer close(done)
 		defer close(out)
+		defer bar.Close()
 		for _, c := range clusters {
 			// Checked before the call, not after: an already-interrupted run must not
 			// pull a vision model into memory to answer a question nobody will read.
@@ -176,6 +182,7 @@ func labelAhead(
 				return
 			}
 			theme, method := labelCluster(ahead, c, opts, cfg, idx)
+			bar.Inc()
 			select {
 			case out <- labelled{cluster: c, theme: theme, method: method}:
 			case <-ahead.Done():

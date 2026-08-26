@@ -36,6 +36,7 @@ type Config struct {
 	ExifToolPath     string            // exiftool executable (name on PATH or absolute path)
 	LogLevel         slog.Level        // logging verbosity
 	Output           OutputFormat      // stdout rendering of the run result (text | json)
+	Progress         ProgressMode      // when stderr is drawn as bullets and progress bars (auto | always | never)
 	Sidecars         bool              // copy each photo's companion (sidecar) files alongside it
 	Move             bool              // remove each source file once its copy has been verified
 	DryRun           bool              // report the planned placements without writing anything
@@ -58,6 +59,7 @@ const (
 	DefaultDestName  = "_sorted"
 	DefaultExifTool  = "exiftool"
 	DefaultOutput    = "text"
+	DefaultProgress  = "auto"
 	// DefaultPathTemplate is the historical destination layout, re-exported here so
 	// the flag registration reads like every other default.
 	DefaultPathTemplate = organize.DefaultTemplate
@@ -77,6 +79,22 @@ const (
 	OutputText OutputFormat = "text"
 	// OutputJSON renders one JSON object holding every per-file record and the summary.
 	OutputJSON OutputFormat = "json"
+)
+
+// ProgressMode selects when moraine draws its stderr as bullet lines with progress
+// bars instead of plain log records. It shapes only the human-facing stream: the
+// stdout contract is identical in every mode (Constitution Principle V).
+type ProgressMode string
+
+// The supported progress renderings.
+const (
+	// ProgressAuto draws bullets when the terminal and the verbosity both allow it.
+	ProgressAuto ProgressMode = "auto"
+	// ProgressAlways draws bullets regardless of where stderr points.
+	ProgressAlways ProgressMode = "always"
+	// ProgressNever keeps the plain slog text records, which is the form to read
+	// when debugging: one self-contained line per event, greppable and diffable.
+	ProgressNever ProgressMode = "never"
 )
 
 // slugPattern constrains theme slugs to filesystem-safe lowercase tokens.
@@ -99,6 +117,7 @@ type Options struct {
 	Quiet            bool          // --quiet (errors only; excludes --verbose/--log-level)
 	Verbose          bool          // --verbose (per-file detail; excludes --quiet/--log-level)
 	Output           string        // --output (textual: text|json)
+	Progress         string        // --progress (textual: auto|always|never)
 	ExifTool         string        // --exiftool
 	Sidecars         bool          // --sidecars (copy companion files; default true at the flag)
 	Move             bool          // --move (remove each source after its copy is verified)
@@ -144,6 +163,11 @@ func New(o Options) (Config, error) {
 		return Config{}, err
 	}
 
+	progress, err := ParseProgress(o.Progress)
+	if err != nil {
+		return Config{}, err
+	}
+
 	themeList, err := ParseThemes(o.Themes, o.Fallback)
 	if err != nil {
 		return Config{}, err
@@ -185,6 +209,7 @@ func New(o Options) (Config, error) {
 		ExifToolPath:     exiftool,
 		LogLevel:         level,
 		Output:           output,
+		Progress:         progress,
 		Sidecars:         o.Sidecars,
 		Move:             o.Move,
 		DryRun:           o.DryRun,
@@ -266,6 +291,22 @@ func ParseOutput(s string) (OutputFormat, error) {
 		return OutputJSON, nil
 	default:
 		return "", fmt.Errorf("--output invalid %q: expected text|json", s)
+	}
+}
+
+// ParseProgress maps a textual progress mode to a ProgressMode. An empty value is
+// the default, so a configuration file that omits the key behaves like one that
+// never mentioned it.
+func ParseProgress(s string) (ProgressMode, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", string(ProgressAuto):
+		return ProgressAuto, nil
+	case string(ProgressAlways):
+		return ProgressAlways, nil
+	case string(ProgressNever):
+		return ProgressNever, nil
+	default:
+		return "", fmt.Errorf("--progress invalid %q: expected auto|always|never", s)
 	}
 }
 

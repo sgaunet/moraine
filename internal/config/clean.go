@@ -16,6 +16,7 @@ type CleanConfig struct {
 	Delete   bool         // false ⇒ dry-run (report only); true ⇒ actually delete matched originals
 	LogLevel slog.Level   // logging verbosity
 	Output   OutputFormat // stdout rendering of the run result (text | json)
+	Progress ProgressMode // when stderr is drawn as bullets and progress bars (auto | always | never)
 }
 
 // CleanOptions carries the already-parsed CLI inputs for a clean run. The transport
@@ -28,6 +29,7 @@ type CleanOptions struct {
 	Quiet    bool   // --quiet (errors only; excludes --verbose/--log-level)
 	Verbose  bool   // --verbose (per-file detail; excludes --quiet/--log-level)
 	Output   string // --output (textual: text|json)
+	Progress string // --progress (textual: auto|always|never)
 }
 
 // NewClean builds a validated CleanConfig from already-parsed CLI Options. It
@@ -41,6 +43,11 @@ func NewClean(o CleanOptions) (CleanConfig, error) {
 	}
 
 	output, err := ParseOutput(o.Output)
+	if err != nil {
+		return CleanConfig{}, err
+	}
+
+	progress, err := ParseProgress(o.Progress)
 	if err != nil {
 		return CleanConfig{}, err
 	}
@@ -64,6 +71,7 @@ func NewClean(o CleanOptions) (CleanConfig, error) {
 		Delete:   o.Delete,
 		LogLevel: level,
 		Output:   output,
+		Progress: progress,
 	}, nil
 }
 

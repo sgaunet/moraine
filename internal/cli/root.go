@@ -13,11 +13,11 @@ import (
 // usage are silenced so cli.Execute owns all error rendering and the exit-code
 // mapping; the --version flag is enabled here (mirrors the `version` subcommand).
 //
-// The values of the persistent --output and --config flags are shared with the
-// subcommands through pointers: cobra parses into them before any RunE runs, so each
-// command reads the resolved value at execution time.
+// The values of the persistent --output, --progress and --config flags are shared
+// with the subcommands through pointers: cobra parses into them before any RunE runs,
+// so each command reads the resolved value at execution time.
 func newRootCmd(version string, stdout, stderr io.Writer) *cobra.Command {
-	var output, configPath string
+	var output, progress, configPath string
 	// One resolution for both spellings: --version prints this report's first line,
 	// `version` prints the whole thing.
 	build := buildReport(version)
@@ -45,6 +45,12 @@ Output:
   default) or one JSON object (--output=json). Logs, progress and errors go to
   stderr, so moraine is safe on either side of a pipe.
 
+  On a terminal, stderr is drawn as bullet lines with a progress bar per stage.
+  That needs BOTH streams to be terminals, so redirecting either one — or setting
+  NO_COLOR, --quiet or --verbose — falls back to the plain log records.
+  --progress=never asks for those records outright, which is the form to read when
+  debugging; --progress=always draws the bars regardless.
+
 Configuration file:
   Settings may be kept in ~/.config/moraine.yaml (or $XDG_CONFIG_HOME/moraine.yaml,
   or the file named by --config or $MORAINE_CONFIG). A command-line flag always beats
@@ -71,6 +77,14 @@ Run "moraine <command> --help" for command-specific options and examples.`,
 		"stdout format for the run result: text|json (logs always go to stderr)")
 	_ = root.RegisterFlagCompletionFunc("output", completeFixed(outputFormats...))
 
+	// --progress is persistent for the same reason: how a run narrates itself on
+	// stderr is a property of the tool, not of one subcommand.
+	root.PersistentFlags().StringVar(&progress, "progress", config.DefaultProgress,
+		"stderr rendering: auto|always|never (auto draws bullets and progress bars "+
+			"on a terminal; never keeps the plain log records, which is what to read "+
+			"when debugging)")
+	_ = root.RegisterFlagCompletionFunc("progress", completeFixed(progressModes...))
+
 	// --config is persistent for the same reason: the file describes the tool, not one
 	// subcommand. Named explicitly, a missing file is an error; the default locations
 	// are optional, since most runs have no configuration file at all.
@@ -79,9 +93,9 @@ Run "moraine <command> --help" for command-specific options and examples.`,
 			"($MORAINE_CONFIG, $XDG_CONFIG_HOME/moraine.yaml, ~/.config/moraine.yaml); "+
 			"command-line flags always win")
 
-	root.AddCommand(newSortCmd(stdout, stderr, &output, &configPath))
-	root.AddCommand(newCleanCmd(stdout, stderr, &output, &configPath))
-	root.AddCommand(newUndoCmd(stdout, stderr, &output, &configPath))
+	root.AddCommand(newSortCmd(stdout, stderr, &output, &progress, &configPath))
+	root.AddCommand(newCleanCmd(stdout, stderr, &output, &progress, &configPath))
+	root.AddCommand(newUndoCmd(stdout, stderr, &output, &progress, &configPath))
 	root.AddCommand(newConfigCmd(stdout, stderr, &output, &configPath))
 	root.AddCommand(newVersionCmd(build, stdout, &output))
 

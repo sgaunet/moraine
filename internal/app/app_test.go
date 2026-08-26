@@ -121,7 +121,7 @@ func TestOrganizeBatchCopiesAndIsIdempotent(t *testing.T) {
 	makePNG(t, filepath.Join(src, "b.png"))
 	cfg := baseCfg(src, dest, true)
 
-	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestOrganizeBatchCopiesAndIsIdempotent(t *testing.T) {
 	}
 
 	// Re-run → identical files skipped.
-	sum2, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum2, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestOrganizeSinglePhoto(t *testing.T) {
 	makePNG(t, file)
 	cfg := baseCfg(file, dest, false)
 
-	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestOrganizeSkipsNonImageFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestOrganizeContinuesOnUnreadableImage(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil)
+	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil, nil)
 	if err != nil {
 		t.Fatalf("run must not abort on an unreadable file: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestOrganizeLoggingContract(t *testing.T) {
 		makePNG(t, filepath.Join(src, "a.png"))
 		buf := &safeBuffer{}
 		logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: level}))
-		if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil); err != nil {
+		if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		return buf.String()
@@ -281,7 +281,7 @@ func TestOrganizeFreeSpacePreflight(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil); err != nil {
+	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -309,7 +309,7 @@ func TestOrganizeFreeSpacePreflightOnUncreatedDestination(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil); err != nil {
+	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -334,7 +334,7 @@ func TestOrganizeOllamaUnreachableWarnsAndFallsBack(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	sum, err := app.Organize(context.Background(), cfg, logger, nil)
+	sum, err := app.Organize(context.Background(), cfg, logger, nil, nil)
 	if err != nil {
 		t.Fatalf("run must not abort when Ollama is unreachable: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestOrganizeOllamaModelMissingTellsToPull(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	sum, err := app.Organize(context.Background(), cfg, logger, nil)
+	sum, err := app.Organize(context.Background(), cfg, logger, nil, nil)
 	if err != nil {
 		t.Fatalf("run must not abort when the model is missing: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestOrganizeLogLevelWarnSuppressesInfo(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil); err != nil {
+	if _, err := app.Organize(context.Background(), baseCfg(src, dest, true), logger, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "group") {
@@ -441,7 +441,7 @@ func TestOrganizeRAWCopiedAndDated(t *testing.T) {
 	makeRAW(t, filepath.Join(src, "shot.dng"))
 
 	// Sample 0 → no model; RAW is still recognized, dated, and copied (fallback theme).
-	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), baseCfg(src, dest, true), quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestOrganizeSingleRAWPhoto(t *testing.T) {
 	file := filepath.Join(dir, "single.nef")
 	makeRAW(t, file)
 
-	sum, err := app.Organize(context.Background(), baseCfg(file, dest, false), quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), baseCfg(file, dest, false), quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestOrganizeRAWClassifiedViaPreview(t *testing.T) {
 	cfg.OllamaURL = srv.URL
 	cfg.ExifToolPath = exifPath
 
-	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestOrganizeRAWPreservesOriginalAndLeavesNoTemp(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 
-	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil); err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
 
@@ -584,7 +584,7 @@ func TestOrganizeCopiesCompanions(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sidecars = true
-	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -613,7 +613,7 @@ func TestOrganizeSingleFileCompanions(t *testing.T) {
 
 	cfg := baseCfg(file, dest, false)
 	cfg.Sidecars = true
-	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -638,7 +638,7 @@ func TestOrganizeCompanionThatIsAnImageIsSortedOnce(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sidecars = true
-	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -667,7 +667,7 @@ func TestOrganizeCompanionFailureNonFatal(t *testing.T) {
 
 	cfg := baseCfg(src, dest, true)
 	cfg.Sidecars = true
-	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("run must not abort on a companion failure: %v", err)
 	}
@@ -690,7 +690,7 @@ func TestOrganizeJobs(t *testing.T) {
 		}
 		cfg := baseCfg(src, dest, true)
 		cfg.Jobs = jobs
-		sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+		sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 		if err != nil {
 			t.Fatalf("jobs=%d: %v", jobs, err)
 		}
@@ -725,7 +725,7 @@ func TestOrganizeInterruptDoesNotInflateErrors(t *testing.T) {
 
 	buf := &safeBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	sum, err := app.Organize(ctx, baseCfg(src, dest, true), logger, nil)
+	sum, err := app.Organize(ctx, baseCfg(src, dest, true), logger, nil, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -760,7 +760,7 @@ func TestOrganizeOnResultSeesEveryPlacement(t *testing.T) {
 			return
 		}
 		photos++
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -792,7 +792,7 @@ func TestOrganizeReportsInterruptInTheLastCluster(t *testing.T) {
 	sum, err := app.Organize(ctx, baseCfg(src, dest, true), quietLogger(), func(organize.Result) {
 		records++
 		cancel()
-	})
+	}, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -823,7 +823,7 @@ func TestOrganizeHonoursPathTemplate(t *testing.T) {
 	}
 	cfg.PathTemplate = tmpl
 
-	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -848,7 +848,7 @@ func TestOrganizeIncrementalUnderAChangedTemplateKeepsRecordedPaths(t *testing.T
 	makePNG(t, filepath.Join(src, "a.png"))
 
 	cfg := baseCfg(src, dest, true)
-	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	firstDest := filepath.Join(expectedDir(dest), "a.png")
@@ -864,7 +864,7 @@ func TestOrganizeIncrementalUnderAChangedTemplateKeepsRecordedPaths(t *testing.T
 	}
 	changed.PathTemplate = tmpl
 
-	sum, err := app.Organize(context.Background(), changed, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), changed, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("incremental run: %v", err)
 	}
@@ -895,7 +895,7 @@ func TestOrganizeDescribesEachEvent(t *testing.T) {
 	}
 	cfg := baseCfg(src, dest, true)
 
-	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -939,12 +939,12 @@ func TestOrganizeEventsReportTheManifestMethodOnAReRun(t *testing.T) {
 	makePNG(t, filepath.Join(src, "a.png"))
 	cfg := baseCfg(src, dest, true)
 
-	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil); err != nil {
+	if _, err := app.Organize(context.Background(), cfg, quietLogger(), nil, nil); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	inc := baseCfg(src, dest, true)
 	inc.Incremental = true
-	sum, err := app.Organize(context.Background(), inc, quietLogger(), nil)
+	sum, err := app.Organize(context.Background(), inc, quietLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("incremental run: %v", err)
 	}
@@ -981,7 +981,7 @@ func TestOrganizeCancelledDuringEXIFReportsWhatTheScanFound(t *testing.T) {
 	inner := slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})
 	logger := slog.New(&cancelOnMessage{msg: "scan", cancel: cancel, inner: inner})
 
-	sum, err := app.Organize(ctx, baseCfg(src, dest, true), logger, nil)
+	sum, err := app.Organize(ctx, baseCfg(src, dest, true), logger, nil, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}

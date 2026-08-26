@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -168,9 +169,15 @@ func TestConfigEditKeepsTheFormOffStdout(t *testing.T) {
 // the end when a whole session's typing would be lost.
 func TestConfigEditRefusesABadAnswerAtTheQuestion(t *testing.T) {
 	path := configAt(t, "")
-	// sort's settings are listed shared-first, so --gap is the fourth. Answer it with
+	// The picker numbers a section's settings in the order the table lists them, so
+	// --gap is found rather than counted to: adding a shared setting would otherwise
+	// silently move it and this test would answer a different question. Answer it with
 	// a non-duration, which must be refused, then with a real one.
-	stdout, stderr, code := runEdit(t, "4\n0\nnope\n12h\n", "sort")
+	pick := slices.Index(cli.SettingFlags("sort"), "gap") + 1
+	if pick == 0 {
+		t.Fatal("sort has no gap setting")
+	}
+	stdout, stderr, code := runEdit(t, fmt.Sprintf("%d\n0\nnope\n12h\n", pick), "sort")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr:\n%s", code, stderr)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,7 +20,7 @@ import (
 // recent `sort` run, read from that run's manifest. Dry-run by default; --delete
 // commits. config.NewUndo errors are usage errors (exit 2); Validate and app.Undo
 // are runtime errors (exit 1). It needs neither exiftool nor the classifier.
-func newUndoCmd(stdout, stderr io.Writer, output, configPath *string) *cobra.Command {
+func newUndoCmd(stdout, stderr io.Writer, output, progress, configPath *string) *cobra.Command {
 	var opts config.UndoOptions
 	cmd := &cobra.Command{
 		Use:   "undo [flags] <destination-root>",
@@ -64,6 +63,7 @@ Exit codes:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Dest = args[0]
 			opts.Output = *output
+			opts.Progress = *progress
 
 			file, from, err := configfile.Load(*configPath)
 			if err != nil {
@@ -79,12 +79,12 @@ Exit codes:
 				return asRuntime(err)
 			}
 
-			logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
+			logger, prog := newRenderer(cfg.Progress, stdout, stderr, cfg.LogLevel, !cfg.Delete)
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
 			rep := newReporter(cfg.Output, stdout)
-			sum, runErr := app.Undo(ctx, cfg, logger, rep.addUndo)
+			sum, runErr := app.Undo(ctx, cfg, logger, rep.addUndo, prog)
 
 			// Report before deciding the exit code: an interrupted undo may already
 			// have removed copies, and the tally is the only record of which.

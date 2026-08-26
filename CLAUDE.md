@@ -84,7 +84,8 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
 
 - **Three layers**: `main.go` (injects the build version, nothing else) →
   `internal/cli` (Cobra transport: `sort`/`clean`/`undo`/`config`/`version` + built-in
-  `completion`, flags, exit codes, and `output.go` — the stdout contract) →
+  `completion`, flags, exit codes, `output.go` — the stdout contract — and
+  `render.go`, which picks the stderr rendering) →
   `internal/app` (single testable orchestrator; `Organize`/`Clean`/`Undo` take an
   `onResult func(Result)` so the transport, not the domain, renders output) →
   domain packages. No domain package imports Cobra.
@@ -98,6 +99,34 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   `clean` at info (its dry-run plan is the product). An interrupt prints the partial
   summary, then `interrupted: copied N, …` with exit 1; photos never reached are not
   counted as errors. `--dry-run` writes nothing at all, not even a directory.
+- **Two renderings of stderr** (`internal/ui`, `github.com/sgaunet/bullets`): bullet
+  lines with a progress bar per stage, or the plain `slog` text records. `render.go`
+  chooses once; `--progress=auto|always|never` overrides. **`auto` needs all of**: both
+  stdout *and* stderr are terminals (Principle V read literally — `sort > out.txt`
+  shows no bars), `NO_COLOR` unset (bullets colours unconditionally and has no
+  monochrome mode), `TERM != dumb`, and level ∈ {info, warn} (`-v` wants a line per
+  file, `-q` wants silence). **`--progress=never` is byte-identical to the pre-bullets
+  output** and is the debugging form; **stdout is identical in every mode**. Progress
+  reaches the transport as *data* — `app.Progress.Begin(phase, total)` + `Tracker.Inc/
+  Close`, the shape `onResult` already had — so `internal/app` stays presentation-free.
+  `internal/ui` owns the phase wording, including a **preview vocabulary** so
+  `sort --dry-run` and an un-`--delete`d `clean`/`undo` end on `photos checked`, never
+  `photos placed`. **The one place the two renderings disagree about content**:
+  `ui.phaseNarration` drops the per-event `group` line, which the classify and copy
+  bars already account for. Criterion is narrow — once per *unit of work* and adding
+  nothing to the bar tracking it; per-run neighbours stay (`exif` carries `raw=N`,
+  `cluster` the gap). The filter matches on the message, so `internal/cli`'s
+  `render_test.go` runs a real sort through the **plain** rendering and fails if the
+  pipeline stops emitting it: a rename cannot leave it matching nothing. **`Progress` is the one pipeline seam that must be concurrency-safe**
+  (EXIF pool, `labelAhead`, copy pool); everything else stays on `Organize`'s goroutine.
+  Bars exist only where a total is known ahead: exif (`len(found)`), classify
+  (`len(clusters)`), copy (Σ`len(c.Photos)`, companions riding with their photo), undo
+  (records that `Placed()`); `clean` hashes with no knowable total, so total 0 means
+  *indeterminate* and gets a spinner. A unit the cancellation beat **ticks nothing**, so
+  an interrupt closes on `photos placed · 3 of 400` — the `notAttempted` lesson again.
+  Repaints are throttled to 75ms, lines truncated to the terminal width (asked per
+  line), and level gating lives in the `slog.Handler` because bullets bumps its line
+  counter even for records it suppresses, which would offset every later repaint.
 - **Procedural pipeline** in `app.Organize`: `scan → exifmeta` (worker pool sized by
   `--jobs`, default `GOMAXPROCS`) `→ cluster → classify → organize.Place`, tallying a
   `Summary`. Every stage honours the run's context: `scan` stops at the next directory
@@ -255,7 +284,8 @@ task check-before-commit   # lint + test + snapshot + vuln
 - **Entrypoint**: `main.go` → **Transport**: `internal/cli` → **Orchestration**:
   `internal/app`
 - **Domain**: `internal/{config,configfile,configform,scan,exifmeta,cluster,classify,
-  organize,clean,undo,manifest,photo,contenthash,rawpreview,diskspace}`; fake-exec test helper in `internal/exiftooltest`
+  organize,clean,undo,manifest,photo,contenthash,rawpreview,diskspace}` ·
+  **stderr rendering**: `internal/ui`; fake-exec test helper in `internal/exiftooltest`
 - **Tests**: co-located `internal/**/*_test.go`
 - **Specs**: `specs/00N-*/` · **Constitution**: `.specify/memory/constitution.md`
 - **Config**: `.golangci.yml`, `Taskfile.yml`, `mise.toml`, `.goreleaser.yml`
@@ -268,7 +298,69 @@ task check-before-commit   # lint + test + snapshot + vuln
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **`moraine config`** — a command tree that views and updates the
+Latest change: **bullet progress UI on stderr** (feature request, no `specs/` dir).
+Default stderr was flat `slog` text: on a real library a `sort` run spent minutes in
+three phases and said nothing at `info`, because per-file narration is deliberately at
+debug (thousands of lines being worse than silence). So the default experience was a
+long pause, then one summary line. Now, on a terminal, stderr is bullet lines with a
+progress bar per stage; the plain records stay one flag away. See the two architecture
+bullets above for the mechanism, and `docs/architecture.md` decisions 23–25.
+
+Seven points worth carrying:
+
+1. **The author chose Principle V's literal reading.** The rule forbids progress bars
+   "when stdout is not a TTY", so `auto` requires **both** streams to be terminals and
+   `moraine sort > result.txt` shows none, even from a terminal. The alternative —
+   gating on stderr alone and amending Principle V, as issue #31 amended it — was
+   offered and declined. Revisiting it means an amendment, so the choice cannot drift.
+2. **`NO_COLOR` falls back to plain text rather than drawing monochrome**, because
+   bullets' `colorize` is unconditional and has no monochrome mode. This is the
+   over-broad-but-compliant option, deliberately chosen over blocking on an upstream
+   release. Three upstream fixes are worth filing on `sgaunet/bullets`, none blocking:
+   `NO_COLOR` support, `Progress`'s divide-by-zero on `total == 0`, and `Info`/`Debug`/
+   `Warn`/`Error` bumping `lineCount` for records their own level suppresses.
+3. **Progress is data, not drawing.** `app.Progress`/`Tracker` mirror `onResult`
+   (architecture decision 8) so `internal/app` never learns there is a terminal, and
+   `internal/ui` owns every word a phase wears. The library's three sharp edges are all
+   handled on moraine's side: total 0 is refused before the bar arithmetic, gating
+   happens in `slog.Handler.Enabled` with the bullets logger left at `DebugLevel`, and
+   every line is truncated to the terminal width.
+4. **A bug found by running it, not by reading it.** The first wiring ticked the copy
+   bar for *every* unit, including those a cancellation never reached, so interrupting
+   a 400-photo run printed `photos placed · 400` next to `copied=3` on stdout. This is
+   the same class of error as the `unreadable` arithmetic in issue #30 — counting what
+   the run never attempted — and `notAttempted` exists precisely to prevent it. Fixed
+   in `organize.execute`/`executeUnit`; `TestInterruptedCopyPhaseDoesNotReportWhatItNeverPlaced`
+   fails against the previous construction.
+5. **Per-event narration is dropped in bullets mode** (author's call, after seeing it
+   run). `group size=… method=… theme=… date=…` arrives once per event, so on a real
+   library it pushes the bars steadily up the screen while repeating what they already
+   say. It stays at info in the plain rendering because the text stdout contract is one
+   line per run and has nowhere else to put per-event facts — the divergence is
+   deliberate and is the only one. `--output=json`'s `events` array is unaffected.
+6. **A preview must not claim a write.** `clean` and `undo` are dry-run by default, so
+   `copies removed · 3` would have been a lie for files still on disk. `ui.New` takes a
+   `preview` flag and the two phases that write carry a second vocabulary
+   (`photos checked`, `copies checked`); the read-only phases share one wording, which
+   a test pins so they cannot sprout a second.
+7. **The regression gate is a `diff`, not a claim.** `--progress=never` stderr, and
+   stdout in every mode, were diffed byte-for-byte against a `main`-built binary on the
+   same fixture. Also verified: `auto` falling back when piped, the config file's
+   `progress:` key beating the default and losing to the flag, an interrupt landing
+   honestly at `3 of 400`, and all six `CGO_ENABLED=0` release targets building.
+
+**New dependency**: `github.com/sgaunet/bullets` v0.7.2 (MIT, author's own, requested
+by the author), which brings `golang.org/x/term` (BSD-3) as a new direct dep —
+`golang.org/x/sys` was already indirect. Pure Go, two modules, `govulncheck` clean.
+**Pin it**: the README warns the API may break between minor versions before v1.0.
+
+**Deliberately not done**: no committed PTY harness. `CLAUDE.md` has said the `config
+edit` TUI "is verified through a PTY harness", but nothing in `internal/` opens a pty —
+that verification was ad-hoc, and this change's terminal checks were too (BSD `script`).
+Building one is its own task; note that `script` on macOS does not forward a signal to
+the child, so an interrupt test needs the pid directly.
+
+Previous change: **`moraine config`** — a command tree that views and updates the
 configuration file (feature request, no `specs/` dir). The YAML file existed but was
 read-only from the tool's side, so the only ways to answer "what is my effective gap?"
 or change a setting were an editor plus `--help`, and strict decoding made a typo an
@@ -325,7 +417,7 @@ the OSC 11 / DSR 6n capability queries bubbletea sends at startup. Without those
 replies it blocks before drawing and the screen looks empty — which is what made the
 first attempts at checking it look like a failure.
 
-Previous change: **issue #34** — documentation drift, three items (issue-driven, no
+Before it: **issue #34** — documentation drift, three items (issue-driven, no
 `specs/` dir). Documentation only: the one Go file touched is a doc comment.
 
 1. **`docs/patterns.md`**: the Error Handling section showed

@@ -86,6 +86,12 @@ type Record struct {
 	Error string `json:"error,omitempty"`
 }
 
+// Placed reports whether this record actually put a file on disk, and so whether
+// there is anything for `undo` to remove or for a progress report to count. A
+// record with no destination, or one carrying the error that stopped it, placed
+// nothing. Stated once here because both the unwinder and its progress total ask.
+func (r Record) Placed() bool { return r.Dest != "" && r.Error == "" }
+
 // Writer appends the records of one run to its own manifest file. The file is
 // created by the first Add, so a dry run — or a run that places nothing — leaves
 // no trace at all, not even a directory.

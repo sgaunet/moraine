@@ -341,25 +341,25 @@ type writeOptions struct {
 // The commands built here have parsed no flags, so nothing shadows the file: every
 // value in it is exercised.
 func checkSections(f *configfile.File) error {
-	var output, configPath string
+	var output, progress, configPath string
 
 	sortOpts := defaultSortOptions()
 	sortOpts.Source = "."
-	applySortFile(newSortCmd(io.Discard, io.Discard, &output, &configPath), &sortOpts, f)
+	applySortFile(newSortCmd(io.Discard, io.Discard, &output, &progress, &configPath), &sortOpts, f)
 	if _, err := config.New(sortOpts); err != nil {
 		return err
 	}
 
 	cleanOpts := defaultCleanOptions()
 	cleanOpts.Source = "."
-	applyCleanFile(newCleanCmd(io.Discard, io.Discard, &output, &configPath), &cleanOpts, f)
+	applyCleanFile(newCleanCmd(io.Discard, io.Discard, &output, &progress, &configPath), &cleanOpts, f)
 	if _, err := config.NewClean(cleanOpts); err != nil {
 		return err
 	}
 
 	undoOpts := defaultUndoOptions()
 	undoOpts.Dest = "."
-	applyUndoFile(newUndoCmd(io.Discard, io.Discard, &output, &configPath), &undoOpts, f)
+	applyUndoFile(newUndoCmd(io.Discard, io.Discard, &output, &progress, &configPath), &undoOpts, f)
 	if _, err := config.NewUndo(undoOpts); err != nil {
 		return err
 	}
@@ -382,7 +382,7 @@ func checkValues(section string, values map[string]string) error {
 		if err := setAll(f, values); err != nil {
 			return err
 		}
-		opts.Source, opts.Output = ".", values["output"]
+		opts.Source, opts.Output, opts.Progress = ".", values["output"], values["progress"]
 		_, err := config.NewClean(opts)
 		return err
 	case sectionUndo:
@@ -391,7 +391,7 @@ func checkValues(section string, values map[string]string) error {
 		if err := setAll(f, values); err != nil {
 			return err
 		}
-		opts.Dest, opts.Output = ".", values["output"]
+		opts.Dest, opts.Output, opts.Progress = ".", values["output"], values["progress"]
 		_, err := config.NewUndo(opts)
 		return err
 	default:
@@ -400,7 +400,7 @@ func checkValues(section string, values map[string]string) error {
 		if err := setAll(f, values); err != nil {
 			return err
 		}
-		opts.Source, opts.Output = ".", values["output"]
+		opts.Source, opts.Output, opts.Progress = ".", values["output"], values["progress"]
 		_, err := config.New(opts)
 		return err
 	}
@@ -408,8 +408,8 @@ func checkValues(section string, values map[string]string) error {
 
 // setAll parses each value with the flag that owns it, which is where a malformed
 // duration or number is reported — in the words pflag would use on the command line.
-// A name the flag set does not have (--output, which lives on the root command) is
-// handled by the caller.
+// A name the flag set does not have (--output and --progress, which live on the root
+// command) is handled by the caller.
 func setAll(f *pflag.FlagSet, values map[string]string) error {
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		if f.Lookup(name) == nil {

@@ -41,14 +41,16 @@ func TestEveryCommandFlagIsSettableOrDeliberatelyNot(t *testing.T) {
 }
 
 // The reverse: a setting the table claims must be a flag the command really has,
-// otherwise `config set` would offer to write something no run reads. --output is the
-// one exception — it is persistent on the root command rather than on any subcommand.
+// otherwise `config set` would offer to write something no run reads. The exceptions
+// are the flags persistent on the root command (--output, --progress): every command
+// accepts them without registering one, so they are asked for rather than listed here.
 func TestEverySettableFlagExistsOnItsCommand(t *testing.T) {
+	persistent := cli.RootPersistentFlags()
 	for _, section := range cli.Sections() {
 		t.Run(section, func(t *testing.T) {
 			registered := cli.CommandFlags(section)
 			for _, name := range cli.SettingFlags(section) {
-				if name == "output" || slices.Contains(registered, name) {
+				if slices.Contains(persistent, name) || slices.Contains(registered, name) {
 					continue
 				}
 				t.Errorf("`config set %s` offers --%s, which %s does not have", section, name, section)
