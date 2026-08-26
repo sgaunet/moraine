@@ -99,7 +99,7 @@ func (u *Undoer) Run(ctx context.Context, run manifest.Run, onResult func(Result
 			return sum, err
 		}
 		rec := run.Records[i]
-		if rec.Dest == "" || rec.Error != "" {
+		if !rec.Placed() {
 			continue // this record placed no file
 		}
 		res := u.evaluate(rec, cleanDest)

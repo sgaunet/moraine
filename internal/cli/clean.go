@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,7 +20,7 @@ import (
 // byte-identical copy under the destination. Dry-run by default; --delete commits.
 // config.NewClean errors are usage errors (exit 2); Validate and app.Clean are
 // runtime errors (exit 1). It needs neither exiftool nor the classifier.
-func newCleanCmd(stdout, stderr io.Writer, output, configPath *string) *cobra.Command {
+func newCleanCmd(stdout, stderr io.Writer, output, progress, configPath *string) *cobra.Command {
 	var opts config.CleanOptions
 	cmd := &cobra.Command{
 		Use:   "clean [flags] <source-dir>",
@@ -58,6 +57,7 @@ Exit codes:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Source = args[0]
 			opts.Output = *output
+			opts.Progress = *progress
 
 			file, from, err := configfile.Load(*configPath)
 			if err != nil {
@@ -73,12 +73,12 @@ Exit codes:
 				return asRuntime(err)
 			}
 
-			logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
+			logger, prog := newRenderer(cfg.Progress, stdout, stderr, cfg.LogLevel, !cfg.Delete)
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
 			rep := newReporter(cfg.Output, stdout)
-			sum, runErr := app.Clean(ctx, cfg, logger, rep.addClean)
+			sum, runErr := app.Clean(ctx, cfg, logger, rep.addClean, prog)
 
 			// Report before deciding the exit code: an interrupted run may already
 			// have deleted originals, and the tally is the only record of which.

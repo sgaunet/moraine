@@ -81,6 +81,7 @@ type setting struct {
 var sharedSettings = []setting{
 	{Flag: "log-level", YAML: "log_level", Kind: kindString, Choices: logLevels},
 	{Flag: "output", YAML: "output", Kind: kindString, Choices: outputFormats},
+	{Flag: "progress", YAML: "progress", Kind: kindString, Choices: progressModes},
 	{Flag: "dest", YAML: "dest", Kind: kindString},
 }
 
@@ -106,6 +107,7 @@ var sortOnlySettings = []setting{
 var undoSettings = []setting{
 	{Flag: "log-level", YAML: "log_level", Kind: kindString, Choices: logLevels},
 	{Flag: "output", YAML: "output", Kind: kindString, Choices: outputFormats},
+	{Flag: "progress", YAML: "progress", Kind: kindString, Choices: progressModes},
 }
 
 // settingsFor returns the settings a section accepts, in the order the form and
@@ -201,11 +203,17 @@ func defaultUndoOptions() config.UndoOptions {
 }
 
 // describe returns a setting's default value and its help text, as `--help` states
-// them. --output is the one setting with no subcommand flag to read: it is
-// persistent on the root command, so its default and usage are named here.
+// them. --output and --progress are the two settings with no subcommand flag to read:
+// both are persistent on the root command, so their defaults and usage are named
+// here. Every other setting reads its own flag, so it cannot drift from --help.
 func describe(section string, s setting) (defaultValue, help string) {
-	if s.Flag == "output" {
+	switch s.Flag {
+	case "output":
 		return config.DefaultOutput, "stdout format for the run result: text|json (logs always go to stderr)"
+	case "progress":
+		return config.DefaultProgress,
+			"stderr rendering: auto|always|never (auto draws bullets and progress bars " +
+				"on a terminal; never keeps the plain log records)"
 	}
 	f := referenceFlags(section).Lookup(s.Flag)
 	if f == nil {
@@ -236,7 +244,8 @@ func fileValue(f *configfile.File, section, yamlKey string) (string, bool) {
 		return sharedValue(f.CleanSection().Shared, yamlKey)
 	case sectionUndo:
 		u := f.UndoSection()
-		return sharedValue(configfile.Shared{LogLevel: u.LogLevel, Output: u.Output}, yamlKey)
+		return sharedValue(
+			configfile.Shared{LogLevel: u.LogLevel, Output: u.Output, Progress: u.Progress}, yamlKey)
 	default:
 		return "", false
 	}
@@ -249,6 +258,8 @@ func sharedValue(s configfile.Shared, key string) (string, bool) {
 		return derefString(s.LogLevel)
 	case "output":
 		return derefString(s.Output)
+	case "progress":
+		return derefString(s.Progress)
 	case "dest":
 		return derefString(s.Dest)
 	default:

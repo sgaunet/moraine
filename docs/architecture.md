@@ -11,7 +11,8 @@ package, and the `undo` subcommand (remove the copies the last run made) behind
 `internal/app.Undo()`, backed by `internal/undo` and the run manifest
 (`internal/manifest`). The `config` subcommand tree is the one part of moraine that
 *writes* the configuration file, backed by `internal/configfile`'s node-tree editor and
-`internal/configform`'s interactive form. The CLI transport lives in `internal/cli` (a **Cobra** command
+`internal/configform`'s interactive form, and `internal/ui` is how a run narrates
+itself on a terminal. The CLI transport lives in `internal/cli` (a **Cobra** command
 tree): it binds flags, builds the typed config, runs the matching `app` function, and
 maps the outcome to the exit code. `main.go` is a shim that injects the build version
 and calls `cli.Execute`, holding no domain logic itself. Each stage is a distinct
@@ -31,7 +32,9 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   document types, the one-line text summary, and the `reporter` that collects
   per-file records through the `app` orchestrators' `onResult` callback. Per-event
   data does not come through that callback — it arrives whole on `app.Summary.Events`,
-  because there are only as many events as there are events.
+  because there are only as many events as there are events. `render.go` is the
+  companion choice for **stderr**: the bullet renderer or the plain text handler,
+  decided once per run (see decision 23).
 - **`internal/configfile`** — decodes the optional YAML configuration file and
   nothing else: no Cobra, no knowledge of flag defaults. Every setting is a pointer,
   so "absent from the file" is distinguishable from "present and equal to the
@@ -121,6 +124,11 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   and the value to start from) and gets them back holding the answers. That is what
   keeps the terminal out of `internal/cli` and lets the package be tested without one
   (Principle III), through huh's accessible mode over a `strings.Reader`.
+- **`internal/ui`** — the bullet rendering of stderr, built on
+  `github.com/sgaunet/bullets`. It is one of the two things a run's stderr can be, and
+  it is both halves of that: a `slog.Handler` (so the pipeline keeps logging through
+  `slog` and no domain package knows) and the `app.Progress` the phases report into.
+  `Enabled` is the single decision of which rendering a run gets — see decision 23.
 - **`internal/app`** — orchestrates the sort pipeline (`Organize`), the clean run
   (`Clean`) and the undo run (`Undo`), tallying each run's summary. `manifest.go` is
   the seam between the pipeline and the manifest in both directions: it records every
@@ -385,6 +393,68 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
     other half: `config edit` runs two forms in sequence over one standard input, and
     anything read ahead by the first would be lost when it returned. Both halves have a
     test that fails without them.
+
+23. **Two renderings of stderr, chosen once** — on a terminal, stderr is bullet lines
+    with a progress bar per stage; otherwise it is the plain `slog` text records
+    moraine has always written. `internal/cli/render.go` is the only place that
+    chooses, and `--progress=auto|always|never` is how a user overrides it.
+
+    The pipeline does not know which it got. Progress reaches the transport as *data*
+    through `app.Progress`/`app.Tracker` — one `Begin(phase, total)` per stage and one
+    `Inc()` per unit — exactly as placement results reach it through `onResult`
+    (decision 8), so `internal/app` stays presentation-free. `internal/ui` maps a
+    phase to the words it wears; naming a stage for a reader is not the pipeline's job.
+    A phase opened with a total of 0 is indeterminate rather than empty, which is how
+    `clean`'s hashing pass — whose size nothing knows in advance — gets a spinner
+    instead of a bar.
+
+    `Progress` is the one seam in the pipeline that must be **safe for concurrent
+    use**: the EXIF pool, the look-ahead classifier and the copy pool each report from
+    their own goroutine. Everything else — `Summary`, `manifest.Writer`, `onResult` —
+    stays on `Organize`'s goroutine, and keeping progress separate is why that is
+    still true.
+
+    The bullet rendering also **drops the per-event `group` line**
+    (`ui.phaseNarration`). That is the one place the two renderings deliberately
+    disagree about content, and the criterion is narrow: a message qualifies only if it
+    arrives once per unit of work and adds nothing to the bar tracking those units. The
+    line exists at info because the text rendering has nowhere else to put per-event
+    facts — the stdout summary is one line per run by contract — but beside a classify
+    bar and a copy bar it is noise that also pushes them up the screen once per event.
+    Its per-run neighbours stay: `exif` carries `raw=N` and `cluster` the gap, which no
+    bar shows. The filter matches on the message, so the transport's suite drives a real
+    run through the *plain* rendering and fails if the pipeline stops emitting it — a
+    rename cannot leave the filter matching nothing.
+
+    `auto` is deliberately conservative, and each clause answers a different question.
+    Both stdout **and** stderr must be terminals, which is Principle V's rule read
+    literally — redirecting the run result turns the bars off, and `--progress=always`
+    is the way to insist. `NO_COLOR` must be unset, because the library colours
+    unconditionally and has no monochrome mode to fall back to, so honouring the
+    variable means not drawing. `TERM` must not be `dumb`, since every repaint moves
+    the cursor. And the verbosity must be `info` or `warn`: `--verbose` asks for a line
+    per file, which competes with a bar for the same rows, and `--quiet` asks for
+    silence.
+
+24. **A progress report is not entitled to count what the tally does not** — the copy
+    phase advances once per photo *reached*, so a unit the cancellation beat advances
+    nothing. `organize.execute` ticks idle units only while the context is live, and
+    `executeUnit` ticks after its own cancellation check, so an interrupted run closes
+    on `photos placed · 3 of 400` rather than a full bar. This is the same mistake
+    `notAttempted` exists to prevent in `Summary` (decision 10), in a second place: a
+    bar that reads 100% next to `copied=3` on stdout is a bar that lies.
+
+25. **The bullet renderer owns stderr, and truncates to keep it** — every repaint is
+    relative to the cursor, so a second writer interleaving lines, or a single line
+    long enough to wrap, desynchronises the display. Hence: all stderr goes through the
+    one `Renderer`, and each line is cut to the terminal's width (asked per line, not
+    cached, so a mid-run resize cannot leave the renderer truncating to a width the
+    terminal no longer has). Repaints are throttled to one per 75 ms with the final
+    unit always drawn — a ten-thousand-photo library would otherwise drive ten thousand
+    cursor round-trips for an animation nobody can read that fast. Level gating happens
+    in the `slog.Handler` rather than in the library, whose line counter advances even
+    for a record its own level suppresses; a suppressed line would offset every later
+    repaint, so none is allowed to reach it.
 
 ## Integration Points
 

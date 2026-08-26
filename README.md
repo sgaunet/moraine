@@ -71,6 +71,9 @@ the logs.
   including the ` (1)` renames — and writes nothing at all, not even a folder.
 - **Pipe-safe output**: the run result goes to **stdout** (`--output=text|json`), logs
   and progress to **stderr**. Ctrl-C is graceful: it reports how far it got.
+- **Progress on a terminal**: stderr is drawn as bullet lines with a progress bar per
+  stage — metadata read, classification, copy. `--progress=never` gives the plain log
+  records back, which is the form to read when debugging.
 - **Single-photo mode**: pass a file instead of a directory.
 
 ## Requirements
@@ -400,6 +403,58 @@ Per-file *narration* is a log, not data: `sort` keeps it at `--verbose`, since a
 library produces thousands of lines, while `clean` and `undo` report each decision at
 the default level — previewing that plan is the reason you run them.
 
+### Progress on a terminal (`--progress`)
+
+On a terminal, stderr is drawn as bullet lines with a progress bar per stage rather
+than as plain log records:
+
+```console
+$ moraine sort -d ~/Photos/sorted ~/Photos/2025
+  • scan images=423 excluded_dest=/home/me/Photos/sorted
+  • metadata read · 421 of 423
+  • model ready url=http://127.0.0.1:11434 model=qwen3-vl:8b
+  • events classified · 6
+  • copying photos [============>       ] 61%
+```
+
+There is a bar for each stage whose size is known in advance — the metadata read (one
+unit per file), classification (one per event) and the copy (one per photo, companions
+travelling with the photo they belong to). The **per-event `group` line is dropped**
+here, since the two bars already say what it says and it would arrive once per event,
+pushing them up the screen as a library grows; `--output=json`'s `events` array carries
+those facts in full, and `--progress=never` restores the line. `undo` gets one over the records it is
+unwinding, and `clean` a spinner while it hashes the destination, since neither its
+index nor its source walk knows how much there is to do until it is done. A preview
+never claims to have written: `sort --dry-run` ends on `photos checked`, not
+`photos placed`.
+
+`--progress` decides when that happens:
+
+| Value    | Behaviour                                                          |
+|----------|--------------------------------------------------------------------|
+| `auto`   | the default — draw only when every condition below holds            |
+| `always` | draw regardless, e.g. to record a demo                             |
+| `never`  | keep the plain log records                                         |
+
+`auto` draws only when **all** of these are true, and falls back to the plain records
+otherwise:
+
+- **both stdout and stderr are terminals.** Constitution Principle V forbids progress
+  bars when stdout is not a TTY, and that is taken literally — so
+  `moraine sort > result.txt` shows no bars even from a terminal. Use
+  `--progress=always` if you want them anyway.
+- **`NO_COLOR` is unset.** The bullet renderer has no monochrome mode, so honouring
+  `NO_COLOR` means not drawing at all.
+- **`TERM` is not `dumb`.** Every repaint moves the cursor.
+- **the verbosity is `info` or `warn`.** `--verbose` asks for a line per file, which
+  competes with a bar for the same rows and is what a debugging session wants anyway;
+  `--quiet` asks for silence, and a bar is not silence.
+
+**`--progress=never` is the debugging form**, and it is byte-for-byte what moraine
+wrote before bars existed: one self-contained, timestamped `key=value` record per
+event, greppable and diffable. Nothing about the run changes — **stdout is identical
+in every mode**, so no script or pipeline is affected by this setting.
+
 `undo` renders the same two ways, over the records of the run it is unwinding:
 
 ```console
@@ -454,6 +509,7 @@ typo'd path would leave you wondering why nothing applied. Set `MORAINE_CONFIG=`
 # Keys at the top level are shared; a command's section overrides them.
 log_level: warn
 output: json
+progress: auto
 dest: /Volumes/photos/sorted
 
 sort:
@@ -477,7 +533,7 @@ clean:
 
 Keys are named after the flags, in `snake_case` (`--path-template` → `path_template`).
 `gap` is a duration string (`"6h"`, `"30m"`); `themes` is a list. `undo` accepts only
-`log_level` and `output` — it takes its destination as an argument.
+`log_level`, `output` and `progress` — it takes its destination as an argument.
 
 **Decoding is strict**: an unrecognised key is an error (exit `2`) rather than a
 setting that silently does nothing, and the message names the file and the line.
@@ -606,6 +662,7 @@ exactly as it was.
 | `--quiet`          | `-q`  | bool     | `false`                   | log errors only (excludes `--verbose` / `--log-level`)     |
 | `--verbose`        | `-v`  | bool     | `false`                   | log every file (excludes `--quiet` / `--log-level`)        |
 | `--output`         |       | string   | `text`                    | stdout format: `text` \| `json`                            |
+| `--progress`       |       | string   | `auto`                    | stderr rendering: `auto` \| `always` \| `never` (see below) |
 | `--dry-run`        | `-n`  | bool     | `false`                   | report the plan; writes **nothing**, not even a folder     |
 | `--move`           |       | bool     | `false`                   | remove each source after **verifying** its copy; never on a skip or error; **not undoable** |
 | `--jobs`           | `-j`  | int      | `0`                       | EXIF reader and copy workers (`0` = one per CPU)           |
@@ -628,6 +685,7 @@ exactly as it was.
 | `--quiet`     | `-q`  | bool     | `false`            | log errors only (excludes `--verbose` / `--log-level`)        |
 | `--verbose`   | `-v`  | bool     | `false`            | log every file (excludes `--quiet` / `--log-level`)          |
 | `--output`    |       | string   | `text`             | stdout format: `text` \| `json`                              |
+| `--progress`  |       | string   | `auto`             | stderr rendering: `auto` \| `always` \| `never` (see below)   |
 | `--config`    |       | string   | *(see above)*      | read settings from this YAML file (flags always win)          |
 
 ### `undo` flags
@@ -640,6 +698,7 @@ exactly as it was.
 | `--quiet`     | `-q`  | bool     | `false` | log errors only (excludes `--verbose` / `--log-level`)      |
 | `--verbose`   | `-v`  | bool     | `false` | log every file (excludes `--quiet` / `--log-level`)         |
 | `--output`    |       | string   | `text`  | stdout format: `text` \| `json`                             |
+| `--progress`  |       | string   | `auto`  | stderr rendering: `auto` \| `always` \| `never` (see below)  |
 | `--config`    |       | string   | *(see above)* | read settings from this YAML file (flags always win)  |
 
 `undo` acts on the **most recent** run recorded under the destination. After a

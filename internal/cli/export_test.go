@@ -46,17 +46,27 @@ func SettingKeys(section string) []string {
 // CommandFlags returns every flag the real command of a section registers.
 func CommandFlags(section string) []string {
 	var out []string
-	var output, configPath string
+	var output, progress, configPath string
 	var cmd *cobra.Command
 	switch section {
 	case sectionClean:
-		cmd = newCleanCmd(io.Discard, io.Discard, &output, &configPath)
+		cmd = newCleanCmd(io.Discard, io.Discard, &output, &progress, &configPath)
 	case sectionUndo:
-		cmd = newUndoCmd(io.Discard, io.Discard, &output, &configPath)
+		cmd = newUndoCmd(io.Discard, io.Discard, &output, &progress, &configPath)
 	default:
-		cmd = newSortCmd(io.Discard, io.Discard, &output, &configPath)
+		cmd = newSortCmd(io.Discard, io.Discard, &output, &progress, &configPath)
 	}
 	cmd.Flags().VisitAll(func(f *pflag.Flag) { out = append(out, f.Name) })
+	return out
+}
+
+// RootPersistentFlags returns the flags declared on the root command, which every
+// subcommand accepts without registering. A setting named after one of these has no
+// subcommand flag for the guard tests to find, which is why they ask.
+func RootPersistentFlags() []string {
+	var out []string
+	newRootCmd("dev", io.Discard, io.Discard).
+		PersistentFlags().VisitAll(func(f *pflag.Flag) { out = append(out, f.Name) })
 	return out
 }
 

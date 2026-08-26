@@ -16,6 +16,7 @@ type UndoConfig struct {
 	Delete   bool         // false ⇒ dry-run (report only); true ⇒ actually remove the copies
 	LogLevel slog.Level   // logging verbosity
 	Output   OutputFormat // stdout rendering of the run result (text | json)
+	Progress ProgressMode // when stderr is drawn as bullets and progress bars (auto | always | never)
 }
 
 // UndoOptions carries the already-parsed CLI inputs for an undo run. The transport
@@ -27,6 +28,7 @@ type UndoOptions struct {
 	Quiet    bool   // --quiet (errors only; excludes --verbose/--log-level)
 	Verbose  bool   // --verbose (per-file detail; excludes --quiet/--log-level)
 	Output   string // --output (textual: text|json)
+	Progress string // --progress (textual: auto|always|never)
 }
 
 // NewUndo builds a validated UndoConfig from already-parsed CLI Options. It
@@ -44,6 +46,11 @@ func NewUndo(o UndoOptions) (UndoConfig, error) {
 		return UndoConfig{}, err
 	}
 
+	progress, err := ParseProgress(o.Progress)
+	if err != nil {
+		return UndoConfig{}, err
+	}
+
 	if strings.TrimSpace(o.Dest) == "" {
 		return UndoConfig{}, fmt.Errorf("a destination root is required (got %q)", o.Dest)
 	}
@@ -52,7 +59,9 @@ func NewUndo(o UndoOptions) (UndoConfig, error) {
 		return UndoConfig{}, fmt.Errorf("unreadable destination directory %q: %w", o.Dest, err)
 	}
 
-	return UndoConfig{DestRoot: destRoot, Delete: o.Delete, LogLevel: level, Output: output}, nil
+	return UndoConfig{
+		DestRoot: destRoot, Delete: o.Delete, LogLevel: level, Output: output, Progress: progress,
+	}, nil
 }
 
 // Validate performs runtime checks (exit code 1 at the call site): the destination

@@ -106,7 +106,7 @@ func TestOrganizeClassifiesAheadOfPlacement(t *testing.T) {
 		})
 	}
 
-	if _, err := app.Organize(context.Background(), modelCfg(src, dest, srv.URL), quietLogger(), onResult); err != nil {
+	if _, err := app.Organize(context.Background(), modelCfg(src, dest, srv.URL), quietLogger(), onResult, nil); err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
 	if !<-waited {
@@ -133,7 +133,7 @@ func TestOrganizeLookAheadKeepsEventsInClusterOrder(t *testing.T) {
 	var streamed []string
 	onResult := func(r organize.Result) { streamed = append(streamed, r.Theme) }
 
-	sum, err := app.Organize(context.Background(), modelCfg(src, dest, srv.URL), quietLogger(), onResult)
+	sum, err := app.Organize(context.Background(), modelCfg(src, dest, srv.URL), quietLogger(), onResult, nil)
 	if err != nil {
 		t.Fatalf("Organize: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestOrganizeLookAheadKeepsTheSummaryDeterministic(t *testing.T) {
 			return "mountain"
 		})
 		defer srv.Close()
-		sum, err := app.Organize(context.Background(), modelCfg(src, dest, srv.URL), quietLogger(), nil)
+		sum, err := app.Organize(context.Background(), modelCfg(src, dest, srv.URL), quietLogger(), nil, nil)
 		if err != nil {
 			t.Fatalf("Organize: %v", err)
 		}
@@ -206,7 +206,7 @@ func TestOrganizeCancellationStopsTheLookAhead(t *testing.T) {
 	onResult := func(organize.Result) { once.Do(cancel) }
 
 	start := time.Now()
-	sum, err := app.Organize(ctx, modelCfg(src, dest, srv.URL), quietLogger(), onResult)
+	sum, err := app.Organize(ctx, modelCfg(src, dest, srv.URL), quietLogger(), onResult, nil)
 	if err == nil {
 		t.Fatal("expected the run to report its cancellation")
 	}
@@ -248,7 +248,7 @@ func TestOrganizeInterruptBeforeAnyClusterClassifies(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	sum, err := app.Organize(ctx, modelCfg(src, dest, srv.URL), quietLogger(), nil)
+	sum, err := app.Organize(ctx, modelCfg(src, dest, srv.URL), quietLogger(), nil, nil)
 	if err == nil {
 		t.Fatal("expected the run to report its cancellation")
 	}

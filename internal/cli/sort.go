@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,7 +21,7 @@ import (
 // values bind into a config.Options; RunE turns them into a validated config.Config
 // (config.New errors are usage errors → exit 2) and runs the pipeline (filesystem
 // validation, the exiftool preflight, and app.Organize are runtime errors → exit 1).
-func newSortCmd(stdout, stderr io.Writer, output, configPath *string) *cobra.Command {
+func newSortCmd(stdout, stderr io.Writer, output, progress, configPath *string) *cobra.Command {
 	var opts config.Options
 	cmd := &cobra.Command{
 		Use:   "sort [flags] <directory-or-file>",
@@ -130,6 +129,7 @@ Exit codes:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Source = args[0]
 			opts.Output = *output
+			opts.Progress = *progress
 
 			// The file fills in only what the command line did not; a bad file is an
 			// input error like any other (exit 2), reported with its path and line.
@@ -152,12 +152,12 @@ Exit codes:
 				return asRuntime(err)
 			}
 
-			logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
+			logger, prog := newRenderer(cfg.Progress, stdout, stderr, cfg.LogLevel, cfg.DryRun)
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
 			rep := newReporter(cfg.Output, stdout)
-			sum, runErr := app.Organize(ctx, cfg, logger, rep.addSort)
+			sum, runErr := app.Organize(ctx, cfg, logger, rep.addSort, prog)
 
 			// Report before deciding the exit code: an interrupted run still did
 			// real work, and the tally is the only record of what it managed.

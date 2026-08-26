@@ -61,11 +61,33 @@ letting the caller derive them from the shortfall, so a cancellation cannot infl
 - Per-event data exists only in the JSON rendering — the text line is one line per
   run. `app.Summary.Events` is bounded by the event count, not the photo count, which
   is why the run keeps it while deliberately not keeping per-file records in text mode.
-- The `app` orchestrators stay presentation-free: `Organize`/`Clean` take an
+- The `app` orchestrators stay presentation-free: `Organize`/`Clean`/`Undo` take an
   `onResult func(Result)` callback — the shape `clean.Cleaner.Run` already used — and
-  the transport decides how to render each record.
+  the transport decides how to render each record. Progress arrives the same way, as
+  data: an `app.Progress` whose `Begin(phase, total)` returns a `Tracker` the stages
+  `Inc()`. `internal/app` never learns whether there is a terminal, and `internal/ui`
+  chooses every word a phase wears.
+- **`Progress` is the one pipeline seam that must be safe for concurrent use** — the
+  EXIF pool, `labelAhead` and the copy pool each report from their own goroutine.
+  `Summary`, `manifest.Writer` and `cli.reporter` stay on `Organize`'s goroutine and
+  need no synchronisation, and keeping progress out of that set is why.
+- **A progress report counts only what the run reached.** A unit a cancellation beat
+  ticks nothing, so an interrupt closes on `photos placed · 3 of 400` rather than a full
+  bar — the same rule `notAttempted` applies to `Summary`. A bar reading 100% beside
+  `copied=3` on stdout is a bar that lies.
 - Per-file narration splits by command: `sort` logs it at **debug** (thousands of lines
   on a real library), `clean` at **info** (the dry-run plan is why you ran it).
+- **stderr has two renderings, chosen once** in `internal/cli/render.go`: the bullet
+  renderer (`internal/ui` — a `slog.Handler` *and* the `app.Progress`) or the plain
+  `slog` text handler. `--progress=never` is the plain one and is byte-identical to
+  what moraine wrote before bars existed, which is the form to read when debugging.
+  **stdout is identical in every mode**, so the setting cannot affect a script.
+- The two renderings agree on content with **one deliberate exception**: the bullet one
+  drops the per-event `group` line, which the classify and copy bars already account
+  for. A message qualifies only if it arrives once per unit of work and adds nothing to
+  the bar tracking it — a per-run line never does, however much it overlaps. Because
+  the filter matches on the message, a test drives a real run through the plain
+  rendering and fails if the pipeline stops emitting it.
 - Key names are snake_case in both renderings, matching the slog attribute keys the
   tool has always emitted (`companions_copied`, `would_delete`). `.golangci.yml`
   configures `tagliatelle` accordingly.

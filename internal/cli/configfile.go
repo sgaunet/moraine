@@ -44,6 +44,7 @@ func applySortFile(cmd *cobra.Command, opts *config.Options, f *configfile.File)
 	o.set("dest", s.Dest != nil, func() { opts.Dest = *s.Dest })
 	o.set("log-level", s.LogLevel != nil, func() { opts.LogLevel = *s.LogLevel })
 	o.set("output", s.Output != nil, func() { opts.Output = *s.Output })
+	o.set("progress", s.Progress != nil, func() { opts.Progress = *s.Progress })
 	o.set("model", s.Model != nil, func() { opts.Model = *s.Model })
 	o.set("gap", s.Gap != nil, func() { opts.Gap = s.Gap.Duration })
 	o.set("sample", s.Sample != nil, func() { opts.Sample = *s.Sample })
@@ -69,6 +70,7 @@ func applyCleanFile(cmd *cobra.Command, opts *config.CleanOptions, f *configfile
 	o.set("dest", c.Dest != nil, func() { opts.Dest = *c.Dest })
 	o.set("log-level", c.LogLevel != nil, func() { opts.LogLevel = *c.LogLevel })
 	o.set("output", c.Output != nil, func() { opts.Output = *c.Output })
+	o.set("progress", c.Progress != nil, func() { opts.Progress = *c.Progress })
 	return o.used
 }
 
@@ -79,6 +81,7 @@ func applyUndoFile(cmd *cobra.Command, opts *config.UndoOptions, f *configfile.F
 	o := &overlayer{cmd: cmd}
 	o.set("log-level", u.LogLevel != nil, func() { opts.LogLevel = *u.LogLevel })
 	o.set("output", u.Output != nil, func() { opts.Output = *u.Output })
+	o.set("progress", u.Progress != nil, func() { opts.Progress = *u.Progress })
 	return o.used
 }
 

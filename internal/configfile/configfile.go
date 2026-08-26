@@ -67,6 +67,7 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 type Shared struct {
 	LogLevel *string `yaml:"log_level"`
 	Output   *string `yaml:"output"`
+	Progress *string `yaml:"progress"`
 	Dest     *string `yaml:"dest"`
 }
 
@@ -99,6 +100,7 @@ type Clean struct {
 type Undo struct {
 	LogLevel *string `yaml:"log_level"`
 	Output   *string `yaml:"output"`
+	Progress *string `yaml:"progress"`
 }
 
 // File is a decoded configuration file.
@@ -144,6 +146,9 @@ func (f *File) UndoSection() Undo {
 	if u.Output == nil {
 		u.Output = f.Output
 	}
+	if u.Progress == nil {
+		u.Progress = f.Progress
+	}
 	return u
 }
 
@@ -151,6 +156,9 @@ func (f *File) UndoSection() Undo {
 func fillShared(dst *Shared, src Shared) {
 	if dst.LogLevel == nil {
 		dst.LogLevel = src.LogLevel
+	}
+	if dst.Progress == nil {
+		dst.Progress = src.Progress
 	}
 	if dst.Output == nil {
 		dst.Output = src.Output
