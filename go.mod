@@ -10,7 +10,7 @@ require (
 	github.com/evanoberholster/imagemeta v1.0.0
 	github.com/sgaunet/bullets v0.7.2
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.9
+	github.com/spf13/pflag v1.0.10
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/image v0.45.0
 )
