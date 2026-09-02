@@ -23,7 +23,7 @@ tasks:
     deps:
       - test
       - snapshot
-      - vuln
+      - vulncheck
     cmds:
       - task: lint
 
@@ -37,7 +37,7 @@ tasks:
     cmds:
       - go test -count=2 -race ./...
 
-  vuln:
+  vulncheck:
     desc: "Scan for known vulnerabilities reachable from our code"
     cmds:
       - govulncheck ./...

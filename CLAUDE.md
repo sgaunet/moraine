@@ -250,8 +250,8 @@ govulncheck).
 task build   # CGO_ENABLED=0 go build -o moraine .
 task test    # go test -count=2 -race ./...
 task lint    # golangci-lint run
-task vuln    # govulncheck ./...
-task check-before-commit   # lint + test + snapshot + vuln
+task vulncheck   # govulncheck ./...
+task check-before-commit   # lint + test + snapshot + vulncheck
 
 ./moraine sort -d ~/Photos/sorted ~/Photos/2025
 ./moraine sort --incremental -d ~/Photos/sorted ~/Photos/2025   # skip what the manifest knows
@@ -267,7 +267,9 @@ task check-before-commit   # lint + test + snapshot + vuln
   `cyclop`, `funlen`, `paralleltest`); formatters `gofmt` + `goimports`. There are
   **no `exclude-rules`** — the same rules apply inside `_test.go`. Tree is lint-clean.
 - CI (GitHub Actions, mirrored in `.forgejo/`): `linter.yml` → `task lint`,
-  `test.yml` → `task test`, `snapshot.yml`/`release.yml` → GoReleaser. `pre-commit`
+  `test.yml` → `task test` + `task vulncheck`, `snapshot.yml`/`release.yml` →
+  GoReleaser, `vulnerability-scan.yml` → `task vulncheck` plus a SARIF upload to
+  code scanning (GitHub only, monthly cron + push/PR/manual). `pre-commit`
   hooks shell out to `task test`/`lint`/`build`.
 
 **Key conventions:**

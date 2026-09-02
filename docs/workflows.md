@@ -51,16 +51,22 @@ gofmt -l .                                   # must print nothing
 go vet ./...
 CGO_ENABLED=1 go test ./... -race -count=1
 golangci-lint run
-govulncheck ./...                            # or: task vuln
+govulncheck ./...                            # or: task vulncheck
 ```
 
 ## Release Process
 
 - CI (GitHub Actions, mirrored under `.forgejo/`): `test.yml` runs `task test`
-  then `task vuln`, `linter.yml` runs `task lint`, `snapshot.yml` runs
-  `task snapshot` on `main`. `task vuln` fails the build on any advisory
+  then `task vulncheck`, `linter.yml` runs `task lint`, `snapshot.yml` runs
+  `task snapshot` on `main`. `task vulncheck` fails the build on any advisory
   govulncheck finds *reachable* from our code, so an unreachable advisory in a
   dependency does not block a release.
+- `vulnerability-scan.yml` (GitHub only — it writes Code Scanning alerts, which
+  Forgejo has no equivalent for) runs the same `task vulncheck` on push/PR to
+  `main`, on a monthly cron and on demand, then uploads a `govulncheck -format
+  sarif` report to the Security tab. The SARIF step cannot mask a failure of the
+  scan: `-format sarif` always exits 0. Fork PRs get a read-only token, so the
+  upload is skipped for them.
 - `release.yml` fires on a `v*` tag and runs `task release` (GoReleaser), which
   builds linux/darwin x amd64/arm64 `.tar.gz` archives plus checksums, publishes
   the GitHub release, and pushes `Casks/moraine.rb` to the `sgaunet/homebrew-tools`

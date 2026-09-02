@@ -7,6 +7,12 @@
 # GoReleaser build output
 /dist
 
+# Local eval corpus (personal photos): real labelled images cannot be committed —
+# size, licensing and privacy. Root-anchored so internal/exifmeta/testdata, which is
+# a tracked 719-byte fixture, keeps working.
+/testdata/
+
 # Go test & coverage artifacts
 *.test
 *.out
+/govulncheck.sarif
