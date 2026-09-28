@@ -19,6 +19,7 @@ import (
 	"github.com/sgaunet/moraine/internal/classify"
 	"github.com/sgaunet/moraine/internal/cluster"
 	"github.com/sgaunet/moraine/internal/config"
+	"github.com/sgaunet/moraine/internal/decide"
 	"github.com/sgaunet/moraine/internal/diskspace"
 	"github.com/sgaunet/moraine/internal/exifmeta"
 	"github.com/sgaunet/moraine/internal/heicpreview"
@@ -128,6 +129,8 @@ func Organize(
 		Fallback:          cfg.FallbackTheme,
 		MountainAltitudeM: cfg.MountainAltitude,
 		MinConfidence:     cfg.MinConfidence,
+
+		DeciderMinConfidence: cfg.DeciderMinConfidence,
 	}
 	opts.Classifier = buildClassifier(ctx, cfg, logger)
 	org := organize.New(cfg.DestRoot)
@@ -220,6 +223,7 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 	oc := classify.NewOllama(cfg.OllamaURL, cfg.Model, cfg.Sample, cfg.Themes)
 	oc.Logger = logger
 	oc.Vote = cfg.Vote
+	oc.ThemeDescriptions = cfg.ThemeDescriptions
 	ex := rawpreview.NewExtractor(cfg.ExifToolPath, rawPreviewTimeout)
 	ex.Logger = logger
 	oc.RawPreview = ex // a RAW is classified via its embedded JPEG preview
@@ -236,10 +240,44 @@ func buildClassifier(ctx context.Context, cfg config.Config, logger *slog.Logger
 		return nil
 	case classify.StatusReady:
 		logger.Info("model ready", "url", cfg.OllamaURL, "model", cfg.Model)
+		attachDecider(oc, cfg, logger)
 		return oc
 	}
 	// Unreachable: Preflight returns only the three Status values handled above.
 	return nil
+}
+
+// layaComfortableOptions is how many options Laya handles without trimming them:
+// past about 20 with a short description each, its option budget overflows and it
+// trims every description silently rather than refusing.
+const layaComfortableOptions = 20
+
+// attachDecider turns the classifier into describe-then-decide when a decision
+// service is configured. Nothing is contacted here: the readiness check waits for the
+// first event that is actually classified, so a run that classifies nothing — an
+// incremental pass over a placed library — costs the service nothing.
+func attachDecider(oc *classify.OllamaClassifier, cfg config.Config, logger *slog.Logger) {
+	if cfg.Decider == config.DeciderOff {
+		return
+	}
+	attrs := []any{"backend", string(cfg.Decider), "url", cfg.DeciderURL, "model", cfg.DeciderModel}
+	dc, err := decide.New(decide.Config{
+		Backend: decide.Backend(cfg.Decider), URL: cfg.DeciderURL, Model: cfg.DeciderModel, APIKey: cfg.DeciderAPIKey,
+	})
+	if err != nil {
+		// config.New already checked the URL, so this is a programming error; it still
+		// costs the run nothing but the decision service.
+		logger.Warn("decision service unusable: classifying with the vision model alone",
+			append(attrs, "reason", err)...)
+		return
+	}
+	dc.Logger = logger
+	oc.Decider = dc
+	oc.Fallback = cfg.FallbackTheme
+	oc.DeciderAttrs = attrs
+	if options := len(cfg.Themes) + 1; cfg.Decider == config.DeciderLaya && options > layaComfortableOptions {
+		logger.Warn("many themes for the decision service: descriptions may be trimmed", "options", options)
+	}
 }
 
 // attachHEICConverter gives the classifier a way to see HEIC photos, when the

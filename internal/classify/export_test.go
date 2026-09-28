@@ -19,5 +19,16 @@ var (
 func (o *OllamaClassifier) ChoosePhotos(c photo.Cluster) []photo.Photo { return o.choosePhotos(c) }
 
 func (o *OllamaClassifier) SampleImages(ctx context.Context, c photo.Cluster) []string {
-	return o.sampleImages(ctx, c)
+	sample := o.sampleImages(ctx, c)
+	if sample == nil {
+		return nil
+	}
+	images := make([]string, len(sample))
+	for i, s := range sample {
+		images[i] = s.data
+	}
+	return images
 }
+
+// DescribeSystemPrompt is the prompt every describe request carries.
+const DescribeSystemPrompt = describeSystemPrompt

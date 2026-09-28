@@ -1,0 +1,17 @@
+== system ==
+You are an image classifier. You are shown several photos from the same event. Respond ONLY with a JSON object of the form {"category": "<one allowed category>", "confidence": <number between 0 and 1>}. The category MUST be exactly one value from the allowed list (or "none"), in lowercase, with no extra text. The confidence is how sure you are of that category: 1 means certain, 0.5 means it is a guess between two categories.
+== user ==
+Allowed categories:
+- mountain: mountains, peaks, alpine landscapes, hiking, snow, skiing
+- special-events: weddings, parties, concerts, ceremonies, celebrations
+- cook: food, meals, cooking, plated dishes, restaurants
+- family: people, portraits, family gatherings, children, daily life
+- road-trips
+- none: the photos do not clearly fit any category above
+
+What the photo metadata says (context only — the images decide):
+- taken: 2025-03-02 09:10 to 2025-03-02 14:55 (local time)
+- highest altitude: 2710 m above sea level
+- location: 45.92, 6.87
+
+Pick the single category that best describes these photos, and say how confident you are of it. If none of them clearly fits, answer "none".

@@ -21,6 +21,14 @@ package classify_test
 // Without MORAINE_EVAL_CORPUS the test skips, so it costs a normal `task test`
 // nothing. The report ends with the mean confidence of right versus wrong answers,
 // which is the number to pick a --min-confidence from.
+//
+// With MORAINE_EVAL_DECIDER=laya|jev the same corpus is also run through
+// describe-then-decide (the key comes from LAYA_API_KEY or TYPESAFE_API_KEY, as for
+// sort), and the two methods are reported one after the other, then side by side
+// with their wall time. An event directory whose name starts with "mixed-" holds
+// photos of more than one theme: it is left out of accuracy and reported on its own,
+// so its confidence can be set against the homogeneous events' — a threshold is only
+// useful if it separates the two.
 
 import (
 	"context"
@@ -35,6 +43,8 @@ import (
 	"time"
 
 	"github.com/sgaunet/moraine/internal/classify"
+	"github.com/sgaunet/moraine/internal/config"
+	"github.com/sgaunet/moraine/internal/decide"
 	"github.com/sgaunet/moraine/internal/exifmeta"
 	"github.com/sgaunet/moraine/internal/heicpreview"
 	"github.com/sgaunet/moraine/internal/photo"
@@ -52,7 +62,15 @@ const (
 	evalVoteEnv          = "MORAINE_EVAL_VOTE"
 	evalMinConfidenceEnv = "MORAINE_EVAL_MIN_CONFIDENCE"
 	evalMinAccuracyEnv   = "MORAINE_EVAL_MIN_ACCURACY"
+
+	evalDeciderEnv              = "MORAINE_EVAL_DECIDER"
+	evalDeciderURLEnv           = "MORAINE_EVAL_DECIDER_URL"
+	evalDeciderModelEnv         = "MORAINE_EVAL_DECIDER_MODEL"
+	evalDeciderMinConfidenceEnv = "MORAINE_EVAL_DECIDER_MIN_CONFIDENCE"
 )
+
+// mixedPrefix marks an event directory holding more than one theme.
+const mixedPrefix = "mixed-"
 
 // evalTimeouts bound the external programs the harness may need. They match what
 // app.Organize uses, so the eval measures the same pipeline a real run does.
@@ -71,6 +89,11 @@ type evalSettings struct {
 	vote          bool
 	minConfidence float64
 	minAccuracy   float64
+
+	decider              config.Decider // off: single-call only
+	deciderURL           string
+	deciderModel         string
+	deciderMinConfidence float64
 }
 
 // evalEvent is one labeled event: the photos, and the theme the corpus says they
@@ -91,6 +114,9 @@ type evalOutcome struct {
 
 func (o evalOutcome) correct() bool { return o.got == o.event.expected }
 
+// mixed reports whether the event deliberately spans several themes.
+func (e evalEvent) mixed() bool { return strings.HasPrefix(filepath.Base(e.dir), mixedPrefix) }
+
 func TestClassifyAccuracy(t *testing.T) {
 	set := evalSettingsFromEnv(t)
 	events, themes := loadCorpus(t, set.corpus)
@@ -104,16 +130,36 @@ func TestClassifyAccuracy(t *testing.T) {
 	}
 	t.Logf("corpus %s: %d events, themes %v", set.corpus, len(events), themes)
 
-	oc := evalClassifier(t, set, themes)
+	single, singleTook := runEval(t, "single-call", evalClassifier(t, set, themes), set, set.minConfidence, events, themes)
+	if set.decider == config.DeciderOff {
+		checkAccuracyFloor(t, set, single)
+		return
+	}
+	described, describedTook := runEval(t, "described", evalDescriber(t, set, themes), set,
+		set.minConfidence, events, themes)
+	t.Logf("single-call accuracy=%s described accuracy=%s time ratio=%.2f (single-call %s, described %s)",
+		accuracyOf(single), accuracyOf(described), float64(describedTook)/float64(max(singleTook, 1)),
+		singleTook.Round(time.Second), describedTook.Round(time.Second))
+	checkAccuracyFloor(t, set, described)
+}
+
+// runEval labels every event with one classifier, reports the outcome under a
+// heading, and returns it with the wall time the labelling took.
+func runEval(
+	t *testing.T, name string, oc *classify.OllamaClassifier, set evalSettings, minConfidence float64,
+	events []evalEvent, themes []string,
+) ([]evalOutcome, time.Duration) {
+	t.Helper()
 	rec := &recordingClassifier{inner: oc}
 	opts := classify.Options{
-		Themes:            themes,
-		Fallback:          set.fallback,
-		Classifier:        rec,
-		MountainAltitudeM: 1500,
-		MinConfidence:     set.minConfidence,
+		Themes:               themes,
+		Fallback:             set.fallback,
+		Classifier:           rec,
+		MountainAltitudeM:    1500,
+		MinConfidence:        minConfidence,
+		DeciderMinConfidence: set.deciderMinConfidence,
 	}
-
+	start := time.Now()
 	outcomes := make([]evalOutcome, 0, len(events))
 	for _, ev := range events {
 		theme, method := classify.Label(context.Background(), ev.cluster, opts)
@@ -121,18 +167,74 @@ func TestClassifyAccuracy(t *testing.T) {
 			event: ev, got: theme, method: method, confidence: rec.last.Confidence,
 		})
 	}
-	reportEval(t, outcomes, themes)
-
-	correct := 0
-	for _, o := range outcomes {
-		if o.correct() {
-			correct++
-		}
+	took := time.Since(start)
+	t.Logf("== %s (%s) ==", name, took.Round(time.Second))
+	homogeneous, mixed := splitMixed(outcomes)
+	if len(homogeneous) > 0 {
+		reportEval(t, homogeneous, themes)
 	}
-	if accuracy := float64(correct) / float64(len(outcomes)); accuracy < set.minAccuracy {
+	reportMixed(t, homogeneous, mixed)
+	return outcomes, took
+}
+
+// checkAccuracyFloor fails the run when the measured method falls below the floor.
+func checkAccuracyFloor(t *testing.T, set evalSettings, outcomes []evalOutcome) {
+	t.Helper()
+	homogeneous, _ := splitMixed(outcomes)
+	if len(homogeneous) == 0 {
+		return
+	}
+	correct, _ := tallyOutcomes(homogeneous)
+	if accuracy := float64(correct) / float64(len(homogeneous)); accuracy < set.minAccuracy {
 		t.Errorf("accuracy %.1f%% is below the %s floor of %.1f%%",
 			100*accuracy, evalMinAccuracyEnv, 100*set.minAccuracy)
 	}
+}
+
+// splitMixed separates the homogeneous events, which have a right answer, from the
+// mixed ones, which only have a confidence worth looking at.
+func splitMixed(outcomes []evalOutcome) (homogeneous, mixed []evalOutcome) {
+	for _, o := range outcomes {
+		if o.event.mixed() {
+			mixed = append(mixed, o)
+		} else {
+			homogeneous = append(homogeneous, o)
+		}
+	}
+	return homogeneous, mixed
+}
+
+// accuracyOf renders the homogeneous events' accuracy.
+func accuracyOf(outcomes []evalOutcome) string {
+	homogeneous, _ := splitMixed(outcomes)
+	if len(homogeneous) == 0 {
+		return "n/a"
+	}
+	correct, _ := tallyOutcomes(homogeneous)
+	return fmt.Sprintf("%.1f%%", 100*float64(correct)/float64(len(homogeneous)))
+}
+
+// reportMixed prints every mixed event's answer and confidence, then the mean
+// confidence of mixed against homogeneous events (SC-002).
+func reportMixed(t *testing.T, homogeneous, mixed []evalOutcome) {
+	t.Helper()
+	if len(mixed) == 0 {
+		return
+	}
+	var mixedSum, homoSum float64
+	var mixedN, homoN int
+	for _, o := range mixed {
+		t.Logf("  mixed: %s -> %s (method %s, confidence %.2f)", o.event.dir, o.got, o.method, o.confidence)
+		if o.confidence > 0 {
+			mixedSum, mixedN = mixedSum+o.confidence, mixedN+1
+		}
+	}
+	for _, o := range homogeneous {
+		if o.confidence > 0 {
+			homoSum, homoN = homoSum+o.confidence, homoN+1
+		}
+	}
+	t.Logf("confidence: mixed %s, homogeneous %s", meanOf(mixedSum, mixedN), meanOf(homoSum, homoN))
 }
 
 // evalSettingsFromEnv reads the harness configuration, skipping the whole test when
@@ -152,7 +254,22 @@ func evalSettingsFromEnv(t *testing.T) evalSettings {
 		vote:          os.Getenv(evalVoteEnv) == "true",
 		minConfidence: envFloat(t, evalMinConfidenceEnv, 0),
 		minAccuracy:   envFloat(t, evalMinAccuracyEnv, 0),
+
+		decider:              evalDecider(t),
+		deciderURL:           os.Getenv(evalDeciderURLEnv),
+		deciderModel:         os.Getenv(evalDeciderModelEnv),
+		deciderMinConfidence: envFloat(t, evalDeciderMinConfidenceEnv, 0),
 	}
+}
+
+// evalDecider reads MORAINE_EVAL_DECIDER through the parser sort uses.
+func evalDecider(t *testing.T) config.Decider {
+	t.Helper()
+	d, err := config.ParseDecider(os.Getenv(evalDeciderEnv))
+	if err != nil {
+		t.Fatalf("%s: %v", evalDeciderEnv, err)
+	}
+	return d
 }
 
 func envOr(key, def string) string {
@@ -205,6 +322,43 @@ func evalClassifier(t *testing.T, set evalSettings, themes []string) *classify.O
 	}
 	t.Logf("model %s at %s (sample %d, vote %v, min-confidence %g)",
 		set.model, set.ollamaURL, set.sample, set.vote, set.minConfidence)
+	return oc
+}
+
+// evalDescriber builds a second classifier that describes and then decides, and fails
+// the test if the decision service is not ready: an eval against an unusable service
+// would only measure the single-call fallback a second time. That costs one readiness
+// request more than a run makes (the classifier still checks on its own), which is the
+// price of failing loudly instead of degrading quietly.
+func evalDescriber(t *testing.T, set evalSettings, themes []string) *classify.OllamaClassifier {
+	t.Helper()
+	oc := evalClassifier(t, set, themes)
+	// The same resolution sort applies, so the defaults cannot differ from a real run's.
+	cfg, err := config.New(config.Options{
+		Source: set.corpus, Gap: time.Hour, MountainAltitude: 1500, Themes: strings.Join(themes, ","),
+		Fallback: set.fallback, LogLevel: "warn",
+		Decider: string(set.decider), DeciderURL: set.deciderURL, DeciderModel: set.deciderModel,
+		DeciderAPIKey: os.Getenv(set.decider.APIKeyEnv()),
+	})
+	if err != nil {
+		t.Fatalf("decider settings: %v", err)
+	}
+	dc, err := decide.New(decide.Config{
+		Backend: decide.Backend(cfg.Decider), URL: cfg.DeciderURL, Model: cfg.DeciderModel, APIKey: cfg.DeciderAPIKey,
+	})
+	if err != nil {
+		t.Fatalf("decision client: %v", err)
+	}
+	dc.Logger = oc.Logger
+	options := classify.EffectiveDescriptions(themes, set.fallback, nil)
+	if err := dc.Ready(context.Background(), classify.Decision{Options: options, Fallback: set.fallback}); err != nil {
+		t.Fatalf("decision service %s at %s is not ready: %v", cfg.Decider, cfg.DeciderURL, err)
+	}
+	oc.Decider = dc
+	oc.Fallback = set.fallback
+	oc.DeciderAttrs = []any{"backend", string(cfg.Decider), "url", cfg.DeciderURL, "model", cfg.DeciderModel}
+	t.Logf("decider %s at %s (model %s, min-confidence %g)",
+		cfg.Decider, cfg.DeciderURL, cfg.DeciderModel, set.deciderMinConfidence)
 	return oc
 }
 

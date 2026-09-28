@@ -226,6 +226,14 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   embeds no JPEG preview for exiftool to copy out (its derived images are HEVC),
   which is why the two are separate. A failed Ollama preflight
   degrades to the altitude heuristic, then the fallback theme.
+- **Describe-then-decide** (`internal/classify/describe.go` + `internal/decide`, opt-in
+  `--decider laya|jev`): `OllamaClassifier.Decider` (a `classify.Decider`, implemented
+  by `*decide.Client` over `github.com/sgaunet/gutcheck`) turns one classification into
+  one describe call per sampled image plus one decision (one per image with `--vote`).
+  Readiness is one real request, lazily, once per run; any failure but an interrupt
+  falls back to the single call on the same images. `Verdict.Decided` picks the gate
+  (`DeciderMinConfidence`) and the method (`described`). Keys come from
+  `LAYA_API_KEY`/`TYPESAFE_API_KEY`, read by `internal/cli`, never a flag or file key.
 - **Model-call economy** (`internal/classify`): images are downscaled to 1024 px on
   the long side (`downscale.go`, `golang.org/x/image/draw`) before base64; a RAW or
   HEIC twin of a JPEG in the same directory is sent once; the cluster's capture
@@ -286,7 +294,7 @@ task check-before-commit   # lint + test + snapshot + vulncheck
 - **Entrypoint**: `main.go` → **Transport**: `internal/cli` → **Orchestration**:
   `internal/app`
 - **Domain**: `internal/{config,configfile,configform,scan,exifmeta,cluster,classify,
-  organize,clean,undo,manifest,photo,contenthash,rawpreview,diskspace}` ·
+  decide,organize,clean,undo,manifest,photo,contenthash,rawpreview,diskspace}` ·
   **stderr rendering**: `internal/ui`; fake-exec test helper in `internal/exiftooltest`
 - **Tests**: co-located `internal/**/*_test.go`
 - **Specs**: `specs/00N-*/` · **Constitution**: `.specify/memory/constitution.md`
@@ -300,7 +308,62 @@ task check-before-commit   # lint + test + snapshot + vulncheck
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **bullet progress UI on stderr** (feature request, no `specs/` dir).
+Latest change: **007-laya-theme-classify** — opt-in describe-then-decide classification
+(`--decider laya|jev`; plan in `specs/007-laya-theme-classify/`, gitignored). With a
+decider, the vision model **describes** each sampled photo (one call each, 2 wide, no
+JSON format, cut rune-safely to `min(300, 2400/n)` characters), and `internal/decide`
+asks a systemone service (self-hosted Laya, hosted Jev) one `choice` question over the
+themes plus the fallback, the fallback meaning *abstain*. The verdict carries
+`Decided`, which selects both its gate (`--decider-min-confidence`, since the scales
+are not comparable with `--min-confidence`) and its method (`described`, additive in
+`events[].method`). `--theme-description slug=text` (repeatable, a YAML mapping)
+overrides `classify.themeHints` in **both** prompts. See architecture decisions 26–31.
+
+Seven points worth carrying:
+
+1. **Off is byte-identical, and that is proven, not claimed.** `prompt_default.golden`
+   pins the single-call prompt (written from `main` code before any refactor), and a
+   binary-level diff against a `main`-built binary with `--sample 0` and `--sample 3`
+   found stdout, the tree, the manifest records **and the Ollama request bodies**
+   identical. Only the run stamp and the stub's port differed on stderr.
+2. **A decision service costs a run nothing but the method.** Readiness is checked
+   once, lazily, with a **real** request carrying the run's options (Laya answers
+   `/health` without auth and has no `/v1/models`, so nothing cheaper sees a bad key or
+   a 413). Unusable ⇒ one warning, whole run single-call; one failed decision ⇒ that
+   event single-call **on the images already sampled**. An interrupt is told apart by
+   the run's `ctx.Err()`, never `errors.Is(err, DeadlineExceeded)` — gutcheck wraps an
+   ordinary attempt timeout in exactly that.
+3. **What the research corrected**: the homelab Laya **enforces** a bearer key (its
+   role defaults say unauthenticated); gutcheck defaults to a 10 s attempt and retries
+   timeouts, which would time out a cold CPU checkpoint and then queue a second copy
+   (now 60 s / 2 m, `RetryTimeouts=false`); the English checkpoint's ~320-token state
+   budget is why `multilingual` is the default; gutcheck reads `LAYA_API_KEY` itself, so
+   `WithAPIKey` is **always** passed, even empty, to keep one source of credentials.
+4. **Three deliberate deviations from `tasks.md`**: `Decider.Ready(ctx, Decision)` takes
+   the options (R-2 needs the real question; the task's `Ready(ctx)` could not send it);
+   `config edit` edits `theme_description` **one entry per theme**, since huh's
+   accessible `Text` reads a single line and a multi-line field could hold only one
+   entry there; and `kindMap` joined the config tooling (show one line per entry,
+   `unset sort theme_description.cook`).
+5. **A bug found while building it**: `checkSections` validates a candidate file
+   through `config.New`, which requires Jev's key — so `config set sort --decider jev`
+   was refused unless `TYPESAFE_API_KEY` happened to be exported in that shell. The key
+   is never in the file; checks now pass `keyReadAtRunTime`. Regression-tested.
+6. **Still unmeasured (R-12, T056, the author's step)**: SC-001/002/006 and whether
+   `english` beats `multilingual` need `LAYA_API_KEY` against `192.168.0.47:8000`. The
+   eval harness (`MORAINE_EVAL_DECIDER=laya`, `mixed-*` event dirs) was smoke-tested
+   with the real `qwen3-vl:8b` and a **keyword fake** decider — plumbing, not accuracy.
+   Do not recommend `--decider` as a default until described ≥ single-call.
+7. **Verified by hand against the binary**: unreachable URL and the real homelab with a
+   wrong key each gave exactly one warning and `model-all` events with the key never
+   printed; Jev without a key is exit 2 before the scan; `kill -INT` mid-decision exited
+   1 in 0.05 s with `interrupted=true` and nothing placed.
+
+**New dependency**: `github.com/sgaunet/gutcheck` v0.1.0 (MIT, stdlib-only — one module
+added to the graph, author-requested). `govulncheck` clean; all six `CGO_ENABLED=0`
+targets build.
+
+Previous change: **bullet progress UI on stderr** (feature request, no `specs/` dir).
 Default stderr was flat `slog` text: on a real library a `sort` run spent minutes in
 three phases and said nothing at `info`, because per-file narration is deliberately at
 debug (thousands of lines being worse than silence). So the default experience was a
@@ -362,7 +425,7 @@ that verification was ad-hoc, and this change's terminal checks were too (BSD `s
 Building one is its own task; note that `script` on macOS does not forward a signal to
 the child, so an interrupt test needs the pid directly.
 
-Previous change: **`moraine config`** — a command tree that views and updates the
+Before it: **`moraine config`** — a command tree that views and updates the
 configuration file (feature request, no `specs/` dir). The YAML file existed but was
 read-only from the tool's side, so the only ways to answer "what is my effective gap?"
 or change a setting were an editor plus `--help`, and strict decoding made a typo an
@@ -419,7 +482,7 @@ the OSC 11 / DSR 6n capability queries bubbletea sends at startup. Without those
 replies it blocks before drawing and the screen looks empty — which is what made the
 first attempts at checking it look like a failure.
 
-Before it: **issue #34** — documentation drift, three items (issue-driven, no
+Before that: **issue #34** — documentation drift, three items (issue-driven, no
 `specs/` dir). Documentation only: the one Go file touched is a doc comment.
 
 1. **`docs/patterns.md`**: the Error Handling section showed

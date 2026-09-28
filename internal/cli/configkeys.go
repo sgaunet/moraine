@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -64,6 +65,9 @@ const (
 	kindFloat
 	kindDuration
 	kindList
+	// kindMap is a mapping of names to one-line texts. Its flag is repeatable, taking
+	// name=text, and its raw form below is those entries one per line.
+	kindMap
 )
 
 // setting describes one configurable value. Flag is the name it has on the command
@@ -97,9 +101,14 @@ var sortOnlySettings = []setting{
 	{Flag: "sample", YAML: "sample", Kind: kindInt},
 	{Flag: "min-confidence", YAML: "min_confidence", Kind: kindFloat},
 	{Flag: "vote", YAML: "vote", Kind: kindBool},
+	{Flag: "decider", YAML: "decider", Kind: kindString, Choices: deciders},
+	{Flag: "decider-url", YAML: "decider_url", Kind: kindString},
+	{Flag: "decider-model", YAML: "decider_model", Kind: kindString},
+	{Flag: "decider-min-confidence", YAML: "decider_min_confidence", Kind: kindFloat},
 	{Flag: "mountain-altitude", YAML: "mountain_altitude", Kind: kindFloat},
 	{Flag: "jobs", YAML: "jobs", Kind: kindInt},
 	{Flag: "exiftool", YAML: "exiftool", Kind: kindString},
+	{Flag: "theme-description", YAML: "theme_description", Kind: kindMap},
 }
 
 // undoSettings are the settings `undo` accepts. It takes its destination as an
@@ -219,8 +228,12 @@ func describe(section string, s setting) (defaultValue, help string) {
 	if f == nil {
 		return "", ""
 	}
-	if s.Kind == kindDuration {
+	switch s.Kind {
+	case kindDuration:
 		return prettyDuration(f.DefValue), f.Usage
+	case kindMap:
+		return "", f.Usage // pflag spells an empty array "[]"
+	case kindString, kindBool, kindInt, kindFloat, kindList:
 	}
 	return f.DefValue, f.Usage
 }
@@ -305,9 +318,32 @@ func sortValue(s configfile.Sort, key string) (string, bool) {
 		return derefFloat(s.MinConfidence)
 	case "vote":
 		return derefBool(s.Vote)
+	case "decider":
+		return derefString(s.Decider)
+	case "decider_url":
+		return derefString(s.DeciderURL)
+	case "decider_model":
+		return derefString(s.DeciderModel)
+	case "decider_min_confidence":
+		return derefFloat(s.DeciderMinConfidence)
+	case "theme_description":
+		if s.ThemeDescription == nil {
+			return "", false
+		}
+		return strings.Join(mapEntries(s.ThemeDescription), "\n"), true
 	default:
 		return "", false
 	}
+}
+
+// mapEntries renders a mapping as name=text entries, sorted by name so that every
+// rendering of the same file is the same.
+func mapEntries(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, k+"="+m[k])
+	}
+	return out
 }
 
 // The four pointer readers are spelled out rather than made generic: each formats its
@@ -370,6 +406,15 @@ func valueNode(s setting, raw string) *yaml.Node {
 			}
 		}
 		return &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle, Content: items}
+	case kindMap:
+		m := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		for line := range strings.SplitSeq(raw, "\n") {
+			if name, text, ok := strings.Cut(line, "="); ok {
+				m.Content = append(m.Content,
+					scalarNode("!!str", strings.TrimSpace(name)), scalarNode("!!str", strings.TrimSpace(text)))
+			}
+		}
+		return m
 	case kindString:
 		return scalarNode("!!str", raw)
 	default:

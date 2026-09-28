@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/sgaunet/moraine/internal/configfile"
 	"github.com/sgaunet/moraine/internal/configform"
@@ -107,10 +109,73 @@ Exit codes:
 }
 
 // choice is one setting the user picked, kept with the section it belongs to since the
-// same setting name means a different thing in each.
+// same setting name means a different thing in each. A mapping is offered one entry at
+// a time — one theme's description is one question — so Entry names which.
 type choice struct {
 	Section string
 	Setting setting
+	Entry   string
+}
+
+// key is how the choice is listed and titled: the setting's key, plus the entry.
+func (c choice) key() string {
+	if c.Entry == "" {
+		return c.Setting.key(c.Section)
+	}
+	return c.Setting.key(c.Section) + "." + c.Entry
+}
+
+// path is where the choice lives in the file.
+func (c choice) path() []string {
+	if c.Entry == "" {
+		return c.Setting.path(c.Section)
+	}
+	return append(c.Setting.path(c.Section), c.Entry)
+}
+
+// value is the choice's value in effect and whether the file sets it. An entry has no
+// default of its own: an undescribed theme keeps its built-in description.
+func (c choice) value(file *configfile.File) (string, bool) {
+	value, fromFile := fileValue(file, c.Section, c.Setting.YAML)
+	if c.Entry != "" {
+		text, ok := entries(value)[c.Entry]
+		return text, fromFile && ok
+	}
+	if !fromFile {
+		value, _ = describe(c.Section, c.Setting)
+	}
+	return value, fromFile
+}
+
+// entries parses a mapping's raw name=text lines.
+func entries(raw string) map[string]string {
+	out := make(map[string]string)
+	for line := range strings.SplitSeq(raw, "\n") {
+		if name, text, ok := strings.Cut(line, "="); ok {
+			out[name] = text
+		}
+	}
+	return out
+}
+
+// choicesFor lists what the picker offers for a section: every setting, with a mapping
+// expanded to one entry per theme it can describe — the themes in effect and the
+// fallback theme.
+func choicesFor(file *configfile.File, section string) []choice {
+	out := make([]choice, 0, len(settingsFor(section)))
+	for _, s := range settingsFor(section) {
+		if s.Kind != kindMap {
+			out = append(out, choice{Section: section, Setting: s})
+			continue
+		}
+		current := currentValues(file, section)
+		for _, theme := range append(strings.Split(current["themes"], ","), current["fallback-theme"]) {
+			if theme = strings.TrimSpace(theme); theme != "" {
+				out = append(out, choice{Section: section, Setting: s, Entry: theme})
+			}
+		}
+	}
+	return out
 }
 
 // pickSettings asks which settings to change. It is one question, so submitting it is
@@ -123,20 +188,18 @@ func pickSettings(
 ) ([]choice, error) {
 	all := make([]choice, 0, len(list)*len(sortOnlySettings))
 	for _, section := range list {
-		for _, s := range settingsFor(section) {
-			all = append(all, choice{Section: section, Setting: s})
-		}
+		all = append(all, choicesFor(file, section)...)
 	}
 
 	width := 0
 	for _, c := range all {
-		width = max(width, len(c.Setting.key(c.Section)))
+		width = max(width, len(c.key()))
 	}
 	options := make([]configform.Option, 0, len(all))
 	for _, c := range all {
 		options = append(options, configform.Option{
 			Label: pickLabel(file, c, width),
-			Value: c.Setting.key(c.Section),
+			Value: c.key(),
 		})
 	}
 
@@ -162,7 +225,7 @@ func pickSettings(
 	// questions arrive in the order the list showed them.
 	out := make([]choice, 0, len(wanted))
 	for _, c := range all {
-		if wanted[c.Setting.key(c.Section)] {
+		if wanted[c.key()] {
 			out = append(out, c)
 		}
 	}
@@ -172,15 +235,11 @@ func pickSettings(
 // pickLabel renders one line of the list: the setting, the value in effect, and a mark
 // for the ones the file sets, so the list also answers "what did I configure again?".
 func pickLabel(file *configfile.File, c choice, width int) string {
-	def, _ := describe(c.Section, c.Setting)
-	value, fromFile := fileValue(file, c.Section, c.Setting.YAML)
-	if !fromFile {
-		value = def
-	}
+	value, fromFile := c.value(file)
 	if value == "" {
 		value = "(unset)"
 	}
-	label := fmt.Sprintf("%-*s  %s", width, c.Setting.key(c.Section), value)
+	label := fmt.Sprintf("%-*s  %s", width, c.key(), value)
 	if fromFile {
 		label += "  ←"
 	}
@@ -194,17 +253,19 @@ func valueQuestions(file *configfile.File, picked []choice) []configform.Group {
 	fields := make([]configform.Field, 0, len(picked))
 	for _, c := range picked {
 		def, help := describe(c.Section, c.Setting)
-		value, fromFile := fileValue(file, c.Section, c.Setting.YAML)
-		if !fromFile {
-			value = def
+		value, _ := c.value(file)
+		help += "\n(default: " + defaultLabel(def) + " — answering it removes the setting)"
+		if c.Entry != "" {
+			help = "what " + c.Entry + " covers, sent to the models with it\n" +
+				"(empty keeps the built-in description, and removes the entry)"
 		}
 		fields = append(fields, configform.Field{
-			Title:    c.Setting.key(c.Section),
-			Help:     help + "\n(default: " + defaultLabel(def) + " — answering it removes the setting)",
+			Title:    c.key(),
+			Help:     help,
 			Kind:     formKind(c.Setting),
 			Options:  configform.NewOptions(c.Setting.Choices...),
 			Value:    value,
-			Validate: validatorFor(c.Section, c.Setting, currentValues(file, c.Section)),
+			Validate: validatorFor(c, currentValues(file, c.Section)),
 		})
 	}
 	return []configform.Group{{
@@ -261,7 +322,8 @@ func currentValues(file *configfile.File, section string) map[string]string {
 // editing them, so a pair changed together — swapping a theme and the fallback theme
 // in one sitting — can still be reported at the end rather than inline. That check
 // runs before anything is written, so such a pair is refused, never saved.
-func validatorFor(section string, s setting, current map[string]string) func(string) error {
+func validatorFor(c choice, current map[string]string) func(string) error {
+	s := c.Setting
 	if len(s.Choices) > 0 || s.Kind == kindBool {
 		return nil
 	}
@@ -271,7 +333,16 @@ func validatorFor(section string, s setting, current map[string]string) func(str
 			candidate[k] = v
 		}
 		candidate[s.Flag] = answer
-		return checkValues(section, candidate)
+		if c.Entry != "" {
+			// One entry answered: the mapping is the others plus this one.
+			m := entries(current[s.Flag])
+			m[c.Entry] = answer
+			if strings.TrimSpace(answer) == "" {
+				delete(m, c.Entry)
+			}
+			candidate[s.Flag] = strings.Join(mapEntries(m), "\n")
+		}
+		return checkValues(c.Section, candidate)
 	}
 }
 
@@ -288,13 +359,20 @@ func applyAnswers(doc *configfile.Document, picked []choice, asked, answered []c
 			continue
 		}
 		def, _ := describe(c.Section, c.Setting)
+		if c.Entry != "" {
+			def, now = "", strings.TrimSpace(now)
+		}
 		if now == def {
 			// Back to the default: remove it rather than pin it, which is what
 			// `config unset` does and what origin=default then reports.
-			doc.Unset(c.Setting.path(c.Section))
+			doc.Unset(c.path())
 			continue
 		}
-		if err := doc.Set(c.Setting.path(c.Section), valueNode(c.Setting, now)); err != nil {
+		value := valueNode(c.Setting, now)
+		if c.Entry != "" {
+			value = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: now}
+		}
+		if err := doc.Set(c.path(), value); err != nil {
 			return err
 		}
 	}

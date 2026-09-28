@@ -43,7 +43,7 @@ tasks:
       - govulncheck ./...
 
   eval:
-    desc: "Measure classification accuracy against a labeled corpus (MORAINE_EVAL_CORPUS=<dir>)"
+    desc: "Measure classification accuracy against a labeled corpus (MORAINE_EVAL_CORPUS=<dir>; MORAINE_EVAL_DECIDER=laya|jev adds describe-then-decide side by side)"
     cmds:
       # -count=1 so a measurement is never served from the test cache, and no -race:
       # this talks to a real vision model and the run is dominated by its latency.

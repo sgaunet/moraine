@@ -64,8 +64,23 @@ type OllamaClassifier struct {
 	// came back in.
 	VoteWorkers int
 
+	// Decider, when set, turns classification into describe-then-decide: the model
+	// describes each sampled photo and the Decider picks the theme (see describe.go).
+	// Nil keeps the single-call classification.
+	Decider Decider
+	// Fallback is the fallback theme, offered to the Decider as the abstention.
+	Fallback string
+	// DeciderAttrs identify the decision service in the log lines about it, as
+	// slog key-value pairs (backend, url, model).
+	DeciderAttrs []any
+	// ThemeDescriptions says what a theme covers, in the user's words. It replaces the
+	// built-in description in both prompts; a theme it does not name keeps its own.
+	ThemeDescriptions map[string]string
+
 	// warmOnce loads the model before the first classification and never again.
 	warmOnce sync.Once
+	// decider records whether the decision service passed its readiness check.
+	decider deciderState
 }
 
 // NewOllama builds an OllamaClassifier with sane defaults for the given themes.
@@ -298,7 +313,8 @@ const abstainCategory = "none"
 
 // themeHints maps each built-in default theme to a short description so the
 // vision model matches the scene instead of guessing at a bare slug. Custom
-// themes (not in this map) are listed by slug alone.
+// themes (not in this map) are listed by slug alone, unless the user described
+// them (OllamaClassifier.ThemeDescriptions, which also overrides these).
 var themeHints = map[string]string{
 	"mountain":       "mountains, peaks, alpine landscapes, hiking, snow, skiing",
 	"special-events": "weddings, parties, concerts, ceremonies, celebrations",
@@ -319,8 +335,8 @@ func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (Verdi
 	callCtx, cancel := o.bounded(ctx)
 	defer cancel()
 
-	images := o.sampleImages(callCtx, c)
-	if len(images) == 0 {
+	sample := o.sampleImages(callCtx, c)
+	if len(sample) == 0 {
 		o.log().Warn("classification skipped: no usable image (a RAW or HEIC with no extractable preview is not sent to the model)",
 			"group_size", len(c.Photos))
 		return Verdict{}, errors.New("no usable image to classify")
@@ -332,6 +348,20 @@ func (o *OllamaClassifier) Classify(ctx context.Context, c photo.Cluster) (Verdi
 	// not pull gigabytes into memory for nothing.
 	o.ensureLoaded(ctx)
 
+	if o.Decider != nil {
+		// Descriptions and decisions are calls of their own, each with its own budget,
+		// so they take ctx. Any failure other than an interrupt falls through to the
+		// single-call path below, on the images already sampled.
+		v, ok, err := o.decide(ctx, c, sample)
+		if err != nil || ok {
+			return v, err
+		}
+	}
+
+	images := make([]string, len(sample))
+	for i, s := range sample {
+		images[i] = s.data
+	}
 	if o.Vote && len(c.Photos) > SmallGroupMax {
 		// Each vote is a model call of its own, so it gets its own Timeout budget
 		// rather than a share of this one: one slow photo must not spend the next
@@ -406,17 +436,35 @@ func (o *OllamaClassifier) ask(ctx context.Context, c photo.Cluster, images []st
 	}
 	o.log().Debug("contacting model", "url", o.BaseURL, "model", o.Model, "images", len(images))
 
+	body, attempt, err := o.postChatRetrying(ctx, payload)
+	var v Verdict
+	if err == nil {
+		v, err = o.parseVerdict(body)
+	}
+	if err != nil {
+		o.log().Warn("model unavailable or answer rejected — fallback",
+			"url", o.BaseURL, "model", o.Model, "attempts", attempt, "err", err)
+		return Verdict{}, fmt.Errorf("ollama unavailable after %d attempt(s): %w", attempt, err)
+	}
+	return v, nil
+}
+
+// postChatRetrying sends payload, retrying only a transient failure, and returns the
+// body with the number of attempts made. Only the transport can fail transiently:
+// parsing what came back is deterministic, since decoding is pinned, so asking the
+// same question again cannot change the answer.
+func (o *OllamaClassifier) postChatRetrying(ctx context.Context, payload []byte) ([]byte, int, error) {
 	var lastErr error
 	attempt := 0
 	for attempt < chatAttempts {
 		attempt++
-		v, err := o.doChat(ctx, payload)
+		body, err := o.postChat(ctx, payload)
 		if err == nil {
-			return v, nil
+			return body, attempt, nil
 		}
 		lastErr = err
 		if !errors.Is(err, errTransient) {
-			break // deterministic answer (rejected category, bad request): asking again cannot help
+			break // deterministic failure (bad request): asking again cannot help
 		}
 		if attempt == chatAttempts {
 			break
@@ -425,9 +473,7 @@ func (o *OllamaClassifier) ask(ctx context.Context, c photo.Cluster, images []st
 			break // timeout/cancel: do not keep retrying
 		}
 	}
-	o.log().Warn("model unavailable or answer rejected — fallback",
-		"url", o.BaseURL, "model", o.Model, "attempts", attempt, "err", lastErr)
-	return Verdict{}, fmt.Errorf("ollama unavailable after %d attempt(s): %w", attempt, lastErr)
+	return nil, attempt, lastErr
 }
 
 // payload encodes one chat request carrying the given images.
@@ -476,7 +522,7 @@ func (o *OllamaClassifier) userPrompt(c photo.Cluster) string {
 	var b strings.Builder
 	b.WriteString("Allowed categories:\n")
 	for _, t := range o.Themes {
-		if hint := themeHints[t]; hint != "" {
+		if hint := describeTheme(t, themeHints[t], o.ThemeDescriptions); hint != "" {
 			fmt.Fprintf(&b, "- %s: %s\n", t, hint)
 		} else {
 			fmt.Fprintf(&b, "- %s\n", t)
@@ -650,12 +696,8 @@ func (o *OllamaClassifier) ensureLoaded(ctx context.Context) {
 	})
 }
 
-func (o *OllamaClassifier) doChat(ctx context.Context, payload []byte) (Verdict, error) {
-	body, err := o.postChat(ctx, payload)
-	if err != nil {
-		return Verdict{}, err
-	}
-
+// parseVerdict reads a classification answer.
+func (o *OllamaClassifier) parseVerdict(body []byte) (Verdict, error) {
 	var parsed chatResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return Verdict{}, fmt.Errorf("unreadable ollama response: %w", err)
@@ -696,16 +738,23 @@ func reportedConfidence(c *float64) float64 {
 	return *c
 }
 
+// sampled is one photo prepared for the model: its path, for the logs, and its
+// downscaled bytes in base64.
+type sampled struct {
+	path string
+	data string
+}
+
 // sampleImages selects the photos to send and returns their base64 content.
 // Eligible photos are JPEG/PNG (read directly) or RAW/HEIC (preview via the
 // extractor); unknown formats are excluded. A photo whose bytes cannot be obtained
 // (read error, or no usable preview) is skipped, never fatal (FR-007).
-func (o *OllamaClassifier) sampleImages(ctx context.Context, c photo.Cluster) []string {
+func (o *OllamaClassifier) sampleImages(ctx context.Context, c photo.Cluster) []sampled {
 	chosen := o.choosePhotos(c)
 	if len(chosen) == 0 {
 		return nil
 	}
-	images := make([]string, 0, len(chosen))
+	images := make([]sampled, 0, len(chosen))
 	for _, p := range chosen {
 		data, err := o.imageBytes(ctx, p)
 		if err != nil {
@@ -723,7 +772,7 @@ func (o *OllamaClassifier) sampleImages(ctx context.Context, c photo.Cluster) []
 		}
 		o.log().Debug("model input", "file", p.Path,
 			"bytes_before", len(data), "bytes_sent", len(sent))
-		images = append(images, base64.StdEncoding.EncodeToString(sent))
+		images = append(images, sampled{path: p.Path, data: base64.StdEncoding.EncodeToString(sent)})
 	}
 	return images
 }

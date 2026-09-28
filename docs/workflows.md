@@ -44,6 +44,16 @@ runs in CI — a real corpus cannot be committed and a vision model cannot run t
 Run it before and after any change to the prompt, the sampling rules, or the
 confidence threshold.
 
+To compare describe-then-decide against the single call on the same corpus, add
+`MORAINE_EVAL_DECIDER=laya|jev` (plus `MORAINE_EVAL_DECIDER_URL`,
+`MORAINE_EVAL_DECIDER_MODEL` and `MORAINE_EVAL_DECIDER_MIN_CONFIDENCE`, all
+optional and defaulting as `sort` does; the key comes from `LAYA_API_KEY` or
+`TYPESAFE_API_KEY`). The report then shows the single-call method, the described
+method, and one side-by-side line with both accuracies and the wall-time ratio. An
+event directory named `mixed-*` holds photos of more than one theme: it is left out
+of accuracy and reported with its confidence next to the homogeneous events' mean,
+which is how to check that a `--decider-min-confidence` can separate them.
+
 ## Verification Suite (run before every push)
 
 ```bash

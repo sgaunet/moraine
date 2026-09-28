@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -251,5 +252,44 @@ func TestConfigEditRefusesAnUnknownSection(t *testing.T) {
 	configAt(t, "")
 	if _, _, code := runEdit(t, "", "nonsense"); code != 2 {
 		t.Errorf("exit = %d, want 2", code)
+	}
+}
+
+// pickNumber finds the number the picker gives a setting, from a session that picked
+// nothing, so a test does not depend on the table's order.
+func pickNumber(t *testing.T, key string) int {
+	t.Helper()
+	_, stderr, _ := runEdit(t, "0\n", "sort")
+	for _, line := range strings.Split(stderr, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == key {
+			n, err := strconv.Atoi(strings.TrimSuffix(fields[0], "."))
+			if err == nil {
+				return n
+			}
+		}
+	}
+	t.Fatalf("the picker does not list %s:\n%s", key, stderr)
+	return 0
+}
+
+// A theme description is edited one theme at a time, each answer checked by the
+// rules a run applies: a description that is too long is refused at the question.
+func TestConfigEditThemeDescription(t *testing.T) {
+	path := configAt(t, "")
+	n := pickNumber(t, "sort.theme_description.cook")
+	script := fmt.Sprintf("%d\n0\n%s\nfood, market stalls\n", n, strings.Repeat("x", 121))
+	stdout, stderr, code := runEdit(t, script, "sort")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "longer than 120") {
+		t.Errorf("the long answer was not refused at the question:\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "sort.theme_description.cook=food, market stalls origin=file") {
+		t.Errorf("stdout:\n%s", stdout)
+	}
+	if body := read(t, path); !strings.Contains(body, "cook: food, market stalls") {
+		t.Errorf("file:\n%s", body)
 	}
 }

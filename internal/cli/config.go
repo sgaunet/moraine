@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -254,6 +255,14 @@ func effective(file *configfile.File, list []string) []configSetting {
 		for _, s := range settingsFor(section) {
 			def, _ := describe(section, s)
 			value, fromFile := fileValue(file, section, s.YAML)
+			if s.Kind == kindMap && value != "" {
+				// One line per entry, keyed by name, so each reads like any other setting.
+				for line := range strings.SplitSeq(value, "\n") {
+					name, text, _ := strings.Cut(line, "=")
+					out = append(out, configSetting{Key: s.key(section) + "." + name, Value: text, Origin: originFile})
+				}
+				continue
+			}
 			origin := originFile
 			if !fromFile {
 				value, origin = def, originDefault
@@ -345,6 +354,7 @@ func checkSections(f *configfile.File) error {
 
 	sortOpts := defaultSortOptions()
 	sortOpts.Source = "."
+	sortOpts.DeciderAPIKey = keyReadAtRunTime
 	applySortFile(newSortCmd(io.Discard, io.Discard, &output, &progress, &configPath), &sortOpts, f)
 	if _, err := config.New(sortOpts); err != nil {
 		return err
@@ -401,6 +411,7 @@ func checkValues(section string, values map[string]string) error {
 			return err
 		}
 		opts.Source, opts.Output, opts.Progress = ".", values["output"], values["progress"]
+		opts.DeciderAPIKey = keyReadAtRunTime
 		_, err := config.New(opts)
 		return err
 	}
@@ -412,12 +423,26 @@ func checkValues(section string, values map[string]string) error {
 // command) is handled by the caller.
 func setAll(f *pflag.FlagSet, values map[string]string) error {
 	for _, name := range slices.Sorted(maps.Keys(values)) {
-		if f.Lookup(name) == nil {
+		flag := f.Lookup(name)
+		if flag == nil {
 			continue
 		}
-		if err := f.Set(name, values[name]); err != nil {
-			return err
+		items := []string{values[name]}
+		if flag.Value.Type() == "stringArray" {
+			// A repeatable flag takes its raw form's entries one Set at a time.
+			items = slices.DeleteFunc(strings.Split(values[name], "\n"), func(v string) bool { return v == "" })
+		}
+		for _, v := range items {
+			if err := f.Set(name, v); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
+
+// keyReadAtRunTime stands in for a decision service's API key when a configuration is
+// checked rather than run. The key is never part of the file — sort reads it from the
+// environment — so whether it is exported where `moraine config` happens to run says
+// nothing about whether the file is valid.
+const keyReadAtRunTime = "(read from the environment by sort)"

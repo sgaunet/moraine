@@ -23,6 +23,19 @@ on it. (`classify.errTransient` is the one unexported sentinel, and it never lea
 its retry loop.) Everything else is wrapped context, so add a fourth only when some
 caller genuinely has to tell that condition apart.
 
+The decision service added none. `internal/decide` returns gutcheck's own errors
+wrapped with `%w` — so `errors.Is(err, gutcheck.ErrAuthentication)` and `errors.As`
+into `*gutcheck.APIError` still work for a caller that cares — and adds only what a
+user can act on: a 401/403 names the variable the key is read from
+(`LAYA_API_KEY`/`TYPESAFE_API_KEY`), never its value. `classify` does not branch on
+those errors at all: any failure is "use the single call instead".
+
+Tell an interrupt from a failure by asking **the run's context**, not the error.
+gutcheck reports a per-attempt timeout as a `*ConnectionError` wrapping
+`context.DeadlineExceeded`, so `errors.Is(err, context.DeadlineExceeded)` is true for
+an ordinary slow server too; `ctx.Err() != nil` on the context the run passed in is
+true only when the run itself is ending.
+
 `main.go` decides nothing: it is `os.Exit(cli.Execute(...))`. `internal/cli/exit.go`
 owns the 0/1/2 mapping, and which side of it an error lands on is decided by whether
 the CLI wrapped it — post-parse failures (filesystem validation, the exiftool

@@ -1,8 +1,15 @@
 // Package classify assigns a theme to a cluster using a three-stage pipeline:
 // an optional Ollama vision model (constrained to the configured theme set)
 // decides first; if it is unavailable, errors, abstains, or is not confident
-// enough (Options.MinConfidence), a pure-Go altitude heuristic applies; otherwise
-// a guaranteed fallback theme is used (FR-004/FR-005).
+// enough, a pure-Go altitude heuristic applies; otherwise a guaranteed fallback
+// theme is used (FR-004/FR-005).
+//
+// The model stage has two shapes. By default the vision model picks the theme in
+// one call, gated by Options.MinConfidence. With a Decider configured, the vision
+// model instead describes each sampled photo in words and the decision service picks
+// the theme from those descriptions; its verdict is Decided, gated by
+// Options.DeciderMinConfidence, and reported as MethodDescribed. A decision service
+// that fails sends that event back to the single-call shape (see describe.go).
 package classify
 
 import (
@@ -23,6 +30,11 @@ type Verdict struct {
 	// model that answers neither leaves it at 0. A verdict with no reported
 	// confidence is never rejected by MinConfidence — see MeetsThreshold.
 	Confidence float64
+	// Decided is true when a decision service produced the verdict, directly or as
+	// the tally of its per-photo decisions. It selects both the threshold that gates
+	// the verdict (DeciderMinConfidence rather than MinConfidence, since the two
+	// confidences are on different scales) and the method reported for it.
+	Decided bool
 }
 
 // MeetsThreshold reports whether the verdict is confident enough to be used.
@@ -61,6 +73,9 @@ const (
 	// MethodManifest — the theme an earlier run already filed this event under was
 	// reused (an incremental run), so no classifier ran at all.
 	MethodManifest Method = "manifest"
+	// MethodDescribed — the vision model described the photos in words and a
+	// decision service picked the theme from those descriptions.
+	MethodDescribed Method = "described"
 )
 
 // SmallGroupMax is the largest group size still classified using all photos.
@@ -80,16 +95,21 @@ type Options struct {
 	// until a threshold has been measured. Below it, the cluster falls through to
 	// the heuristic and then the fallback theme, exactly as an abstention does.
 	MinConfidence float64
+	// DeciderMinConfidence plays MinConfidence's part for a Decided verdict, and
+	// MinConfidence then plays none. Zero accepts every decision.
+	DeciderMinConfidence float64
 }
 
 // Label returns a configured theme for the cluster and the Method used. The
 // model (if configured and reachable) decides first so it sees the actual scene;
 // only when it is unavailable, errors, abstains, or answers below
-// opts.MinConfidence does the altitude heuristic apply, and the fallback theme
-// last.
+// its threshold does the altitude heuristic apply, and the fallback theme last.
 func Label(ctx context.Context, c photo.Cluster, opts Options) (string, Method) {
-	if theme := modelTheme(ctx, c, opts); theme != "" {
-		return theme, modelMethod(c)
+	if v, ok := modelTheme(ctx, c, opts); ok {
+		if v.Decided {
+			return v.Theme, MethodDescribed
+		}
+		return v.Theme, modelMethod(c)
 	}
 	if l := heuristic(c, opts); l != "" {
 		return l, MethodHeuristic
@@ -97,26 +117,31 @@ func Label(ctx context.Context, c photo.Cluster, opts Options) (string, Method) 
 	return opts.Fallback, MethodFallback
 }
 
-// modelTheme returns the model's answer when there is a usable one, else "". Every
-// way of not having one — no classifier, a failure, an abstention, a theme outside
-// the configured set, or a confidence below MinConfidence — reads the same to the
-// caller, which is what lets Label treat them all as "ask the heuristic next".
-func modelTheme(ctx context.Context, c photo.Cluster, opts Options) string {
+// modelTheme returns the model's verdict, with its theme trimmed, when there is a
+// usable one. Every way of not having one — no classifier, a failure, an
+// abstention, a theme outside the configured set, or a confidence below the
+// verdict's threshold — reads the same to the caller, which is what lets Label
+// treat them all as "ask the heuristic next".
+func modelTheme(ctx context.Context, c photo.Cluster, opts Options) (Verdict, bool) {
 	if opts.Classifier == nil {
-		return ""
+		return Verdict{}, false
 	}
 	v, err := opts.Classifier.Classify(ctx, c)
 	if err != nil {
-		return ""
+		return Verdict{}, false
 	}
-	theme := strings.TrimSpace(v.Theme)
-	if theme == "" || !inSet(theme, opts.Themes) {
-		return ""
+	v.Theme = strings.TrimSpace(v.Theme)
+	if v.Theme == "" || !inSet(v.Theme, opts.Themes) {
+		return Verdict{}, false
 	}
-	if !v.MeetsThreshold(opts.MinConfidence) {
-		return ""
+	threshold := opts.MinConfidence
+	if v.Decided {
+		threshold = opts.DeciderMinConfidence
 	}
-	return theme
+	if !v.MeetsThreshold(threshold) {
+		return Verdict{}, false
+	}
+	return v, true
 }
 
 // modelMethod reports whether the model saw all photos (≤3) or a sample (>3).

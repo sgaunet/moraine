@@ -88,6 +88,16 @@ type Sort struct {
 	MountainAltitude *float64  `yaml:"mountain_altitude"`
 	MinConfidence    *float64  `yaml:"min_confidence"`
 	Vote             *bool     `yaml:"vote"`
+
+	// The decision service's API key is deliberately absent: it comes from the
+	// environment only, so a decider_api_key key is an unknown key.
+	Decider              *string  `yaml:"decider"`
+	DeciderURL           *string  `yaml:"decider_url"`
+	DeciderModel         *string  `yaml:"decider_model"`
+	DeciderMinConfidence *float64 `yaml:"decider_min_confidence"`
+
+	// ThemeDescription maps a theme slug to what it covers.
+	ThemeDescription map[string]string `yaml:"theme_description"`
 }
 
 // Clean holds the settings of the clean command.

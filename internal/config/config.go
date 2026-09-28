@@ -45,6 +45,17 @@ type Config struct {
 	MountainAltitude float64           // metres at/above which the heuristic labels a group "mountain" (always > 0)
 	MinConfidence    float64           // confidence a model verdict must reach to be used (0 ⇒ accept every verdict)
 	Vote             bool              // classify each sampled photo separately and let them vote
+
+	// Decision service (describe-then-decide). With Decider off the rest is unset.
+	Decider              Decider // decision service that picks the theme from descriptions (off ⇒ none)
+	DeciderURL           string  // its base URL, the backend default resolved
+	DeciderModel         string  // its model, the backend default resolved
+	DeciderMinConfidence float64 // confidence a decided verdict must reach (0 ⇒ accept every decision)
+	DeciderAPIKey        string  // bearer key from the environment; never logged or printed
+
+	// ThemeDescriptions says what a theme covers, replacing its built-in description
+	// in both prompts (nil ⇒ the built-in descriptions only).
+	ThemeDescriptions map[string]string
 }
 
 // Default values surfaced in the CLI contract.
@@ -127,6 +138,16 @@ type Options struct {
 	MountainAltitude float64       // --mountain-altitude (metres; must be > 0)
 	MinConfidence    float64       // --min-confidence (0..1; 0 disables the gate)
 	Vote             bool          // --vote (per-photo classification + majority vote)
+
+	Decider              string  // --decider (textual: off|laya|jev)
+	DeciderURL           string  // --decider-url (empty ⇒ the backend default)
+	DeciderModel         string  // --decider-model (empty ⇒ the backend default)
+	DeciderMinConfidence float64 // --decider-min-confidence (0..1; 0 disables the gate)
+	// DeciderAPIKey is read from LAYA_API_KEY or TYPESAFE_API_KEY by the transport:
+	// a secret comes from the environment only, never from a flag or the file.
+	DeciderAPIKey string
+
+	ThemeDescriptions []string // --theme-description, repeatable (slug=text)
 }
 
 // New builds a validated Config from already-parsed CLI Options. It performs
@@ -171,6 +192,19 @@ func New(o Options) (Config, error) {
 	themeList, err := ParseThemes(o.Themes, o.Fallback)
 	if err != nil {
 		return Config{}, err
+	}
+
+	decider, err := resolveDecider(o, len(themeList))
+	if err != nil {
+		return Config{}, err
+	}
+
+	var descriptions map[string]string
+	if len(o.ThemeDescriptions) > 0 {
+		descriptions, err = parseThemeDescriptions(o.ThemeDescriptions, themeList, strings.TrimSpace(o.Fallback))
+		if err != nil {
+			return Config{}, err
+		}
 	}
 
 	pathTemplate, err := organize.ParseTemplate(o.PathTemplate)
@@ -218,6 +252,14 @@ func New(o Options) (Config, error) {
 		MountainAltitude: o.MountainAltitude,
 		MinConfidence:    o.MinConfidence,
 		Vote:             o.Vote,
+
+		Decider:              decider.decider,
+		DeciderURL:           decider.url,
+		DeciderModel:         decider.model,
+		DeciderMinConfidence: decider.minConfidence,
+		DeciderAPIKey:        decider.apiKey,
+
+		ThemeDescriptions: descriptions,
 	}, nil
 }
 

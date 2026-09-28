@@ -69,6 +69,13 @@ to 0, which accepts every verdict. --vote classifies each sampled photo of a lar
 group separately and lets them vote, which costs one model call per sampled photo
 but detects a mixed event: the share of votes the winning theme takes becomes its
 confidence, and a tie abstains.
+With --decider laya|jev, the vision model describes each sampled photo in words
+instead, and the decision service picks the theme from those descriptions, with a
+calibrated confidence (gate it with --decider-min-confidence; its scale is not the
+vision model's). If the decision service is unusable, or fails for one event, that
+event is classified by the vision model alone. The API key comes from the
+environment only: LAYA_API_KEY (laya, optional) or TYPESAFE_API_KEY (jev, required).
+--decider jev sends the photo descriptions (text, never images) to api.typesafe.ai.
 RAW photos (.dng/.nef/.cr2/...) are classified from the embedded preview exiftool
 extracts (exiftool is required, see --exiftool). HEIC embeds no such preview, so it
 is decoded by the first of sips, heif-convert, ffmpeg or magick found on PATH; that
@@ -138,6 +145,7 @@ Exit codes:
 				return err
 			}
 			fromFile := applySortFile(cmd, &opts, file)
+			readDeciderKey(&opts)
 
 			cfg, err := config.New(opts)
 			if err != nil {
@@ -185,6 +193,11 @@ Exit codes:
 	_ = cmd.RegisterFlagCompletionFunc("gap", completeFixed(gapDurations...))
 	_ = cmd.RegisterFlagCompletionFunc("mountain-altitude", completeFixed(altitudeMetres...))
 	_ = cmd.RegisterFlagCompletionFunc("min-confidence", completeFixed(confidenceThresholds...))
+	_ = cmd.RegisterFlagCompletionFunc("decider", completeFixed(deciders...))
+	_ = cmd.RegisterFlagCompletionFunc("decider-url", completeFixed(config.DefaultLayaURL, config.DefaultJevURL))
+	_ = cmd.RegisterFlagCompletionFunc("decider-model", completeFixed(config.DefaultLayaModel, config.DefaultJevModel))
+	_ = cmd.RegisterFlagCompletionFunc("decider-min-confidence", completeFixed(confidenceThresholds...))
+	_ = cmd.RegisterFlagCompletionFunc("theme-description", completeThemeDescription)
 	// Scalar flags with no knowable value set: suppress the filename fallback.
 	_ = cmd.RegisterFlagCompletionFunc("sample", completeFixed())
 	_ = cmd.RegisterFlagCompletionFunc("model", completeFixed(config.DefaultModel))
@@ -229,4 +242,33 @@ func registerSortFlags(f *pflag.FlagSet, opts *config.Options) {
 	f.BoolVar(&opts.Vote, "vote", false,
 		"classify each sampled photo of a large group separately and take the majority "+
 			"(one model call per sampled photo; the vote margin becomes the confidence)")
+	f.StringVar(&opts.Decider, "decider", config.DefaultDecider,
+		"decision service that picks the theme from photo descriptions: off|laya|jev "+
+			"(off = the vision model picks it)")
+	f.StringVar(&opts.DeciderURL, "decider-url", "",
+		"base URL of the decision service (default "+config.DefaultLayaURL+" for laya, "+
+			config.DefaultJevURL+" for jev)")
+	f.StringVar(&opts.DeciderModel, "decider-model", "",
+		"decision-service model (default "+config.DefaultLayaModel+" for laya, "+
+			config.DefaultJevModel+" for jev)")
+	f.Float64Var(&opts.DeciderMinConfidence, "decider-min-confidence", 0,
+		"minimum decision-service confidence to accept its theme, 0..1 "+
+			"(0 = accept all; not comparable with --min-confidence)")
+	// StringArray, not StringToString: the latter splits on commas, and a description
+	// is a list of things more often than not.
+	f.StringArrayVar(&opts.ThemeDescriptions, "theme-description", nil,
+		"what a theme covers, as slug=text, sent to the models with it "+
+			"(replaces the built-in description; repeatable)")
+}
+
+// readDeciderKey fills the decision service's API key from the environment variable
+// its backend names. A key is never a flag or a file setting: a flag is visible in
+// ps, and a file gets committed (Principle IX). An unknown decider is left for
+// config.New to report as the usage error it is.
+func readDeciderKey(opts *config.Options) {
+	d, err := config.ParseDecider(opts.Decider)
+	if err != nil || d == config.DeciderOff {
+		return
+	}
+	opts.DeciderAPIKey = os.Getenv(d.APIKeyEnv())
 }

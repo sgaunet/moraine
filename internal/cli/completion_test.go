@@ -182,3 +182,27 @@ func TestCompleteUndoArgumentOffersDirectoriesOnly(t *testing.T) {
 		t.Errorf("want ShellCompDirectiveNoFileComp (:4) for a second argument; got:\n%s", out)
 	}
 }
+
+func TestCompleteDecider(t *testing.T) {
+	code, out := completeOut(t, "sort", "--decider", "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	for _, v := range []string{"off", "laya", "jev"} {
+		if !strings.Contains(out, v+"\n") {
+			t.Errorf("--decider completion misses %q; got:\n%s", v, out)
+		}
+	}
+}
+
+func TestCompleteThemeDescriptionOffersEachThemeAndTheFallback(t *testing.T) {
+	code, out := completeOut(t, "sort", "--themes", "hiking,food", "--fallback-theme", "misc", "--theme-description", "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	for _, want := range []string{"hiking=\n", "food=\n", "misc=\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("completion misses %q; got:\n%s", want, out)
+		}
+	}
+}
