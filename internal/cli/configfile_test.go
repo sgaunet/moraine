@@ -217,3 +217,39 @@ func TestConfigFileRejectsInvalidThemes(t *testing.T) {
 		t.Fatalf("exit = %d, want 2 (usage); stderr=%s", code, errb.String())
 	}
 }
+
+// The decider settings follow flag > file > default like every other setting. They
+// are observed through validation: a bad value from the file fails the run with the
+// file named, and a typed flag replacing it lets the run through.
+func TestConfigFileDeciderSettings(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", "")
+	tests := []struct {
+		name     string
+		file     string
+		flags    []string
+		wantCode int
+		wantErr  string
+	}{
+		{"file decider is used", "sort:\n  decider: jev\n", nil, 2, "decider"},
+		{"flag beats the file decider", "sort:\n  decider: jev\n", []string{"--decider", "off"}, 0, ""},
+		{"file url is used", "sort:\n  decider: laya\n  decider_url: nonsense\n", nil, 2, "decider-url"},
+		{"flag beats the file url", "sort:\n  decider: laya\n  decider_url: nonsense\n",
+			[]string{"--decider-url", "http://127.0.0.1:9"}, 0, ""},
+		{"file min confidence is used", "sort:\n  decider_min_confidence: 2\n", nil, 2, "decider-min-confidence"},
+		{"file model is used", "sort:\n  decider: laya\n  decider_model: english\n  decider_url: nonsense\n",
+			nil, 2, "decider-model"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args, _ := sortFixture(t, append([]string{"--config", writeConfig(t, tc.file)}, tc.flags...)...)
+			var stderr bytes.Buffer
+			code := cli.Execute("dev", args, io.Discard, &stderr)
+			if code != tc.wantCode {
+				t.Fatalf("exit = %d, want %d; stderr: %s", code, tc.wantCode, stderr.String())
+			}
+			if tc.wantErr != "" && !strings.Contains(stderr.String(), tc.wantErr) {
+				t.Errorf("stderr does not name %q: %s", tc.wantErr, stderr.String())
+			}
+		})
+	}
+}

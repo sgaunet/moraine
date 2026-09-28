@@ -267,3 +267,102 @@ func TestConfigUnsetToleratesASettingThatWasNotThere(t *testing.T) {
 		t.Errorf("exit = %d, want 0", code)
 	}
 }
+
+// The decider settings are managed like every other sort setting.
+func TestConfigSetAndShowDeciderSettings(t *testing.T) {
+	path := configAt(t, "")
+	shown, _, code := runConfig(t, "show", "sort", "--output=json")
+	if code != 0 {
+		t.Fatalf("show exit = %d", code)
+	}
+	got := settings(t, shown)
+	for _, key := range []string{"sort.decider", "sort.decider_url", "sort.decider_model", "sort.decider_min_confidence"} {
+		if got[key].Origin != "default" {
+			t.Errorf("%s = %+v; want it listed at its default", key, got[key])
+		}
+	}
+	if got["sort.decider"].Default != "off" {
+		t.Errorf("sort.decider default = %q; want off", got["sort.decider"].Default)
+	}
+
+	if _, stderr, code := runConfig(t, "set", "sort", "--decider", "laya",
+		"--decider-min-confidence", "0.6"); code != 0 {
+		t.Fatalf("set exit = %d: %s", code, stderr)
+	}
+	body := read(t, path)
+	if !strings.Contains(body, "decider: laya\n") || !strings.Contains(body, "decider_min_confidence: 0.6\n") {
+		t.Errorf("file does not record the decider settings:\n%s", body)
+	}
+	if _, _, code := runConfig(t, "set", "sort", "--decider", "bogus"); code != 2 {
+		t.Errorf("set --decider bogus exit = %d; want 2", code)
+	}
+}
+
+// Whether an API key is exported is a question about the run, not about the file:
+// recording `decider: jev` must not depend on the shell it was typed in.
+func TestConfigSetDeciderJevWithoutAKeyInTheEnvironment(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", "")
+	path := configAt(t, "")
+	if _, stderr, code := runConfig(t, "set", "sort", "--decider", "jev"); code != 0 {
+		t.Fatalf("exit = %d: %s", code, stderr)
+	}
+	if !strings.Contains(read(t, path), "decider: jev") {
+		t.Errorf("file:\n%s", read(t, path))
+	}
+}
+
+func TestConfigThemeDescriptions(t *testing.T) {
+	path := configAt(t, "# my settings\nsort:\n  gap: 8h  # a long day\n")
+	if _, stderr, code := runConfig(t, "set", "sort",
+		"--theme-description", "cook=food, meals", "--theme-description", "other=screenshots, receipts"); code != 0 {
+		t.Fatalf("set exit = %d: %s", code, stderr)
+	}
+	body := read(t, path)
+	for _, want := range []string{"# my settings", "# a long day", "theme_description:\n",
+		"    cook: food, meals\n", "    other: screenshots, receipts\n"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("file lacks %q:\n%s", want, body)
+		}
+	}
+
+	stdout, _, code := runConfig(t, "show", "sort")
+	if code != 0 {
+		t.Fatalf("show exit = %d", code)
+	}
+	for _, want := range []string{
+		"sort.theme_description.cook=food, meals origin=file",
+		"sort.theme_description.other=screenshots, receipts origin=file",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("show lacks %q:\n%s", want, stdout)
+		}
+	}
+
+	if _, stderr, code := runConfig(t, "unset", "sort", "theme_description.cook"); code != 0 {
+		t.Fatalf("unset one exit = %d: %s", code, stderr)
+	}
+	if body := read(t, path); strings.Contains(body, "cook:") || !strings.Contains(body, "other:") {
+		t.Errorf("unsetting one entry must leave the others:\n%s", body)
+	}
+	if _, stderr, code := runConfig(t, "unset", "sort", "theme_description"); code != 0 {
+		t.Fatalf("unset all exit = %d: %s", code, stderr)
+	}
+	if body := read(t, path); strings.Contains(body, "theme_description") {
+		t.Errorf("unsetting the setting must remove the mapping:\n%s", body)
+	}
+	if _, _, code := runConfig(t, "set", "sort", "--theme-description", "nope=x"); code != 2 {
+		t.Errorf("set with an unconfigured theme exit = %d; want 2", code)
+	}
+}
+
+// With nothing described, show still lists the setting, at its default.
+func TestConfigShowListsAnEmptyThemeDescription(t *testing.T) {
+	configAt(t, "")
+	stdout, _, code := runConfig(t, "show", "sort")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(stdout, "sort.theme_description= origin=default") {
+		t.Errorf("show:\n%s", stdout)
+	}
+}

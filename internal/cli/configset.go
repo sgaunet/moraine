@@ -78,6 +78,10 @@ Exit codes:
 				func(doc *configfile.Document) error {
 					for _, s := range changed {
 						raw := cmd.Flags().Lookup(s.Flag).Value.String()
+						if s.Kind == kindMap {
+							entries, _ := cmd.Flags().GetStringArray(s.Flag)
+							raw = strings.Join(entries, "\n")
+						}
 						if err := doc.Set(s.path(section), valueNode(s, raw)); err != nil {
 							return err
 						}
@@ -107,7 +111,8 @@ func newConfigUnsetCmd(env configEnv) *cobra.Command {
 built-in default, which "moraine config show" then reports with origin=default.
 
 A setting may be named either way round — "path-template" or "path_template" — since
-the flag and the key are the same word. Removing the last setting of a section removes
+the flag and the key are the same word. One entry of a mapping is named with a dot:
+"theme_description.cook" removes cook's description and keeps the others. Removing the last setting of a section removes
 the section too, and a setting that was not there is reported rather than treated as a
 failure. Everything else in the file, comments included, is left as it was.
 
@@ -117,7 +122,8 @@ Exit codes:
   2  usage error (unknown section or setting)`,
 		Example: `  moraine config unset sort gap
   moraine config unset sort gap jobs vote
-  moraine config unset shared log_level`,
+  moraine config unset shared log_level
+  moraine config unset sort theme_description.cook`,
 		Args:              cobra.MinimumNArgs(2),
 		ValidArgsFunction: completeUnset,
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -126,20 +132,20 @@ Exit codes:
 				return fmt.Errorf("unknown section %q: expected one of %s",
 					section, strings.Join(sections, ", "))
 			}
-			wanted := make([]setting, 0, len(args)-1)
+			wanted := make([][]string, 0, len(args)-1)
 			for _, name := range args[1:] {
-				s, ok := lookupSetting(section, name)
+				path, ok := unsetPath(section, name)
 				if !ok {
 					return fmt.Errorf("the %s section has no setting %q: expected one of %s",
 						section, name, settingList(section))
 				}
-				wanted = append(wanted, s)
+				wanted = append(wanted, path)
 			}
 			return writeSettings(env,
 				writeOptions{Report: []string{section}, DryRun: dryRun},
 				func(doc *configfile.Document) error {
-					for _, s := range wanted {
-						doc.Unset(s.path(section))
+					for _, path := range wanted {
+						doc.Unset(path)
 					}
 					return nil
 				})
@@ -148,6 +154,19 @@ Exit codes:
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
 		"report the settings that would result, without writing the file")
 	return cmd
+}
+
+// unsetPath resolves a name `config unset` was given to where it lives in the file: a
+// setting, or — written setting.entry — one entry of a mapping.
+func unsetPath(section, name string) ([]string, bool) {
+	if s, ok := lookupSetting(section, name); ok {
+		return s.path(section), true
+	}
+	head, entry, dotted := strings.Cut(name, ".")
+	if s, ok := lookupSetting(section, head); dotted && ok && s.Kind == kindMap && entry != "" {
+		return append(s.path(section), entry), true
+	}
+	return nil, false
 }
 
 // registerSettingFlags declares one flag per settable value of a section.
@@ -176,6 +195,8 @@ func registerSettingFlags(cmd *cobra.Command, section string) {
 			f.DurationP(s.Flag, short, 0, help)
 		case kindString, kindList:
 			f.StringP(s.Flag, short, "", help)
+		case kindMap:
+			f.StringArrayP(s.Flag, short, nil, help)
 		}
 		if len(s.Choices) > 0 {
 			_ = cmd.RegisterFlagCompletionFunc(s.Flag, completeFixed(s.Choices...))

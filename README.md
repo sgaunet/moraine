@@ -302,6 +302,74 @@ In that run the single call answered `mountain` at a self-reported confidence of
 **0.9** — the model was confidently wrong, and only the disagreement between photos
 caught it. That is the difference between the two signals worth remembering.
 
+### Describe-then-decide: `--decider`
+
+By default the vision model looks at a group's photos and picks the theme in one
+call. `--decider laya|jev` splits that job in two: the vision model **describes**
+each sampled photo in a sentence or two, and a
+[systemone](https://github.com/sgaunet/gutcheck) decision service — a self-hosted
+[Laya](https://github.com/NandhaKishorM/laya) server, or the hosted TypeSafe Jev —
+**picks the theme** from those descriptions and the capture context (time span,
+altitude, location). Separate descriptions are what let a mixed event show itself,
+and the decision service answers with a calibrated confidence, where the vision
+model's self-report was confidently wrong in the example above.
+
+It is **opt-in, and its accuracy is not yet measured** against the single call:
+run the eval harness below on your own corpus before relying on it.
+
+```console
+# a Laya server on the LAN, with a bearer key
+$ export LAYA_API_KEY=…            # never on the command line, never in moraine.yaml
+$ moraine sort --decider laya --decider-url http://192.168.0.47:8000 \
+    -d ~/Photos/sorted ~/Photos/2025
+```
+
+- **The key comes from the environment only**: `LAYA_API_KEY` for Laya (optional —
+  sent as a bearer token when set), `TYPESAFE_API_KEY` for Jev (required: without it
+  `sort` stops with exit `2` before scanning anything). It is never a flag, never a
+  configuration-file key, and never printed.
+- **Defaults**: Laya at `http://127.0.0.1:8000` with the `multilingual` checkpoint
+  (the larger state budget of the two; chosen on budget and speed, not yet on measured
+  accuracy — `--decider-model english` is the other), Jev at `https://api.typesafe.ai`
+  with `jev-latest`.
+- **Its own threshold**: `--decider-min-confidence` gates the decision service's
+  answer (Laya's `answer_confidence`, Jev's `confidence`) the way `--min-confidence`
+  gates the vision model's. The two scales are not comparable, so each has its own
+  flag, and `--min-confidence` keeps gating any event the vision model decides alone.
+- **It never costs you a photo.** The service is checked once, lazily, with one real
+  request before the first event it would decide. If that fails — unreachable, a
+  refused key, an unknown model, too many themes — you get **one** warning and the
+  whole run is classified the usual way. If a single decision fails later, that event
+  alone goes back to the single call, on the photos already sampled. An interrupt is
+  an interrupt, never reported as a failure.
+- **Cost**: one vision call per sampled photo instead of one per group, plus one text
+  decision per group (one per sampled photo with `--vote`), plus the one readiness
+  request per run — on Jev, that request is billed like any other.
+- **Events it decided report `method: described`** in the JSON `events` array and in
+  the plain-text `group` log line.
+
+**Privacy**: images never leave for the decision service — it receives text only:
+the descriptions, the capture context and the theme list. With `--decider jev` that
+text goes to `api.typesafe.ai`; with a self-hosted Laya it stays on your network.
+
+**Theme descriptions.** Each default theme carries a built-in one-line description
+of what it covers, sent to both models. `--theme-description slug=text` (repeatable)
+replaces it, or describes a custom theme that has none — and the fallback theme too,
+which the decision service is offered as "none of the others":
+
+```console
+$ moraine sort --decider laya \
+    --theme-description 'cook=food, meals, market stalls' \
+    --theme-description 'other=screenshots, receipts, documents' \
+    -d ~/Photos/sorted ~/Photos/2025
+```
+
+A description is one line of at most 120 characters, for a configured theme or the
+fallback. It does not need `--decider`: the single-call prompt uses it as well. With
+none given, the prompt is exactly the one it always was. Laya shares one small token
+budget between all the options, so past about 20 themes a run warns that
+descriptions may be trimmed, and past 100 (255 on Jev) the theme list is refused.
+
 ### Measuring accuracy
 
 Prompt, threshold and sampling changes are otherwise judged by eye. `task eval`
@@ -335,6 +403,15 @@ answers are as confident as right ones, no threshold will help. `MORAINE_EVAL_MO
 `MORAINE_EVAL_MIN_ACCURACY` (a floor that fails the run) tune it; see
 `internal/classify/eval_test.go`. Without `MORAINE_EVAL_CORPUS` it skips, so it costs
 `task test` and CI nothing.
+
+To weigh `--decider` against the single call, add `MORAINE_EVAL_DECIDER=laya` (or
+`jev`; `MORAINE_EVAL_DECIDER_URL`, `MORAINE_EVAL_DECIDER_MODEL` and
+`MORAINE_EVAL_DECIDER_MIN_CONFIDENCE` are optional, and the key comes from the same
+variables as for `sort`). The report then covers both methods on the same corpus and
+ends with one side-by-side line — both accuracies and the wall-time ratio. An event
+directory named `mixed-*` (photos of two themes) is kept out of accuracy and reported
+with its confidence next to the homogeneous events' mean: a threshold is only worth
+setting if it separates the two.
 
 ### Output: data on stdout, logs on stderr
 
@@ -384,7 +461,7 @@ $ ./moraine clean -d ~/Photos/sorted ~/Photos/2025 --output=json 2>/dev/null | j
 
 `--output=json` additionally carries an **`events`** array, one entry per event the
 run placed — its theme, how that theme was decided (`method`: `model-all`,
-`model-sample`, `heuristic`, `manifest` or `fallback`), its capture-time span, and
+`model-sample`, `described`, `heuristic`, `manifest` or `fallback`), its capture-time span, and
 what placing it cost. There is no text equivalent: the text rendering is one line per
 run by contract, so it can carry totals but not a breakdown.
 
@@ -526,13 +603,22 @@ sort:
   min_confidence: 0.6
   vote: true
   exiftool: exiftool
+  decider: laya                        # off | laya | jev; the key is an env variable
+  decider_url: http://192.168.0.47:8000
+  decider_model: multilingual
+  decider_min_confidence: 0.6
+  theme_description:                   # slug → what it covers
+    cook: food, meals, market stalls
+    other: screenshots, receipts, documents
 
 clean:
   dest: /Volumes/photos/sorted   # overrides the shared value above
 ```
 
 Keys are named after the flags, in `snake_case` (`--path-template` → `path_template`).
-`gap` is a duration string (`"6h"`, `"30m"`); `themes` is a list. `undo` accepts only
+`gap` is a duration string (`"6h"`, `"30m"`); `themes` is a list; `theme_description`
+is a mapping, and a `--theme-description` on the command line replaces all of it. There
+is no key for a decision service's API key: it is read from the environment only. `undo` accepts only
 `log_level`, `output` and `progress` — it takes its destination as an argument.
 
 **Decoding is strict**: an unrecognised key is an error (exit `2`) rather than a
@@ -559,6 +645,11 @@ moraine config set shared --log-level warn # write them at the top level
 moraine config unset sort gap              # take one back
 moraine config edit sort                   # or answer a form instead
 ```
+
+A mapping such as `theme_description` is shown one line per entry
+(`sort.theme_description.cook=… origin=file`), unset one entry at a time with a dot
+(`config unset sort theme_description.cook`) or as a whole, and edited in the form
+one theme at a time.
 
 **`config show` answers "what will this run actually use?"** — the file's value where
 the file sets one, the built-in default everywhere else, each tagged with which it was:
@@ -672,6 +763,11 @@ exactly as it was.
 | `--mountain-altitude` |    | float    | `1500`                    | metres at/above which the altitude heuristic labels a group `mountain` (must be `> 0`) |
 | `--min-confidence` |       | float    | `0`                       | reject a model verdict below this confidence, `0`..`1` (`0` = accept every verdict) |
 | `--vote`           |       | bool     | `false`                   | classify each sampled photo of a large group separately and take the majority (one model call per sampled photo) |
+| `--decider`        |       | string   | `off`                     | decision service that picks the theme from photo descriptions: `off` \| `laya` \| `jev` (see above) |
+| `--decider-url`    |       | string   | backend default           | its base URL (`http://127.0.0.1:8000` for laya, `https://api.typesafe.ai` for jev) |
+| `--decider-model`  |       | string   | backend default           | its model (`multilingual` for laya, `jev-latest` for jev)  |
+| `--decider-min-confidence` | | float  | `0`                       | reject a decision below this confidence, `0`..`1`; not comparable with `--min-confidence` |
+| `--theme-description` |    | `slug=text` | *(built-in)*           | what a theme covers, sent to the models (repeatable; replaces the built-in description) |
 | `--help`           | `-h`  | bool     | —                         | print the detailed help and exit                           |
 
 ### `clean` flags

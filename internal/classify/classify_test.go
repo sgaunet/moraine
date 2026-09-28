@@ -369,3 +369,72 @@ func TestVerdictMeetsThreshold(t *testing.T) {
 		})
 	}
 }
+
+// verdictClassifier answers every cluster with one fixed Verdict.
+type verdictClassifier struct{ v classify.Verdict }
+
+func (f verdictClassifier) Classify(context.Context, photo.Cluster) (classify.Verdict, error) {
+	return f.v, nil
+}
+
+// TestDecidedVerdictHasItsOwnThreshold pins that a verdict from the decision service
+// is gated by DeciderMinConfidence alone, and a vision-model verdict by MinConfidence
+// alone: the two confidences are on different scales, so neither threshold can
+// stand in for the other.
+func TestDecidedVerdictHasItsOwnThreshold(t *testing.T) {
+	small := photo.Cluster{Photos: []photo.Photo{{}}}
+	large := photo.Cluster{Photos: make([]photo.Photo, classify.SmallGroupMax+1)}
+	tests := []struct {
+		name       string
+		verdict    classify.Verdict
+		cluster    photo.Cluster
+		minimum    float64
+		decider    float64
+		wantTheme  string
+		wantMethod classify.Method
+	}{
+		{"decided above its own threshold ignores MinConfidence",
+			classify.Verdict{Theme: "nature", Confidence: 0.4, Decided: true}, small, 0.9, 0.3,
+			"nature", classify.MethodDescribed},
+		{"decided below its own threshold falls back",
+			classify.Verdict{Theme: "nature", Confidence: 0.4, Decided: true}, small, 0, 0.5,
+			"other", classify.MethodFallback},
+		{"decided is described whatever the group size",
+			classify.Verdict{Theme: "nature", Confidence: 0.8, Decided: true}, large, 0, 0,
+			"nature", classify.MethodDescribed},
+		{"not decided ignores DeciderMinConfidence",
+			classify.Verdict{Theme: "nature", Confidence: 0.4}, small, 0.3, 0.9,
+			"nature", classify.MethodModelAll},
+		{"not decided is still gated by MinConfidence",
+			classify.Verdict{Theme: "nature", Confidence: 0.4}, large, 0.5, 0,
+			"other", classify.MethodFallback},
+		{"not decided large group is model-sample",
+			classify.Verdict{Theme: "nature", Confidence: 0.4}, large, 0, 0,
+			"nature", classify.MethodModelSample},
+		{"decided abstention falls through",
+			classify.Verdict{Decided: true}, small, 0, 0,
+			"other", classify.MethodFallback},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := opts(verdictClassifier{v: tc.verdict})
+			o.MinConfidence = tc.minimum
+			o.DeciderMinConfidence = tc.decider
+			theme, method := classify.Label(context.Background(), tc.cluster, o)
+			if theme != tc.wantTheme || method != tc.wantMethod {
+				t.Errorf("got (%q,%q); want (%q,%q)", theme, method, tc.wantTheme, tc.wantMethod)
+			}
+		})
+	}
+}
+
+// TestDecidedAbstentionReachesHeuristic: the decision service choosing the fallback
+// is an abstention, so the altitude heuristic still gets its say.
+func TestDecidedAbstentionReachesHeuristic(t *testing.T) {
+	o := opts(verdictClassifier{v: classify.Verdict{Decided: true, Confidence: 0.9}})
+	c := photo.Cluster{Photos: []photo.Photo{{Altitude: ptr(2400)}}}
+	theme, method := classify.Label(context.Background(), c, o)
+	if theme != "mountain" || method != classify.MethodHeuristic {
+		t.Fatalf("got (%q,%q); want (mountain,heuristic)", theme, method)
+	}
+}

@@ -115,3 +115,93 @@ func TestSortInvalidValuesAreUsage(t *testing.T) {
 		})
 	}
 }
+
+// TestSortDeciderUsageErrors: every bad decider setting is refused before anything
+// is scanned, including jev with no key in the environment.
+func TestSortDeciderUsageErrors(t *testing.T) {
+	src := t.TempDir()
+	writePNG(t, filepath.Join(src, "a.png"))
+	t.Setenv("TYPESAFE_API_KEY", "")
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"unknown decider", []string{"--decider", "bogus"}, "--decider"},
+		{"jev without a key", []string{"--decider", "jev"}, "TYPESAFE_API_KEY"},
+		{"confidence out of range", []string{"--decider-min-confidence", "1.5"}, "--decider-min-confidence"},
+		{"relative url", []string{"--decider", "laya", "--decider-url", "localhost:8000"}, "--decider-url"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			args := append([]string{"sort", "--dest", t.TempDir()}, tc.args...)
+			code := cli.Execute("dev", append(args, src), io.Discard, &stderr)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2; stderr: %s", code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tc.want) {
+				t.Errorf("stderr does not name %q: %s", tc.want, stderr.String())
+			}
+			if strings.Contains(stderr.String(), "scan") {
+				t.Errorf("a usage error must come before the scan: %s", stderr.String())
+			}
+		})
+	}
+}
+
+// TestSortNeverPrintsTheDeciderKey runs a verbose sort with a key in the
+// environment and checks neither stream carries it.
+func TestSortNeverPrintsTheDeciderKey(t *testing.T) {
+	const key = "k3y-xyz-never-shown"
+	t.Setenv("LAYA_API_KEY", key)
+	src := t.TempDir()
+	writePNG(t, filepath.Join(src, "a.png"))
+	exifPath, err := exiftooltest.Stub(t.TempDir(), exiftooltest.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Execute("dev", []string{
+		"sort", "-v", "--progress=never", "--output=json", "--exiftool", exifPath,
+		"--ollama-url", "http://127.0.0.1:9", "--decider", "laya", "--decider-url", "http://127.0.0.1:9",
+		"--dest", t.TempDir(), src,
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String()+stderr.String(), key) {
+		t.Error("the API key was printed")
+	}
+}
+
+func TestSortThemeDescriptions(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		args []string
+		want int
+	}{
+		{"one description", "", []string{"--theme-description", "cook=food, meals, market stalls"}, 0},
+		// The second occurrence is collected too, so its bad slug is what fails.
+		{"repeated flags are all read", "", []string{"--theme-description", "cook=food", "--theme-description", "nope=x"}, 2},
+		{"an unconfigured theme", "", []string{"--theme-description", "nope=x"}, 2},
+		{"the file is read", "sort:\n  theme_description:\n    nope: x\n", nil, 2},
+		// Any flag replaces the file's whole mapping, so its bad entry is gone.
+		{"a flag replaces the whole file mapping", "sort:\n  theme_description:\n    nope: x\n",
+			[]string{"--theme-description", "cook=food"}, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			extra := tc.args
+			if tc.file != "" {
+				extra = append([]string{"--config", writeConfig(t, tc.file)}, extra...)
+			}
+			args, _ := sortFixture(t, extra...)
+			var stderr bytes.Buffer
+			if code := cli.Execute("dev", args, io.Discard, &stderr); code != tc.want {
+				t.Errorf("exit = %d, want %d; stderr: %s", code, tc.want, stderr.String())
+			}
+		})
+	}
+}

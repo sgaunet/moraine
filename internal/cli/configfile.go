@@ -60,6 +60,15 @@ func applySortFile(cmd *cobra.Command, opts *config.Options, f *configfile.File)
 	o.set("mountain-altitude", s.MountainAltitude != nil, func() { opts.MountainAltitude = *s.MountainAltitude })
 	o.set("min-confidence", s.MinConfidence != nil, func() { opts.MinConfidence = *s.MinConfidence })
 	o.set("vote", s.Vote != nil, func() { opts.Vote = *s.Vote })
+	o.set("decider", s.Decider != nil, func() { opts.Decider = *s.Decider })
+	o.set("decider-url", s.DeciderURL != nil, func() { opts.DeciderURL = *s.DeciderURL })
+	o.set("decider-model", s.DeciderModel != nil, func() { opts.DeciderModel = *s.DeciderModel })
+	o.set("decider-min-confidence", s.DeciderMinConfidence != nil,
+		func() { opts.DeciderMinConfidence = *s.DeciderMinConfidence })
+	// Any --theme-description replaces the file's whole mapping, as --themes replaces
+	// its list: a flag and a file never merge.
+	o.set("theme-description", s.ThemeDescription != nil,
+		func() { opts.ThemeDescriptions = mapEntries(s.ThemeDescription) })
 	return o.used
 }
 

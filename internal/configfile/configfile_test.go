@@ -193,6 +193,11 @@ func TestLoadRejects(t *testing.T) {
 		{"gap as a bare number", "sort:\n  gap: 6\n"},
 		{"sample is not a number", "sort:\n  sample: many\n"},
 		{"themes is not a list", "sort:\n  themes: 3\n"},
+		// An API key comes from the environment only (Principle IX).
+		{"a decider API key is not configurable", "sort:\n  decider_api_key: k3y\n"},
+		{"decider_min_confidence is not a number", "sort:\n  decider_min_confidence: high\n"},
+		{"theme_description as a list", "sort:\n  theme_description: [cook=food]\n"},
+		{"theme_description as a scalar", "sort:\n  theme_description: cook=food\n"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -201,6 +206,34 @@ func TestLoadRejects(t *testing.T) {
 				t.Errorf("Load(%q) = nil error, want a rejection", tc.contents)
 			}
 		})
+	}
+}
+
+func TestLoadReadsDeciderKeys(t *testing.T) {
+	isolate(t)
+	f, _, err := configfile.Load(write(t, "sort:\n  decider: laya\n  decider_url: http://192.168.0.47:8000\n"+
+		"  decider_model: english\n  decider_min_confidence: 0.6\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	s := f.SortSection()
+	if s.Decider == nil || *s.Decider != "laya" ||
+		s.DeciderURL == nil || *s.DeciderURL != "http://192.168.0.47:8000" ||
+		s.DeciderModel == nil || *s.DeciderModel != "english" ||
+		s.DeciderMinConfidence == nil || *s.DeciderMinConfidence != 0.6 {
+		t.Errorf("decider keys not decoded: %+v", s)
+	}
+}
+
+func TestLoadReadsThemeDescriptions(t *testing.T) {
+	isolate(t)
+	f, _, err := configfile.Load(write(t, "sort:\n  theme_description:\n    cook: food, meals\n    other: receipts\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := f.SortSection().ThemeDescription
+	if len(got) != 2 || got["cook"] != "food, meals" || got["other"] != "receipts" {
+		t.Errorf("theme_description = %v", got)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"sync"
 
 	"github.com/sgaunet/moraine/internal/photo"
 )
@@ -42,9 +41,9 @@ func (o *OllamaClassifier) voteWorkers(votes int) int {
 // them fails is the whole classification an error, since that means the model was
 // unavailable rather than undecided.
 //
-// The calls run concurrently, bounded by voteWorkers, following the same shape as
-// the EXIF stage: a buffered channel as the semaphore, taken before the goroutine
-// starts so at most that many exist at once, and a WaitGroup to join them. Each vote
+// The calls run concurrently, bounded by voteWorkers (see fanOut), following the same
+// shape as the EXIF stage: a buffered channel as the semaphore, taken before the
+// goroutine starts so at most that many exist at once, and a WaitGroup to join them. Each vote
 // keeps its own retry budget, so the retry load is bounded by the fan-out width
 // rather than by the number of photos.
 //
@@ -53,23 +52,14 @@ func (o *OllamaClassifier) voteWorkers(votes int) int {
 // the error below reproducible rather than dependent on scheduling.
 func (o *OllamaClassifier) classifyByVote(ctx context.Context, c photo.Cluster, images []string) (Verdict, error) {
 	votes := make([]vote, len(images))
-	sem := make(chan struct{}, o.voteWorkers(len(images)))
-	var wg sync.WaitGroup
-	for i, img := range images {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			// Each vote is a model call of its own, so it gets its own Timeout budget
-			// rather than a share of one: a slow photo must not spend another's time.
-			voteCtx, cancel := o.bounded(ctx)
-			defer cancel()
-			v, err := o.ask(voteCtx, c, []string{img})
-			votes[i] = vote{verdict: v, err: err}
-		}()
-	}
-	wg.Wait()
+	o.fanOut(len(images), func(i int) {
+		// Each vote is a model call of its own, so it gets its own Timeout budget
+		// rather than a share of one: a slow photo must not spend another's time.
+		voteCtx, cancel := o.bounded(ctx)
+		defer cancel()
+		v, err := o.ask(voteCtx, c, []string{images[i]})
+		votes[i] = vote{verdict: v, err: err}
+	})
 
 	verdicts := make([]Verdict, 0, len(images))
 	var firstErr error

@@ -37,6 +37,9 @@ var gapDurations = []string{"30m", "1h", "6h", "12h", "24h"}
 // because it is the default and the way to turn the gate back off.
 var confidenceThresholds = []string{"0", "0.5", "0.6", "0.7", "0.8", "0.9"}
 
+// deciders are the --decider values, off first because it is the default.
+var deciders = []string{string(config.DeciderOff), string(config.DeciderLaya), string(config.DeciderJev)}
+
 // altitudeMetres are common --mountain-altitude values. The flag accepts any
 // positive number; these are suggestions, so the list stays short.
 var altitudeMetres = []string{"800", "1000", "1500", "2000", "2500"}
@@ -89,6 +92,27 @@ func completeThemeList(_ *cobra.Command, _ []string, toComplete string) ([]strin
 	}
 	if len(out) == 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return out, cobra.ShellCompDirectiveNoSpace | cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeThemeDescription completes --theme-description with "<slug>=" for each
+// theme on the command line (or the built-in ones) and the fallback theme, leaving
+// the cursor after the "=" for the description.
+func completeThemeDescription(cmd *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+	themes := defaultThemes()
+	if f := cmd.Flags().Lookup("themes"); f != nil && f.Changed {
+		themes = strings.Split(f.Value.String(), ",")
+	}
+	fallback := config.DefaultFallback
+	if f := cmd.Flags().Lookup("fallback-theme"); f != nil && f.Changed {
+		fallback = f.Value.String()
+	}
+	out := make([]string, 0, len(themes)+1)
+	for _, t := range append(themes, fallback) {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t+"=")
+		}
 	}
 	return out, cobra.ShellCompDirectiveNoSpace | cobra.ShellCompDirectiveNoFileComp
 }
@@ -180,4 +204,8 @@ func registerSettingCompletions(cmd *cobra.Command, section string) {
 	_ = cmd.RegisterFlagCompletionFunc("jobs", completeFixed())
 	_ = cmd.RegisterFlagCompletionFunc("model", completeFixed(config.DefaultModel))
 	_ = cmd.RegisterFlagCompletionFunc("ollama-url", completeFixed(config.DefaultOllamaURL))
+	_ = cmd.RegisterFlagCompletionFunc("decider-url", completeFixed(config.DefaultLayaURL, config.DefaultJevURL))
+	_ = cmd.RegisterFlagCompletionFunc("decider-model", completeFixed(config.DefaultLayaModel, config.DefaultJevModel))
+	_ = cmd.RegisterFlagCompletionFunc("decider-min-confidence", completeFixed(confidenceThresholds...))
+	_ = cmd.RegisterFlagCompletionFunc("theme-description", completeThemeDescription)
 }

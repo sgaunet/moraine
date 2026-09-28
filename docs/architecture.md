@@ -35,6 +35,11 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
   because there are only as many events as there are events. `render.go` is the
   companion choice for **stderr**: the bullet renderer or the plain text handler,
   decided once per run (see decision 23).
+- **`internal/decide`** — asks a systemone decision service (self-hosted Laya or hosted
+  Jev) which theme a set of photo descriptions belongs to: builds the request (plain-text
+  state, one `choice` question over the themes plus the fallback), maps the answer to a
+  `classify.Verdict{Decided: true}`, and runs the one-time readiness check. Implements
+  `classify.Decider`; see decisions 26–31.
 - **`internal/configfile`** — decodes the optional YAML configuration file and
   nothing else: no Cobra, no knowledge of flag defaults. Every setting is a pointer,
   so "absent from the file" is distinguishable from "present and equal to the
@@ -456,11 +461,68 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
     for a record its own level suppresses; a suppressed line would offset every later
     repaint, so none is allowed to reach it.
 
+26. **Describe, then decide — two calls where one used to do** (`--decider`, opt-in).
+    A single vision call over several images gives the model one chance to be right
+    about a mixed event and no way to say how mixed it was, and its self-reported
+    confidence was measured confidently wrong (0.9 on a 3 + 3 mountain/meal folder).
+    With a decider the vision model only *describes* each sampled photo, in words, and
+    a systemone decision service picks one option from the configured themes plus the
+    fallback, answering with a calibrated confidence on its own scale. That is why the
+    verdict carries `Decided` and the gate is `--decider-min-confidence`, separate from
+    `--min-confidence`: the two numbers are not comparable, and neither threshold may
+    stand in for the other. Whether the split is actually more accurate is **not yet
+    measured**; the eval harness runs both methods side by side for that reason.
+
+27. **Readiness is a real request, made once, lazily** — Laya answers `/health`
+    without authentication (and has no `/v1/models`), so a health check would report
+    "ready" for a server that then refuses every decision with a 401: exactly the
+    per-event warning flood a one-time check exists to prevent. Instead the first event
+    that reaches the decision step sends the run's real question — every theme — about
+    a fixed one-line state and discards the answer. That one request proves the address,
+    the key, the model name and the option budget together, and on a lazily-loaded CPU
+    server it also builds the checkpoint. It waits for a real event so an
+    `--incremental` pass over a placed library costs the service nothing. An unusable
+    service is one warning and a whole run on the single call; an interrupt during the
+    check is an interrupt, and leaves the state unchecked rather than claiming the
+    service was unusable.
+
+28. **No retry after a timeout** — the decision client keeps gutcheck's bounded,
+    backed-off retries (2) on a connection error, 408, 429 and 5xx, honouring
+    `Retry-After`, but sets `RetryTimeouts = false`. A CPU inference that timed out is
+    still running server-side, and a retry only queues a second copy of the same work
+    behind it, turning a slow server into an overloaded one. The attempt bound is 60 s
+    (gutcheck's 10 s default would time out a healthy cold checkpoint rebuild) and 2 m
+    for the readiness check.
+
+29. **Fallback is an abstention, and a failure costs only the method** — the fallback
+    theme is offered to the decision service like any other option; choosing it is a
+    `Decided` verdict with no theme, so the altitude heuristic still gets its say, as
+    the vision model's `none` always allowed. A *failure* of one decision is different:
+    that event goes back to the single call on the images already sampled — never
+    sampled or described twice — and reports `model-all`/`model-sample`. Nothing about
+    the decision service can drop a photo.
+
+30. **`internal/decide` is a seam, like the preview extractors** — it owns the second
+    wire protocol (through `github.com/sgaunet/gutcheck`), the request moraine sends and
+    the answer mapping, and is tested against `httptest`. `internal/classify` declares
+    the small `Decider` interface it needs and is tested with a plain Go fake, so a
+    concern that is not image classification brings no HTTP fake into its tests.
+    `decide` imports `classify` for the types; `classify` never imports `decide`.
+
+31. **The checkpoint default is provisional** — Laya's `multilingual` checkpoint has
+    the larger state budget (~768 tokens against ~320) and is documented as faster, so
+    `--sample 6` still fits; auto-routing would send English text to the smaller one.
+    That is a budget-and-speed choice, not an accuracy one, and a one-line default
+    change if the eval says otherwise.
+
 ## Integration Points
 
 - **External APIs**: optional local **Ollama** vision model
   (`-ollama-url`, `-model`); a startup `Preflight()` returns a typed status
   and the model stage is skipped (set to `nil`) on any non-ready status.
+- **Decision service** (opt-in, `--decider laya|jev`): `POST {url}/v1/systemone`
+  through `github.com/sgaunet/gutcheck`, text only; the key is read from
+  `LAYA_API_KEY`/`TYPESAFE_API_KEY` by the transport and never logged (decisions 26–31).
 - **External programs**: **exiftool** (required, `-exiftool`) for RAW preview
   extraction, invoked via `os/exec` (argument vector, timeout-bounded, no shell).
 - **Database / queues**: none — the only persistent state is the copied

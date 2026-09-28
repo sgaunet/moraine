@@ -1,10 +1,12 @@
 package config_test
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -437,5 +439,160 @@ func TestNewRejectsBadPathTemplate(t *testing.T) {
 		if _, err := config.New(o); err == nil {
 			t.Errorf("New with --path-template %q: want an error, got nil", tmpl)
 		}
+	}
+}
+
+// TestNewDecider covers the describe-then-decide settings. Every rejected case is a
+// usage error that names the flag, and none may echo an API key.
+func TestNewDecider(t *testing.T) {
+	manyThemes := func(n int) string {
+		s := make([]string, 0, n)
+		for i := range n {
+			s = append(s, fmt.Sprintf("t%d", i))
+		}
+		return strings.Join(s, ",")
+	}
+	tests := []struct {
+		name    string
+		edit    func(*config.Options)
+		wantErr string // substring; "" means the options are valid
+		check   func(*testing.T, config.Config)
+	}{
+		{name: "default is off", edit: func(*config.Options) {}, check: func(t *testing.T, c config.Config) {
+			t.Helper()
+			if c.Decider != config.DeciderOff {
+				t.Errorf("Decider = %q; want off", c.Decider)
+			}
+		}},
+		{name: "unknown decider", edit: func(o *config.Options) { o.Decider = "bogus" }, wantErr: "--decider"},
+		{name: "laya defaults", edit: func(o *config.Options) { o.Decider = "laya" },
+			check: func(t *testing.T, c config.Config) {
+				t.Helper()
+				if c.DeciderURL != config.DefaultLayaURL || c.DeciderModel != config.DefaultLayaModel {
+					t.Errorf("laya defaults = (%q, %q)", c.DeciderURL, c.DeciderModel)
+				}
+			}},
+		{name: "jev defaults", edit: func(o *config.Options) { o.Decider = "jev"; o.DeciderAPIKey = "jev-k3y" },
+			check: func(t *testing.T, c config.Config) {
+				t.Helper()
+				if c.DeciderURL != config.DefaultJevURL || c.DeciderModel != config.DefaultJevModel {
+					t.Errorf("jev defaults = (%q, %q)", c.DeciderURL, c.DeciderModel)
+				}
+			}},
+		{name: "explicit url and model are kept", edit: func(o *config.Options) {
+			o.Decider, o.DeciderURL, o.DeciderModel = "laya", "http://192.168.0.47:8000", "english"
+		}, check: func(t *testing.T, c config.Config) {
+			t.Helper()
+			if c.DeciderURL != "http://192.168.0.47:8000" || c.DeciderModel != "english" {
+				t.Errorf("got (%q, %q)", c.DeciderURL, c.DeciderModel)
+			}
+		}},
+		{name: "relative url", edit: func(o *config.Options) { o.Decider, o.DeciderURL = "laya", "127.0.0.1:8000" },
+			wantErr: "--decider-url"},
+		{name: "ftp url", edit: func(o *config.Options) { o.Decider, o.DeciderURL = "laya", "ftp://host" },
+			wantErr: "--decider-url"},
+		{name: "url without host", edit: func(o *config.Options) { o.Decider, o.DeciderURL = "laya", "http://" },
+			wantErr: "--decider-url"},
+		{name: "confidence above 1", edit: func(o *config.Options) { o.DeciderMinConfidence = 1.5 },
+			wantErr: "--decider-min-confidence"},
+		{name: "confidence below 0", edit: func(o *config.Options) { o.DeciderMinConfidence = -0.1 },
+			wantErr: "--decider-min-confidence"},
+		{name: "jev without key", edit: func(o *config.Options) { o.Decider = "jev" }, wantErr: "TYPESAFE_API_KEY"},
+		{name: "laya without key is fine", edit: func(o *config.Options) { o.Decider = "laya" }},
+		{name: "laya with 99 themes fits", edit: func(o *config.Options) {
+			o.Decider, o.Themes = "laya", manyThemes(99)
+		}},
+		{name: "laya with 100 themes plus fallback", edit: func(o *config.Options) {
+			o.Decider, o.Themes = "laya", manyThemes(100)
+		}, wantErr: "--themes"},
+		{name: "jev with 254 themes fits", edit: func(o *config.Options) {
+			o.Decider, o.DeciderAPIKey, o.Themes = "jev", "jev-k3y", manyThemes(254)
+		}},
+		{name: "jev with 255 themes plus fallback", edit: func(o *config.Options) {
+			o.Decider, o.DeciderAPIKey, o.Themes = "jev", "jev-k3y", manyThemes(255)
+		}, wantErr: "--themes"},
+		{name: "off ignores the other settings", edit: func(o *config.Options) {
+			o.Decider, o.DeciderURL, o.Themes = "off", "not a url", manyThemes(300)
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := defOpts("/some/src")
+			tc.edit(&o)
+			cfg, err := config.New(o)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if tc.check != nil {
+					tc.check(t, cfg)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v; want it to mention %q", err, tc.wantErr)
+			}
+			if o.DeciderAPIKey != "" && strings.Contains(err.Error(), o.DeciderAPIKey) {
+				t.Errorf("error leaks the API key: %v", err)
+			}
+		})
+	}
+}
+
+// TestNewDeciderCarriesTheKey: the key reaches the Config (so app can hand it to the
+// client) but only from Options, never from a flag.
+func TestNewDeciderCarriesTheKey(t *testing.T) {
+	o := defOpts("/some/src")
+	o.Decider, o.DeciderAPIKey, o.DeciderMinConfidence = "laya", "k3y-xyz", 0.6
+	cfg, err := config.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DeciderAPIKey != "k3y-xyz" || cfg.DeciderMinConfidence != 0.6 {
+		t.Errorf("got key %q, min confidence %g", cfg.DeciderAPIKey, cfg.DeciderMinConfidence)
+	}
+}
+
+func TestNewThemeDescriptions(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+		want    map[string]string
+		wantErr string
+	}{
+		{"none", nil, nil, ""},
+		{"split on the first equals sign, commas kept", []string{"cook=food, meals = dishes"},
+			map[string]string{"cook": "food, meals = dishes"}, ""},
+		{"trimmed", []string{" cook =  food "}, map[string]string{"cook": "food"}, ""},
+		{"the fallback may be described", []string{"other=screenshots, receipts"},
+			map[string]string{"other": "screenshots, receipts"}, ""},
+		{"several", []string{"cook=food", "family=people"}, map[string]string{"cook": "food", "family": "people"}, ""},
+		{"no equals sign", []string{"cook"}, nil, "--theme-description"},
+		{"unconfigured theme", []string{"nope=x"}, nil, "nope"},
+		{"empty text", []string{"cook= "}, nil, "--theme-description"},
+		{"newline in text", []string{"cook=food\nand more"}, nil, "--theme-description"},
+		{"120 characters fit", []string{"cook=" + strings.Repeat("é", 120)},
+			map[string]string{"cook": strings.Repeat("é", 120)}, ""},
+		{"121 characters do not", []string{"cook=" + strings.Repeat("é", 121)}, nil, "120"},
+		{"a slug given twice", []string{"cook=food", "cook=meals"}, nil, "cook"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := defOpts("/some/src")
+			o.ThemeDescriptions = tc.entries
+			cfg, err := config.New(o)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v; want it to mention %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(cfg.ThemeDescriptions, tc.want) {
+				t.Errorf("ThemeDescriptions = %v; want %v", cfg.ThemeDescriptions, tc.want)
+			}
+		})
 	}
 }

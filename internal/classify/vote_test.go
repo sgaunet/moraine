@@ -420,3 +420,35 @@ func TestVoteAllFailedReportsAStableError(t *testing.T) {
 		t.Errorf("a wholly failed vote reported %d different errors across identical runs; want 1", len(seen))
 	}
 }
+
+// TestVoteDecidesEachDescription is --vote on the describe-then-decide path: each
+// photo's description is decided alone, and the decisions vote by tallyVotes' rules.
+func TestVoteDecidesEachDescription(t *testing.T) {
+	vf := &visionFake{}
+	fd := &fakeDecider{decide: func(_ int, d classify.Decision) (classify.Verdict, error) {
+		switch d.Descriptions[0] {
+		case "photo 3", "photo 4":
+			return classify.Verdict{Theme: "family", Decided: true}, nil
+		default:
+			return classify.Verdict{Theme: "nature", Decided: true}, nil
+		}
+	}}
+	oc, _ := describer(t, vf, fd, 5)
+	oc.Vote = true
+	got, err := oc.Classify(context.Background(), colourCluster(t, 5))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if want := (classify.Verdict{Theme: "nature", Confidence: 0.6, Decided: true}); got != want {
+		t.Errorf("verdict = %+v; want %+v", got, want)
+	}
+	_, decisions := fd.snapshot()
+	if len(decisions) != 5 {
+		t.Fatalf("decisions = %d; want one per description", len(decisions))
+	}
+	for _, d := range decisions {
+		if len(d.Descriptions) != 1 {
+			t.Errorf("a vote decision carried %d descriptions; want 1", len(d.Descriptions))
+		}
+	}
+}
