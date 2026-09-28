@@ -196,3 +196,105 @@ func TestACancelledFormWritesNothing(t *testing.T) {
 		t.Fatal("Run = nil error for a cancelled form")
 	}
 }
+
+// The config wizard's tests script huh's accessible prompts, so the encoding they rely
+// on is pinned here, where a huh upgrade that changes it fails with the cause in view:
+// a list takes one number, and an empty line keeps the option it started on.
+func TestAChoiceTakesANumberAndAnEmptyLineKeepsThePrefill(t *testing.T) {
+	field := func() []configform.Group {
+		return []configform.Group{{Fields: []configform.Field{{
+			Title:   "layout",
+			Kind:    configform.Choice,
+			Options: configform.NewOptions("a", "b", "c"),
+			Value:   "c",
+		}}}}
+	}
+	for script, want := range map[string]string{"2\n": "b", "\n": "c"} {
+		got, err := run(t, script, field())
+		if err != nil {
+			t.Fatalf("Run(%q) = %v", script, err)
+		}
+		if v := got[0].Fields[0].Value; v != want {
+			t.Errorf("Run(%q) = %q, want %q", script, v, want)
+		}
+	}
+}
+
+// A multiple choice starts from the options it was handed as picked, and each number
+// typed toggles one of them: typing an option that is already picked unpicks it.
+func TestAMultiFieldAnswerTogglesThePrefilledPicks(t *testing.T) {
+	in := []configform.Group{{Fields: []configform.Field{{
+		Title:   "themes",
+		Kind:    configform.Multi,
+		Options: configform.NewOptions("a", "b", "c"),
+		Values:  []string{"a", "b"},
+	}}}}
+	got, err := run(t, "1\n0\n", in)
+	if err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if v := got[0].Fields[0].Values; len(v) != 1 || v[0] != "b" {
+		t.Errorf("Values = %v, want [b]: 1 unpicks a, and b stays picked", v)
+	}
+}
+
+// A multiple choice may refuse an answer as a typed one can: finishing with nothing
+// picked is asked again, rather than handed back to be written.
+func TestAMultiFieldValidatorRefusesAndAsksAgain(t *testing.T) {
+	in := []configform.Group{{Fields: []configform.Field{{
+		Title:   "themes",
+		Kind:    configform.Multi,
+		Options: configform.NewOptions("a", "b"),
+		ValidateMulti: func(picked []string) error {
+			if len(picked) == 0 {
+				return errors.New("pick at least one")
+			}
+			return nil
+		},
+	}}}}
+
+	var out strings.Builder
+	got, err := configform.Run(t.Context(),
+		configform.Terminal{In: strings.NewReader("0\n2\n0\n"), Out: &out, Accessible: true},
+		in)
+	if err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if v := got[0].Fields[0].Values; len(v) != 1 || v[0] != "b" {
+		t.Errorf("Values = %v, want [b]", v)
+	}
+	if !strings.Contains(out.String(), "pick at least one") {
+		t.Errorf("the validator's complaint was never shown:\n%s", out.String())
+	}
+}
+
+// In accessible mode an empty line keeps the prefilled value, and huh runs a field's
+// validator on the line as typed, before putting the prefill in its place. A validator
+// that refuses an empty value would then refuse the one answer meaning "keep it", ask
+// again, and take the next line of input — an answer meant for the next question — as
+// this one. What is validated must be what the empty line stands for.
+func TestAnEmptyAnswerIsValidatedAsThePrefill(t *testing.T) {
+	in := []configform.Group{{Fields: []configform.Field{
+		{
+			Title: "--gap",
+			Value: "6h",
+			Validate: func(s string) error {
+				if s == "" {
+					return errors.New("empty")
+				}
+				return nil
+			},
+		},
+		{Title: "--model", Value: "a"},
+	}}}
+	got, err := run(t, "\nb\n", in)
+	if err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if v := got[0].Fields[0].Value; v != "6h" {
+		t.Errorf("--gap = %q, want the prefill", v)
+	}
+	if v := got[0].Fields[1].Value; v != "b" {
+		t.Errorf("--model = %q, want the answer meant for it: the empty line was re-asked", v)
+	}
+}

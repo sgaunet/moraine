@@ -172,6 +172,14 @@ for explicitly, and then only after the copy has been verified. Repo: `github.co
   `/dev/null` has that) it is exit 1 naming `--accessible` and `config set`.
   **Wart, deliberate**: on `config set`, `--output` names the *setting* (it shadows the
   root's persistent flag) and says so on stderr — neither reading may be silent.
+  **`config wizard`** (`internal/cli/configwizard.go`) is the same machinery with a fixed
+  list of *outcome* questions (destination, themes, fallback, layout, sidecars,
+  classification + follow-ups, log/progress): one `configform.Run` per step, so a
+  follow-up is a plain `if` and a question validates against earlier answers. Shared
+  answers go top-level; a section override is offered for removal (default no). It
+  writes `dest` absolute (`~` expanded, relative refused), never asks for a key, and
+  contacts nothing. Accessible mode prints **titles only**, so defaults live in titles,
+  examples in option labels, the change list on stderr.
 - **`--move` (opt-in, verified)**: the only thing that removes a source, and only
   after `verifyCopy` re-reads the published file and matches it against the SHA-256
   `copyFile` accumulated while writing (an `io.MultiWriter` — hashing the stream keeps
@@ -308,7 +316,29 @@ task check-before-commit   # lint + test + snapshot + vulncheck
 - `docs/operating-guidelines.md`: how Claude Code should work here
 
 <!-- SPECKIT START -->
-Latest change: **007-laya-theme-classify** — opt-in describe-then-decide classification
+Latest change: **008-config-wizard**: `moraine config wizard` (plan in
+`specs/008-config-wizard/`, gitignored), a guided first-run flow over `config edit`'s
+machinery. See the `moraine config` bullet above and architecture decisions 32–36.
+Three points worth carrying:
+
+1. **A pre-existing `configform` bug, found by the wizard's first scripted session.**
+   huh's accessible prompts validate the line *as typed* and substitute the prefill
+   only afterwards. So an empty line ("keep it") failed any validator that refuses
+   `""`, re-asked, and consumed the next question's answer. `config edit --accessible`
+   had it for every validated field: on `main`, keeping `gap: 8h` then typing `4` for
+   `jobs` exits 2 with `invalid duration ""`. `keepMeansPrefill` (accessible only) fixes
+   it, with a `configform` test that fails without it.
+2. **Question budget is tested**, not claimed: 10 on the default path, 14 on the
+   longest (`TestConfigWizardQuestionBudget`). The tests build scripts through one
+   ordered `wizardFields` slice, so adding a step changes one line rather than every
+   script.
+3. **Not verified in CI**: the full-screen form (no PTY harness) and the Principle V
+   colour behaviour, which lipgloss derives from `NO_COLOR` and stdout. Both are
+   checked by hand (tasks T048).
+
+No new dependency. `configform.Field` gains `ValidateMulti`.
+
+Previous change: **007-laya-theme-classify** — opt-in describe-then-decide classification
 (`--decider laya|jev`; plan in `specs/007-laya-theme-classify/`, gitignored). With a
 decider, the vision model **describes** each sampled photo (one call each, 2 wide, no
 JSON format, cut rune-safely to `min(300, 2400/n)` characters), and `internal/decide`
@@ -363,7 +393,7 @@ Seven points worth carrying:
 added to the graph, author-requested). `govulncheck` clean; all six `CGO_ENABLED=0`
 targets build.
 
-Previous change: **bullet progress UI on stderr** (feature request, no `specs/` dir).
+Before it: **bullet progress UI on stderr** (feature request, no `specs/` dir).
 Default stderr was flat `slog` text: on a real library a `sort` run spent minutes in
 three phases and said nothing at `info`, because per-file narration is deliberately at
 debug (thousands of lines being worse than silence). So the default experience was a
@@ -425,7 +455,7 @@ that verification was ad-hoc, and this change's terminal checks were too (BSD `s
 Building one is its own task; note that `script` on macOS does not forward a signal to
 the child, so an interrupt test needs the pid directly.
 
-Before it: **`moraine config`** — a command tree that views and updates the
+Before that: **`moraine config`** — a command tree that views and updates the
 configuration file (feature request, no `specs/` dir). The YAML file existed but was
 read-only from the tool's side, so the only ways to answer "what is my effective gap?"
 or change a setting were an editor plus `--help`, and strict decoding made a typo an

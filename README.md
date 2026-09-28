@@ -167,6 +167,7 @@ and `moraine <command> --help` for command-specific options and examples.
 moraine config show                       # every effective setting + where it came from
 moraine config set sort --gap 8h --jobs 4 # write settings
 moraine config edit sort                  # or fill in a form
+moraine config wizard                     # no file yet? answer a few questions
 
 # Help and version
 ./moraine --help
@@ -644,6 +645,7 @@ moraine config set sort --gap 8h --jobs 4  # write settings
 moraine config set shared --log-level warn # write them at the top level
 moraine config unset sort gap              # take one back
 moraine config edit sort                   # or answer a form instead
+moraine config wizard                      # or be walked through the main decisions
 ```
 
 A mapping such as `theme_description` is shown one line per entry
@@ -705,6 +707,34 @@ The form draws on **stderr**, so `moraine config edit --output=json > settings.j
 works while the questions are still on screen. `--accessible` swaps the full-screen
 form for plain numbered prompts — for a screen reader, and the only mode that works
 when stdin is not a terminal.
+
+**`config wizard`** is the place to start when there is no file yet. Instead of
+settings by name it asks about outcomes, in the order you would think about them:
+where copies go, which themes (ticked from a list, plus any of your own), the fallback
+theme, the folder layout (named layouts, each shown with an example path, or a
+template of your own), companion files, how events are recognised (the local vision
+model, the vision model with Laya or Jev deciding, or no model), and how much a run
+logs. Only the follow-ups your answers call for are asked: ten questions on the usual
+path, fourteen at most.
+
+It follows `config edit`'s rules. Each question starts from the value in effect, with
+the default named in it. Only what you change is written, and answering the default
+removes the setting. Nothing is saved until you confirm the summary, and `--dry-run`
+and `--accessible` work the same way. Re-running it on a file you wrote keeps your
+comments and everything it does not ask about; if a command's own section overrides
+one of your answers (a `dest` under `sort:`, say), it names the override and asks,
+defaulting to no, before removing it. Three rules are its own:
+
+- **A destination is written absolute.** `~` is expanded, because nothing reading the
+  file does, and a relative path is refused, because its meaning would move with the
+  directory `sort` runs in.
+- **API keys are never asked for or written.** The wizard names the variable
+  (`LAYA_API_KEY`, `TYPESAFE_API_KEY`) that `sort` reads, and contacts no service:
+  a wrong address or model shows up on the first run, which already degrades with a
+  warning.
+- **It only goes forward.** To redo a step, answer no at the summary (nothing is
+  written) and run it again. The tuning settings it leaves out (`gap`, `sample`, the
+  confidence thresholds, `vote`, `jobs`, …) are one `config edit` away.
 
 [huh]: https://github.com/charmbracelet/huh
 
@@ -811,6 +841,7 @@ nothing (an unchanged re-run) has nothing to give back and says so.
 | `config set <section>` | — | every flag of the command that section configures, plus `--dry-run` (`-n`) | write settings |
 | `config unset <section>` | `<setting>...` | `--dry-run` (`-n`), `--output`, `--config` | remove settings |
 | `config edit` | `[section]` | `--accessible`, `--dry-run` (`-n`), `--output`, `--config` | answer a prefilled form |
+| `config wizard` | — | `--accessible`, `--dry-run` (`-n`), `--output`, `--config` | answer a few questions to create or revisit the file |
 
 `<section>` is `shared`, `sort`, `clean` or `undo`; `show` and `edit` cover every
 section when it is omitted. **Exit codes**: `0` success, `1` runtime failure (nowhere
@@ -894,7 +925,7 @@ internal/
   app/      testable orchestration: scan → exif → cluster → classify → organize + logs
   configfile/ optional YAML config file (flag > file > default); reads it, and edits it
             as a YAML node tree so `moraine config` keeps the comments in it
-  configform/ the interactive form behind `moraine config edit` (huh); knows no flags,
+  configform/ the interactive form behind `config edit` and `config wizard` (huh); knows no flags,
             so it stays testable without a terminal
   photo/    domain types (Photo, Cluster, Format)
   scan/     recursive walk, format filter, EXCLUDES destRoot

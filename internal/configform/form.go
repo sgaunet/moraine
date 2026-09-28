@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/huh"
 )
@@ -65,14 +66,18 @@ func NewOptions(values ...string) []Option {
 // Field is one question. Value (or Values, for a Multi) is both the answer and, on
 // the way in, what the question starts from — the current setting where there is one,
 // the default where there is not.
+//
+// Validate checks a typed answer and ValidateMulti a Multi's picks; either refuses an
+// answer by returning why, and the question is asked again.
 type Field struct {
-	Title    string
-	Help     string
-	Kind     Kind
-	Options  []Option
-	Value    string
-	Values   []string
-	Validate func(string) error
+	Title         string
+	Help          string
+	Kind          Kind
+	Options       []Option
+	Value         string
+	Values        []string
+	Validate      func(string) error
+	ValidateMulti func([]string) error
 }
 
 // Group is one page of the form.
@@ -112,7 +117,11 @@ func Run(ctx context.Context, term Terminal, groups []Group) ([]Group, error) {
 		lists[g] = make([][]string, len(answers[g].Fields))
 		fields := make([]huh.Field, 0, len(answers[g].Fields))
 		for f := range answers[g].Fields {
-			fields = append(fields, bind(answers[g].Fields[f], &texts[g][f], &flags[g][f], &lists[g][f]))
+			field := answers[g].Fields[f]
+			if term.Accessible {
+				field.Validate = keepMeansPrefill(field.Validate, field.Value)
+			}
+			fields = append(fields, bind(field, &texts[g][f], &flags[g][f], &lists[g][f]))
 		}
 		group := huh.NewGroup(fields...).Title(answers[g].Title)
 		if answers[g].Description != "" {
@@ -158,12 +167,16 @@ func bind(f Field, text *string, flag *bool, list *[]string) huh.Field {
 	switch f.Kind {
 	case Multi:
 		*list = append([]string(nil), f.Values...)
-		return huh.NewMultiSelect[string]().
+		multi := huh.NewMultiSelect[string]().
 			Title(f.Title).
 			Description(f.Help).
 			Options(options(f.Options, f.Values...)...).
 			Filterable(true).
 			Value(list)
+		if f.ValidateMulti != nil {
+			multi = multi.Validate(f.ValidateMulti)
+		}
+		return multi
 
 	case Toggle:
 		*flag, _ = strconv.ParseBool(f.Value)
@@ -194,6 +207,26 @@ func bind(f Field, text *string, flag *bool, list *[]string) huh.Field {
 			input = input.Validate(f.Validate)
 		}
 		return input
+	}
+}
+
+// keepMeansPrefill adapts a validator to accessible mode, where an empty line keeps
+// the prefilled value. huh validates the line as typed and substitutes the prefill
+// only afterwards, so an empty line must be validated as the value it stands for —
+// otherwise a validator that refuses "" refuses "keep it", asks again, and takes the
+// next line of input, the answer to a later question, as this one.
+//
+// The full-screen form needs no such thing: its field starts holding the prefill, so
+// an empty field there is one the user emptied.
+func keepMeansPrefill(validate func(string) error, prefill string) func(string) error {
+	if validate == nil {
+		return nil
+	}
+	return func(typed string) error {
+		if strings.TrimSpace(typed) == "" {
+			return validate(prefill)
+		}
+		return validate(typed)
 	}
 }
 

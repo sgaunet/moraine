@@ -56,6 +56,7 @@ Commands:
   set      write settings, one flag per setting
   unset    remove settings, so they fall back to the default
   edit     fill in a form, prefilled with the values in effect
+  wizard   answer a few questions to create or revisit the file
 
 Output:
   stdout carries the settings only, as one key=value line each (--output=text, the
@@ -77,13 +78,17 @@ Exit codes:
   moraine config unset sort gap
 
   # fill in a form instead
-  moraine config edit sort`,
+  moraine config edit sort
+
+  # no file yet? answer a few questions
+  moraine config wizard`,
 	}
 	cmd.AddCommand(newConfigShowCmd(env))
 	cmd.AddCommand(newConfigPathCmd(env))
 	cmd.AddCommand(newConfigSetCmd(env))
 	cmd.AddCommand(newConfigUnsetCmd(env))
 	cmd.AddCommand(newConfigEditCmd(env))
+	cmd.AddCommand(newConfigWizardCmd(env))
 	return cmd
 }
 

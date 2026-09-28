@@ -515,6 +515,44 @@ the CLI transport and from disk I/O — no domain package imports Cobra.
     That is a budget-and-speed choice, not an accuracy one, and a one-line default
     change if the eval says otherwise.
 
+32. **`config wizard` is a list of questions, not a second editor** — it asks about
+    outcomes (a folder layout, a classification strategy) and works the settings out
+    from the answers, then reuses everything `config edit` built: `configform` to ask,
+    `checkValues` to validate each answer through the run's own constructor,
+    `writeSettings` to re-validate the whole file and save it with comments intact, and
+    `applyAnswers`' rule for what to write (an unchanged answer is not written, and
+    answering the default removes the setting). It adds no package and no dependency.
+
+33. **One form per step, in plain control flow** — the steps run as sequential
+    `configform.Run` calls, so which follow-up comes next is an `if` on the answers
+    already given, and a later question is validated against earlier answers (the
+    fallback against the themes just picked, where `config edit` can only use the
+    values the form opened with). huh's hide-funcs would have done the same with
+    closures over bound variables and an untested accessible path. The cost is that a
+    submitted step cannot be revisited; the help says to decline at the summary and
+    re-run.
+
+34. **What the user must read goes to stderr or into a label, never only into help** —
+    huh's accessible prompts print a field's title and nothing else. So the default is
+    in each question's title, the layout examples are in the option labels, and the
+    change list, the overrides and the API-key hint are plain stderr lines before the
+    question that depends on them.
+
+35. **An empty accessible answer is validated as the prefill** — huh validates the line
+    as typed and substitutes the prefill only afterwards, so a validator that refuses
+    `""` refused "keep it", asked again, and took the next question's answer as this
+    one's. `configform.keepMeansPrefill` validates what the empty line stands for, in
+    accessible mode only (a full-screen field starts holding the prefill, so an empty
+    one there really is empty). The bug predated the wizard: `config edit --accessible`
+    had it for every validated field (gap, jobs, thresholds …); the wizard's first
+    scripted session found it.
+
+36. **The wizard writes an absolute destination** — nothing in moraine expands `~`
+    when reading the file, and a form is not a shell, so a verbatim `~/Photos` would
+    make every run write into a directory named `~`. The wizard expands `~` and refuses
+    a relative path. That is stricter than a run, on purpose: it narrows what the wizard
+    writes, not what a file may contain.
+
 ## Integration Points
 
 - **External APIs**: optional local **Ollama** vision model

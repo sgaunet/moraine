@@ -238,6 +238,7 @@ func TestConfigHelpExitsZero(t *testing.T) {
 		{"config", "set", "--help"},
 		{"config", "unset", "--help"},
 		{"config", "edit", "--help"},
+		{"config", "wizard", "--help"},
 	} {
 		var out bytes.Buffer
 		if code := cli.Execute("dev", args, &out, io.Discard); code != 0 {
