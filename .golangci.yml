@@ -12,6 +12,7 @@ linters:
     - err113
     - errcheck
     - exhaustruct
+    - exhaustruct_v5
     - funlen
     - gochecknoglobals
     - gocognit
