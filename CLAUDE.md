@@ -278,7 +278,7 @@ task check-before-commit   # lint + test + snapshot + vulncheck
 ## Code Quality Standards
 
 **Linters configured** (do not duplicate rules):
-- golangci-lint: `.golangci.yml` — v2, `default: all` minus 28 opinionated or
+- golangci-lint: `.golangci.yml` — v2, `default: all` minus 29 opinionated or
   style-only linters (incl. `errcheck`, `wrapcheck`, `err113`, `mnd`, `gosec`,
   `cyclop`, `funlen`, `paralleltest`); formatters `gofmt` + `goimports`. There are
   **no `exclude-rules`** — the same rules apply inside `_test.go`. Tree is lint-clean.
