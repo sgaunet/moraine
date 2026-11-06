@@ -88,10 +88,16 @@ govulncheck ./...                            # or: task vulncheck
     under its versioned name, GoReleaser can only name the executable `moraine`
     (it is not templated), and `brew` resets `PATH` during install -- every shell
     then fails with exit 127 and Homebrew only *warns*.
-  - the quarantine-stripping hook must stay in `hooks.pre.install`
-    (-> cask `preflight`). Homebrew sorts cask artifacts by class, not by stanza
-    order: `preflight` -> `binary` -> `generate_completions_from_executable` ->
-    `postflight`, so a postflight hook runs too late.
+  - the quarantine-stripping hook must stay in `hooks.pre.install_steps`
+    (-> cask `preflight_steps`). Homebrew sorts cask artifacts by class, not by
+    stanza order: `preflight_steps` -> `binary` ->
+    `generate_completions_from_executable` -> `postflight_steps`, so a postflight
+    hook runs too late. Not `hooks.pre.install` (-> Ruby `preflight`): Homebrew 7
+    deprecates the Ruby blocks and warns on every install.
+  - inside `install_steps`, name the staged directory `{{ .StagedPath }}`.
+    GoReleaser templates the generated cask once more and renders that alias as
+    Homebrew's install-time `{{staged_path}}` token; writing `{{staged_path}}`
+    directly fails the release with `function "staged_path" not defined`.
   - never add `args: [completion]` alongside `shell_parameter_format: cobra` --
     `:cobra` already appends `completion <shell>`, and a second one makes
     Homebrew write cobra's *help text* into the completion file.
