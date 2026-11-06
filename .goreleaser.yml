@@ -118,12 +118,15 @@ homebrew_casks:
 
     # Strip the quarantine xattr BEFORE artifacts install, so the completion
     # generator can actually execute the staged binary (post-install is too late).
+    # `install_steps` emits `preflight_steps`: Homebrew 7 deprecates the Ruby
+    # `preflight`/`postflight` blocks. `{{ .StagedPath }}` is GoReleaser's alias
+    # for Homebrew's `{{staged_path}}` token -- write the alias, since GoReleaser
+    # templates the generated cask and a bare `{{staged_path}}` fails the release.
     hooks:
       pre:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr",
-                           args: ["-dr", "com.apple.quarantine", staged_path]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}"]
           end
 
     commit_author:
